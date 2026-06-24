@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# ITMAP
 
-TODO: Document your project here
+Imperial Thematic Mapping and Profiling tool
