@@ -1,2 +1,3 @@
-# ITMAP
-ITMAP - Imperial Thematic Mapper for Academic and research Personnel
+# Welcome to your Lovable project
+
+TODO: Document your project here
