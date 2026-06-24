@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Purple-based academic palette */
+    --background: 250 20% 98%;
+    --foreground: 260 25% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 260 25% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 260 25% 12%;
+
+    /* Imperial Purple */
+    --primary: 268 65% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 260 20% 95%;
+    --secondary-foreground: 260 25% 12%;
+
+    --muted: 260 15% 93%;
+    --muted-foreground: 260 10% 48%;
+
+    --accent: 268 60% 94%;
+    --accent-foreground: 268 65% 40%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 260 15% 89%;
+    --input: 260 15% 89%;
+    --ring: 268 65% 50%;
+
+    --radius: 0.5rem;
+
+    /* Custom tokens */
+    --imperial-purple: 268 65% 50%;
+    --imperial-purple-light: 268 60% 94%;
+    --imperial-purple-dark: 268 65% 35%;
+    --imperial-teal: 180 42% 42%;
+    --imperial-gold: 42 78% 52%;
+
+    --relevance-high: 142 64% 40%;
+    --relevance-medium: 38 92% 50%;
+    --relevance-low: 0 72% 51%;
+
+    --graph-cluster-1: 268 60% 65%;
+    --graph-cluster-2: 200 60% 60%;
+    --graph-cluster-3: 160 50% 50%;
+    --graph-cluster-4: 140 50% 50%;
+    --graph-cluster-5: 30 60% 55%;
+
+    --sidebar-width: 420px;
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 260 25% 12%;
+    --sidebar-primary: 268 65% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 268 60% 94%;
+    --sidebar-accent-foreground: 268 65% 40%;
+    --sidebar-border: 260 15% 89%;
+    --sidebar-ring: 268 65% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  .font-brand {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+  }
+
+  .search-box-semantic {
+    @apply w-full rounded-lg border border-border bg-card p-4 text-sm leading-relaxed;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary;
+    @apply transition-all duration-200;
+    min-height: 100px;
+    resize: vertical;
+  }
+
+  .filter-chip {
+    @apply inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium;
+    @apply border border-border bg-secondary text-secondary-foreground;
+    @apply hover:bg-accent hover:text-accent-foreground hover:border-primary/30;
+    @apply transition-all duration-150 cursor-pointer select-none;
+  }
+
+  .filter-chip-active {
+    @apply bg-primary text-primary-foreground border-primary;
+    @apply hover:bg-primary/90 hover:text-primary-foreground;
+  }
+
+  .result-card {
+    @apply bg-card rounded-xl border border-border p-5;
+    @apply hover:shadow-md hover:border-primary/20;
+    @apply transition-all duration-200;
+  }
+
+  .relevance-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;
+  }
+
+  .relevance-high {
+    @apply bg-green-50 text-green-700 border border-green-200;
+  }
+
+  .relevance-medium {
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
+  }
+
+  .relevance-low {
+    @apply bg-red-50 text-red-700 border border-red-200;
+  }
+
+  .section-label {
+    @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
+  }
+
+  /* Graph styles */
+  .graph-node {
+    cursor: pointer;
+    transition: transform 0.2s ease, filter 0.2s ease;
+  }
+
+  .graph-node:hover {
+    filter: brightness(1.1);
+  }
+
+  .graph-tooltip {
+    @apply bg-card border border-border rounded-xl shadow-xl p-4;
+    @apply text-sm;
+    pointer-events: none;
+    max-width: 280px;
+  }
+
+  .graph-mode-btn {
+    @apply px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150;
+    @apply border border-border text-muted-foreground;
+    @apply hover:bg-accent hover:text-accent-foreground hover:border-primary/30;
+  }
+
+  .graph-mode-btn-active {
+    @apply bg-primary text-primary-foreground border-primary;
+    @apply hover:bg-primary/90;
+  }
+}
