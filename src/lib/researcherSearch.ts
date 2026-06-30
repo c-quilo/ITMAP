@@ -3,7 +3,7 @@ import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 
 export interface SearchPayload {
   query: string;
-  mode: "semantic" | "keyword" | "browse";
+  mode: "semantic" | "keyword";
   filters: string[];
 }
 
@@ -14,6 +14,7 @@ interface SupabasePublication {
   citations?: number | null;
   relevance_score?: number | null;
   openalex_work_id?: string | null;
+  doi?: string | null;
 }
 
 interface SupabaseResearcher {
@@ -59,6 +60,13 @@ function splitKeywords(value?: string | null) {
 }
 
 function toPublication(pub: SupabasePublication): Publication {
+  const doi = pub.doi?.trim();
+  const doiUrl = doi
+    ? doi.startsWith("http")
+      ? doi
+      : `https://doi.org/${doi.replace(/^doi:\s*/i, "")}`
+    : undefined;
+
   return {
     title: pub.title,
     journal: pub.journal || "OpenAlex",
@@ -66,6 +74,8 @@ function toPublication(pub: SupabasePublication): Publication {
     citations: pub.citations || 0,
     relevanceScore: pub.relevance_score ? Math.round(pub.relevance_score * 100) : undefined,
     openalexWorkId: pub.openalex_work_id || undefined,
+    doi: doi || undefined,
+    doiUrl,
   };
 }
 
@@ -131,7 +141,7 @@ function localFallbackSearch(query: string) {
 }
 
 export async function searchResearchers(payload: SearchPayload): Promise<Researcher[]> {
-  if (!hasSupabaseConfig || !supabase || payload.mode === "browse") {
+  if (!hasSupabaseConfig || !supabase) {
     return localFallbackSearch(payload.query);
   }
 

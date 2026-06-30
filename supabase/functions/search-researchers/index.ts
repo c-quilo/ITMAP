@@ -7,7 +7,7 @@ const corsHeaders = {
 
 type SearchRequest = {
   query?: string;
-  mode?: "semantic" | "keyword" | "browse";
+  mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
 };
@@ -459,14 +459,14 @@ function scorePaper(query: string, terms: string[], paper: Record<string, unknow
 
   for (const term of terms) {
     for (const variant of expandedTermVariants(term)) {
-      if (title.includes(variant)) score += 4;
-      if (abstract.includes(variant)) score += 1;
+      if (title.includes(variant)) score += 2;
+      if (abstract.includes(variant)) score += 2;
     }
   }
 
   if (queryText.length > 12) {
-    if (title.includes(queryText)) score += 8;
-    if (abstract.includes(queryText)) score += 4;
+    if (title.includes(queryText)) score += 5;
+    if (abstract.includes(queryText)) score += 5;
   }
 
   const citations = Number(paper.cited_by_count || 0);
@@ -488,6 +488,7 @@ function paperSummary(paper: Record<string, unknown>, relevanceScore?: number, r
     relevance_score: relevanceScore,
     raw_similarity: rawSimilarity,
     openalex_work_id: paper.openalex_work_id,
+    doi: paper.doi,
   };
 }
 
@@ -819,7 +820,7 @@ async function fetchPapersForResearchers(
 
   const { data, error } = await supabase
     .from("researcher_papers")
-    .select("researcher_id,openalex_work_id,title,abstract,publication_year,cited_by_count,source_display_name")
+    .select("researcher_id,openalex_work_id,title,abstract,publication_year,cited_by_count,source_display_name,doi")
     .in("researcher_id", researcherIds)
     .order("cited_by_count", { ascending: false, nullsFirst: false })
     .limit(Math.min(5000, Math.max(1000, researcherIds.length * 50)));
@@ -841,7 +842,7 @@ async function fetchAllPapersForResearchers(
   while (from < 20000) {
     const { data, error } = await supabase
       .from("researcher_papers")
-      .select("researcher_id,openalex_work_id,title,publication_year,cited_by_count,source_display_name")
+      .select("researcher_id,openalex_work_id,title,publication_year,cited_by_count,source_display_name,doi")
       .in("researcher_id", researcherIds)
       .order("cited_by_count", { ascending: false, nullsFirst: false })
       .range(from, from + pageSize - 1);
@@ -954,6 +955,7 @@ Deno.serve(async req => {
       return Response.json({ results: [] }, { headers: corsHeaders });
     }
 
+    const mode = body.mode || "semantic";
     const openAiKey = Deno.env.get("OPENAI_API_KEY");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -965,7 +967,16 @@ Deno.serve(async req => {
       throw new Error("Missing OPENAI_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_ROLE_KEY");
     }
 
-    const mission = await expandMission(openAiKey, rankingModel, query);
+    const rawKeywordTerms = queryTerms(query);
+    const mission = mode === "keyword"
+      ? {
+        expanded_query: query,
+        must_have: rawKeywordTerms.slice(0, 10),
+        nice_to_have: [],
+        method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
+        domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
+      }
+      : await expandMission(openAiKey, rankingModel, query);
     const searchQuery = [
       mission.expanded_query || query,
       ...(mission.must_have || []),
@@ -1018,7 +1029,7 @@ Deno.serve(async req => {
       throw researcherError;
     }
 
-    const profileKeywordMatches = groups.hasMethodIntent || isLongMission
+    const profileKeywordMatches = (mode !== "keyword" && (groups.hasMethodIntent || isLongMission))
       ? []
       : await fetchProfileKeywordCandidates(
         supabase,
@@ -1182,7 +1193,7 @@ Deno.serve(async req => {
           .slice(0, 10)
           .map(({ paper, score }) => paperSummary(
             paper,
-            terms.length > 0 ? Math.min(0.99, score / (terms.length * 5 + 10)) : undefined,
+            terms.length > 0 ? Math.min(0.99, score / (terms.length * 4 + 10)) : undefined,
           ));
 
         if (rankedPapers.length > 0 && (((row.papers as Record<string, unknown>[]) || []).length === 0)) {

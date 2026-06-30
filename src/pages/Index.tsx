@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { LayoutGrid, List, ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain } from "lucide-react";
-import SearchSidebar from "@/components/SearchSidebar";
+import SearchSidebar, { type SavedSearchSummary } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
-import { MOCK_RESEARCHERS } from "@/data/mockData";
+import { MOCK_RESEARCHERS, type Researcher } from "@/data/mockData";
 import { searchResearchers } from "@/lib/researcherSearch";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -11,7 +11,13 @@ import scsSwoosh from "@/assets/scs-swoosh.png";
 type ViewMode = "list" | "grid";
 type SortBy = "relevance" | "name" | "seniority";
 type TabMode = "search" | "graph";
-type SearchMode = "semantic" | "keyword" | "browse";
+type SearchMode = "semantic" | "keyword";
+
+type SavedSearch = SavedSearchSummary & {
+  results: Researcher[];
+};
+
+const SAVED_SEARCHES_KEY = "itmap.savedSearches.v1";
 
 const GRADE_FILTERS = new Set([
   "Professor",
@@ -133,6 +139,19 @@ export default function Index() {
   const [hasSearched, setHasSearched] = useState(false);
   const [currentMission, setCurrentMission] = useState("Current mission");
   const [searchSeconds, setSearchSeconds] = useState(0);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SAVED_SEARCHES_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        setSavedSearches(parsed.filter(search => Array.isArray(search.results)).slice(0, 10));
+      }
+    } catch {
+      setSavedSearches([]);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isSearching) {
@@ -162,6 +181,46 @@ export default function Index() {
     );
   };
 
+  const persistSavedSearches = (nextSearches: SavedSearch[]) => {
+    setSavedSearches(nextSearches);
+    try {
+      window.localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(nextSearches));
+    } catch {
+      // localStorage can be unavailable in private or restricted browser contexts.
+    }
+  };
+
+  const saveSearch = (query: string, mode: SearchMode, results: Researcher[]) => {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery || results.length === 0) return;
+
+    const saved: SavedSearch = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      query: trimmedQuery,
+      mode,
+      createdAt: new Date().toISOString(),
+      resultCount: results.length,
+      results,
+    };
+    const nextSearches = [
+      saved,
+      ...savedSearches.filter(search => !(search.query === trimmedQuery && search.mode === mode)),
+    ].slice(0, 10);
+    persistSavedSearches(nextSearches);
+  };
+
+  const loadSavedSearch = (id: string) => {
+    const saved = savedSearches.find(search => search.id === id);
+    if (!saved) return;
+    const nextDepartments = new Set(saved.results.map(researcher => researcher.department).filter(Boolean));
+    setActiveFilters(prev => prev.filter(filter => !departmentFilters.has(filter) || nextDepartments.has(filter)));
+    setSearchResults(saved.results);
+    setCurrentMission(saved.query);
+    setHasSearched(true);
+    setSearchError("");
+    setTabMode("search");
+  };
+
   const handleSearch = async (query: string, mode: SearchMode) => {
     setIsSearching(true);
     setSearchError("");
@@ -172,6 +231,7 @@ export default function Index() {
       setSearchResults(results);
       setCurrentMission(query);
       setHasSearched(true);
+      saveSearch(query, mode, results);
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : "Search failed");
     } finally {
@@ -269,8 +329,10 @@ export default function Index() {
               onToggleFilter={toggleFilter}
               onClearFilters={() => setActiveFilters([])}
               onSearch={handleSearch}
+              onLoadSavedSearch={loadSavedSearch}
               isSearching={isSearching}
               departmentOptions={availableDepartments}
+              savedSearches={savedSearches}
             />
           </div>
 

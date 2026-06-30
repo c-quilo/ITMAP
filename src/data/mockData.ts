@@ -5,6 +5,8 @@ export interface Publication {
   citations: number;
   relevanceScore?: number;
   openalexWorkId?: string;
+  doi?: string;
+  doiUrl?: string;
 }
 
 export interface Researcher {

@@ -1,16 +1,26 @@
 import { useState } from "react";
-import { Search, SlidersHorizontal, Sparkles, Type, List, ChevronDown, ChevronUp, X, Upload, Loader2 } from "lucide-react";
+import { Clock3, Search, SlidersHorizontal, Sparkles, Type, ChevronDown, ChevronUp, X, Upload, Loader2 } from "lucide-react";
 import { GRADES, FACULTIES, KEYWORD_OPTIONS } from "@/data/mockData";
 
-type SearchMode = "semantic" | "keyword" | "browse";
+type SearchMode = "semantic" | "keyword";
+
+export interface SavedSearchSummary {
+  id: string;
+  query: string;
+  mode: SearchMode;
+  createdAt: string;
+  resultCount: number;
+}
 
 interface SearchSidebarProps {
   onSearch?: (query: string, mode: SearchMode) => void;
+  onLoadSavedSearch?: (id: string) => void;
   isSearching?: boolean;
   activeFilters: string[];
   onToggleFilter: (filter: string) => void;
   onClearFilters: () => void;
   departmentOptions: string[];
+  savedSearches: SavedSearchSummary[];
 }
 
 const SEMANTIC_PLACEHOLDER = `I need to find experts at Imperial College London working on sustainable textiles, circular materials, low-impact manufacturing, and supply-chain innovation for environmentally responsible fashion and related industrial applications.`;
@@ -20,8 +30,10 @@ export default function SearchSidebar({
   onToggleFilter,
   onClearFilters,
   onSearch,
+  onLoadSavedSearch,
   isSearching = false,
   departmentOptions,
+  savedSearches,
 }: SearchSidebarProps) {
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [semanticQuery, setSemanticQuery] = useState(SEMANTIC_PLACEHOLDER);
@@ -61,11 +73,10 @@ export default function SearchSidebar({
         {/* Search Mode Tabs */}
         <div>
           <p className="section-label mb-2.5">Search Mode</p>
-          <div className="flex gap-1.5 rounded-lg bg-secondary p-1">
+          <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-secondary p-1">
             {[
               { mode: "semantic" as const, icon: Sparkles, label: "Semantic" },
               { mode: "keyword" as const, icon: Type, label: "Keyword" },
-              { mode: "browse" as const, icon: List, label: "Browse" },
             ].map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
@@ -82,6 +93,34 @@ export default function SearchSidebar({
             ))}
           </div>
         </div>
+
+        {savedSearches.length > 0 && (
+          <div>
+            <p className="section-label mb-2">Recent Searches</p>
+            <div className="space-y-1.5">
+              {savedSearches.slice(0, 6).map(search => (
+                <button
+                  key={search.id}
+                  onClick={() => onLoadSavedSearch?.(search.id)}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:bg-secondary"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-medium text-foreground">{search.query}</span>
+                    <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
+                      {search.mode}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <Clock3 className="h-3 w-3" />
+                    <span>{new Date(search.createdAt).toLocaleDateString()}</span>
+                    <span>·</span>
+                    <span>{search.resultCount} researchers</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Semantic Search Box */}
         {searchMode === "semantic" && (
