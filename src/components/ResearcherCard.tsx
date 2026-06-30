@@ -40,15 +40,10 @@ function PublicationItem({ pub }: { pub: Publication }) {
 
 export default function ResearcherCard({ researcher, showSemanticExplanation = true }: ResearcherCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [profileExpanded, setProfileExpanded] = useState(false);
   const [bookmarked, setBookmarked] = useState(researcher.bookmarked ?? false);
-  const [pubView, setPubView] = useState<"relevant" | "all">("relevant");
-  const [pubPage, setPubPage] = useState(1);
 
-  const pubs = pubView === "relevant"
-    ? researcher.publications.slice(0, 10)
-    : researcher.publications;
-  const visiblePubs = pubs.slice(0, pubPage * 10);
-  const hasMore = visiblePubs.length < pubs.length;
+  const visiblePubs = researcher.publications.slice(0, 10);
 
   return (
     <div className="result-card animate-fade-in">
@@ -81,24 +76,41 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
         </div>
       </div>
 
-      {/* Summary */}
-      <p className="text-sm text-foreground/80 mt-3 leading-relaxed">{researcher.summary}</p>
+      <button
+        onClick={() => setProfileExpanded(!profileExpanded)}
+        className="mt-3 flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {profileExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        {profileExpanded ? "Hide" : "Show"} Profile
+      </button>
 
-      {/* Keywords */}
-      <div className="flex flex-wrap gap-1.5 mt-3">
-        {researcher.keywords.map(k => (
-          <span
-            key={k}
-            className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${
-              researcher.matchedKeywords.includes(k)
-                ? "bg-accent text-accent-foreground ring-1 ring-primary/20"
-                : "bg-secondary text-muted-foreground"
-            }`}
+      <AnimatePresence>
+        {profileExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
           >
-            {k}
-          </span>
-        ))}
-      </div>
+            <p className="text-sm text-foreground/80 mt-3 leading-relaxed">{researcher.summary}</p>
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {researcher.keywords.map(k => (
+                <span
+                  key={k}
+                  className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${
+                    researcher.matchedKeywords.includes(k)
+                      ? "bg-accent text-accent-foreground ring-1 ring-primary/20"
+                      : "bg-secondary text-muted-foreground"
+                  }`}
+                >
+                  {k}
+                </span>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Semantic Explanation */}
       {showSemanticExplanation && researcher.semanticExplanation && (
@@ -113,11 +125,11 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
 
       {/* Expand Publications */}
       <button
-        onClick={() => { setExpanded(!expanded); setPubPage(1); }}
+        onClick={() => setExpanded(!expanded)}
         className="mt-3 flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
       >
         {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-        {expanded ? "Hide" : "Show"} Publications ({researcher.publications.length})
+        {expanded ? "Hide" : "Show"} Relevant Publications ({Math.min(researcher.publications.length, 10)})
       </button>
 
       <AnimatePresence>
@@ -130,37 +142,14 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
             className="overflow-hidden"
           >
             <div className="mt-3 pt-3 border-t border-border">
-              <div className="flex items-center gap-2 mb-2">
-                <button
-                  onClick={() => { setPubView("relevant"); setPubPage(1); }}
-                  className={`text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors ${
-                    pubView === "relevant" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"
-                  }`}
-                >
-                  10 Most Relevant
-                </button>
-                <button
-                  onClick={() => { setPubView("all"); setPubPage(1); }}
-                  className={`text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors ${
-                    pubView === "all" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"
-                  }`}
-                >
-                  All Papers
-                </button>
-              </div>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Most Relevant Publications
+              </p>
               <div>
                 {visiblePubs.map((pub, i) => (
                   <PublicationItem key={i} pub={pub} />
                 ))}
               </div>
-              {hasMore && (
-                <button
-                  onClick={() => setPubPage(p => p + 1)}
-                  className="mt-2 w-full text-center text-xs font-medium text-primary hover:text-primary/80 py-2 rounded-md hover:bg-secondary transition-colors"
-                >
-                  Load next 10 papers
-                </button>
-              )}
             </div>
           </motion.div>
         )}

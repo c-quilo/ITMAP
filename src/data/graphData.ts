@@ -5,12 +5,15 @@ export interface GraphNode {
   label: string;
   shortTitle: string;
   department: string;
+  faculty?: string;
   role: "mission" | "pi" | "lecturer" | "postdoc" | "phd";
   relevanceScore: number;
   cluster: string;
   isBridge?: boolean;
   keywords?: string[];
   networkRole?: string;
+  interdisciplinarityScore?: number;
+  interdisciplinaryReasons?: string[];
 }
 
 export interface GraphEdge {
@@ -172,10 +175,10 @@ export const GRAPH_EDGES: GraphEdge[] = [
 
 export const GRAPH_MODES = [
   { id: "relevance", label: "Mission Relevance", description: "How each person relates to the semantic mission" },
-  { id: "coauthorship", label: "Co-authorship", description: "Research collaboration networks" },
+  { id: "coauthorship", label: "Co-authorship", description: "Co-authorship links from the relevant papers shown for this search" },
   { id: "supervision", label: "Teams & Supervision", description: "PI, postdoc and PhD team structures" },
   { id: "thematic", label: "Semantic Similarity", description: "Shared research themes and topics" },
-  { id: "bridges", label: "Cross-faculty Bridges", description: "People connecting different groups" },
+  { id: "bridges", label: "Cross-faculty Bridges", description: "People connecting departments or faculties through relevant papers and shared themes" },
 ] as const;
 
 export type GraphMode = typeof GRAPH_MODES[number]["id"];

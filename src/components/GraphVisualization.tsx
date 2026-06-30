@@ -1,16 +1,14 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ZoomIn, ZoomOut, Maximize2, Info } from "lucide-react";
 import {
-  GRAPH_NODES,
-  GRAPH_EDGES,
-  GRAPH_CLUSTERS,
   GRAPH_MODES,
   type GraphNode,
   type GraphEdge,
+  type GraphCluster,
   type GraphMode,
 } from "@/data/graphData";
-import { MOCK_RESEARCHERS } from "@/data/mockData";
+import type { Researcher } from "@/data/mockData";
 import GraphSidePanel from "./GraphSidePanel";
 
 const NODE_SIZES: Record<string, number> = {
@@ -37,7 +35,207 @@ const EDGE_COLORS: Record<string, string> = {
   department: "hsl(260, 15%, 80%)",
 };
 
-function getVisibleEdges(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
+interface GraphVisualizationProps {
+  researchers: Researcher[];
+  missionLabel?: string;
+}
+
+function inferGraphRole(researcher: Researcher): GraphNode["role"] {
+  const title = researcher.title.toLowerCase();
+  if (title.includes("phd")) return "phd";
+  if (title.includes("postdoc") || title.includes("fellow")) return "postdoc";
+  if (title.includes("professor") || title.includes("chair")) return "pi";
+  return "lecturer";
+}
+
+function initialsLabel(name: string) {
+  return name.replace(/^prof\.?\s+/i, "").replace(/^dr\.?\s+/i, "");
+}
+
+function sharedKeywordWeight(a: Researcher, b: Researcher) {
+  const aTerms = new Set([...a.keywords, ...a.matchedKeywords].map(term => term.toLowerCase()));
+  const bTerms = new Set([...b.keywords, ...b.matchedKeywords].map(term => term.toLowerCase()));
+  let shared = 0;
+  for (const term of aTerms) {
+    if (bTerms.has(term)) shared += 1;
+  }
+  return shared;
+}
+
+function publicationKey(title: string) {
+  return title.toLowerCase().replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+}
+
+function sharedRelevantPapers(a: Researcher, b: Researcher) {
+  const aPapers = new Map(
+    a.publications.map(pub => [pub.openalexWorkId || publicationKey(pub.title), pub]),
+  );
+
+  return b.publications
+    .map(pub => {
+      const key = pub.openalexWorkId || publicationKey(pub.title);
+      const match = aPapers.get(key);
+      return match ? pub : undefined;
+    })
+    .filter(Boolean);
+}
+
+function buildGraph(researchers: Researcher[], missionLabel = "Current Mission") {
+  const visibleResearchers = researchers.slice(0, 24);
+  const departments = [...new Set(visibleResearchers.map(researcher => researcher.department || "Imperial").filter(Boolean))];
+  const clusterRadius = 210;
+  const nodes: GraphNode[] = [{
+    id: "mission",
+    x: 0,
+    y: 0,
+    label: missionLabel,
+    shortTitle: "Mission",
+    department: "",
+    role: "mission",
+    relevanceScore: 100,
+    cluster: "mission",
+    networkRole: "Current Search",
+  }];
+
+  const clusters: GraphCluster[] = departments.map((department, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(1, departments.length) - Math.PI / 2;
+    const members = visibleResearchers.filter(researcher => researcher.department === department);
+    return {
+      id: department,
+      label: department.replace(/^Department of /, "").replace(/^School of /, ""),
+      cx: Math.cos(angle) * clusterRadius,
+      cy: Math.sin(angle) * clusterRadius,
+      rx: Math.max(78, Math.min(145, 45 + members.length * 14)),
+      ry: Math.max(55, Math.min(110, 35 + members.length * 10)),
+      color: `hsla(${(index * 53 + 200) % 360}, 55%, 58%, 0.08)`,
+      description: department,
+    };
+  });
+
+  for (const [departmentIndex, department] of departments.entries()) {
+    const cluster = clusters[departmentIndex];
+    const members = visibleResearchers.filter(researcher => researcher.department === department);
+    for (const [memberIndex, researcher] of members.entries()) {
+      const angle = (Math.PI * 2 * memberIndex) / Math.max(1, members.length) - Math.PI / 2;
+      const spreadX = members.length === 1 ? 0 : Math.cos(angle) * Math.max(28, cluster.rx * 0.48);
+      const spreadY = members.length === 1 ? 0 : Math.sin(angle) * Math.max(24, cluster.ry * 0.48);
+      nodes.push({
+        id: researcher.id,
+        x: cluster.cx + spreadX,
+        y: cluster.cy + spreadY,
+        label: researcher.name,
+        shortTitle: researcher.title,
+        department: researcher.department,
+        faculty: researcher.faculty,
+        role: inferGraphRole(researcher),
+        relevanceScore: researcher.relevanceScore,
+        cluster: department,
+        isBridge: false,
+        networkRole: researcher.relevanceScore >= 85 ? "High Match" : researcher.relevanceScore >= 70 ? "Relevant Match" : "Adjacent Match",
+        keywords: researcher.matchedKeywords.length > 0 ? researcher.matchedKeywords : researcher.keywords,
+      });
+    }
+  }
+
+  const edges: GraphEdge[] = [];
+  const coauthorCounts = new Map<string, number>();
+  const crossDepartmentCounts = new Map<string, number>();
+  const crossFacultyCounts = new Map<string, number>();
+
+  for (const researcher of visibleResearchers) {
+    edges.push({
+      source: "mission",
+      target: researcher.id,
+      type: "mission",
+      weight: Math.max(0.25, researcher.relevanceScore / 100),
+      label: "Mission match",
+    });
+  }
+
+  for (let i = 0; i < visibleResearchers.length; i += 1) {
+    for (let j = i + 1; j < visibleResearchers.length; j += 1) {
+      const a = visibleResearchers[i];
+      const b = visibleResearchers[j];
+      if (a.department === b.department) {
+        edges.push({
+          source: a.id,
+          target: b.id,
+          type: "department",
+          weight: 0.25,
+          label: a.department,
+        });
+      }
+
+      const sharedPapers = sharedRelevantPapers(a, b);
+      if (sharedPapers.length > 0) {
+        const crossDepartment = a.department !== b.department;
+        const crossFaculty = a.faculty !== b.faculty;
+        edges.push({
+          source: a.id,
+          target: b.id,
+          type: "coauthor",
+          weight: Math.min(1, 0.45 + sharedPapers.length * 0.18 + (crossDepartment ? 0.12 : 0) + (crossFaculty ? 0.18 : 0)),
+          label: sharedPapers.slice(0, 2).map(pub => pub?.title).join("; "),
+        });
+
+        for (const id of [a.id, b.id]) {
+          coauthorCounts.set(id, (coauthorCounts.get(id) || 0) + sharedPapers.length);
+          if (crossDepartment) crossDepartmentCounts.set(id, (crossDepartmentCounts.get(id) || 0) + 1);
+          if (crossFaculty) crossFacultyCounts.set(id, (crossFacultyCounts.get(id) || 0) + 1);
+        }
+      }
+
+      const shared = sharedKeywordWeight(a, b);
+      if (shared > 0) {
+        edges.push({
+          source: a.id,
+          target: b.id,
+          type: "thematic",
+          weight: Math.min(0.8, 0.25 + shared * 0.15),
+          label: `${shared} shared theme${shared === 1 ? "" : "s"}`,
+        });
+      }
+    }
+  }
+
+  const crossClusterCounts = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.type !== "thematic") continue;
+    const source = nodes.find(node => node.id === edge.source);
+    const target = nodes.find(node => node.id === edge.target);
+    if (!source || !target || source.cluster === target.cluster) continue;
+    crossClusterCounts.set(source.id, (crossClusterCounts.get(source.id) || 0) + 1);
+    crossClusterCounts.set(target.id, (crossClusterCounts.get(target.id) || 0) + 1);
+  }
+
+  for (const node of nodes) {
+    if (node.role !== "mission") {
+      const coauthors = coauthorCounts.get(node.id) || 0;
+      const crossDepartments = crossDepartmentCounts.get(node.id) || 0;
+      const crossFaculties = crossFacultyCounts.get(node.id) || 0;
+      const thematicCrossings = crossClusterCounts.get(node.id) || 0;
+      node.interdisciplinarityScore = Math.min(
+        100,
+        Math.round(coauthors * 10 + crossDepartments * 18 + crossFaculties * 30 + thematicCrossings * 8),
+      );
+      node.interdisciplinaryReasons = [
+        coauthors > 0 ? `${coauthors} relevant co-authored paper${coauthors === 1 ? "" : "s"}` : "",
+        crossDepartments > 0 ? `${crossDepartments} cross-department link${crossDepartments === 1 ? "" : "s"}` : "",
+        crossFaculties > 0 ? `${crossFaculties} cross-faculty link${crossFaculties === 1 ? "" : "s"}` : "",
+        thematicCrossings > 0 ? `${thematicCrossings} cross-cluster theme${thematicCrossings === 1 ? "" : "s"}` : "",
+      ].filter(Boolean);
+
+      if ((crossDepartments + crossFaculties + thematicCrossings) >= 2) {
+        node.isBridge = true;
+        node.networkRole = "Bridge Match";
+      }
+    }
+  }
+
+  return { nodes, edges, clusters };
+}
+
+function getVisibleEdges(mode: GraphMode, edges: GraphEdge[], nodes: GraphNode[]): GraphEdge[] {
   switch (mode) {
     case "relevance":
       return edges.filter(e => e.type === "mission");
@@ -50,8 +248,8 @@ function getVisibleEdges(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
     case "bridges":
       return edges.filter(e => {
         if (e.type === "mission") return true;
-        const src = GRAPH_NODES.find(n => n.id === e.source);
-        const tgt = GRAPH_NODES.find(n => n.id === e.target);
+        const src = nodes.find(n => n.id === e.source);
+        const tgt = nodes.find(n => n.id === e.target);
         return src && tgt && src.cluster !== tgt.cluster;
       });
     default:
@@ -59,12 +257,12 @@ function getVisibleEdges(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
   }
 }
 
-function getHighlightedNodes(mode: GraphMode): Set<string> {
+function getHighlightedNodes(mode: GraphMode, nodes: GraphNode[]): Set<string> {
   if (mode !== "bridges") return new Set();
-  return new Set(GRAPH_NODES.filter(n => n.isBridge).map(n => n.id));
+  return new Set(nodes.filter(n => n.isBridge).map(n => n.id));
 }
 
-export default function GraphVisualization() {
+export default function GraphVisualization({ researchers, missionLabel }: GraphVisualizationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<GraphMode>("relevance");
@@ -74,9 +272,17 @@ export default function GraphVisualization() {
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
+  const { nodes, edges, clusters } = useMemo(
+    () => buildGraph(researchers, missionLabel),
+    [missionLabel, researchers],
+  );
+  const researchersById = useMemo(
+    () => new Map(researchers.map(researcher => [researcher.id, researcher])),
+    [researchers],
+  );
 
-  const visibleEdges = getVisibleEdges(mode, GRAPH_EDGES);
-  const highlightedNodes = getHighlightedNodes(mode);
+  const visibleEdges = getVisibleEdges(mode, edges, nodes);
+  const highlightedNodes = getHighlightedNodes(mode, nodes);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -123,8 +329,32 @@ export default function GraphVisualization() {
     setSelectedNode(prev => prev?.id === node.id ? null : node);
   }, []);
 
-  // Get the matching researcher data
-  const getResearcher = (nodeId: string) => MOCK_RESEARCHERS.find(r => r.id === nodeId);
+  const getResearcher = (nodeId: string) => researchersById.get(nodeId);
+
+  const getConnections = useCallback((node: GraphNode) => {
+    return nodes
+      .filter(otherNode => otherNode.id !== node.id && otherNode.role !== "mission")
+      .map(otherNode => {
+        const connectingEdges = visibleEdges.filter(edge =>
+          (edge.source === node.id && edge.target === otherNode.id)
+          || (edge.target === node.id && edge.source === otherNode.id)
+        );
+        return {
+          node: otherNode,
+          labels: connectingEdges.map(edge => edge.label).filter((label): label is string => Boolean(label)),
+          types: [...new Set(connectingEdges.map(edge => edge.type))],
+          isCrossDepartment: node.department !== otherNode.department,
+          isCrossFaculty: Boolean(node.faculty && otherNode.faculty && node.faculty !== otherNode.faculty),
+        };
+      })
+      .filter(connection => connection.types.length > 0)
+      .sort((a, b) => {
+        const aCoauthor = a.types.includes("coauthor") ? 1 : 0;
+        const bCoauthor = b.types.includes("coauthor") ? 1 : 0;
+        if (aCoauthor !== bCoauthor) return bCoauthor - aCoauthor;
+        return b.node.relevanceScore - a.node.relevanceScore;
+      });
+  }, [nodes, visibleEdges]);
 
   // Node opacity based on mode
   const getNodeOpacity = (node: GraphNode): number => {
@@ -201,7 +431,7 @@ export default function GraphVisualization() {
           ))}
 
           {/* Cluster hulls */}
-          {GRAPH_CLUSTERS.map(cluster => (
+          {clusters.map(cluster => (
             <g key={cluster.id}>
               <ellipse
                 cx={cluster.cx}
@@ -232,8 +462,8 @@ export default function GraphVisualization() {
 
           {/* Edges */}
           {visibleEdges.map((edge, i) => {
-            const src = GRAPH_NODES.find(n => n.id === edge.source);
-            const tgt = GRAPH_NODES.find(n => n.id === edge.target);
+            const src = nodes.find(n => n.id === edge.source);
+            const tgt = nodes.find(n => n.id === edge.target);
             if (!src || !tgt) return null;
             const color = EDGE_COLORS[edge.type] || "hsl(260, 15%, 80%)";
             const width = edge.type === "mission" ? 1 + edge.weight * 1.5 : 0.8 + edge.weight * 1;
@@ -254,11 +484,36 @@ export default function GraphVisualization() {
             );
           })}
 
+          {/* Co-authored paper labels */}
+          {mode === "coauthorship" && visibleEdges
+            .filter(edge => edge.type === "coauthor" && edge.label)
+            .slice(0, 16)
+            .map((edge, i) => {
+              const src = nodes.find(n => n.id === edge.source);
+              const tgt = nodes.find(n => n.id === edge.target);
+              if (!src || !tgt) return null;
+              const label = edge.label && edge.label.length > 58 ? `${edge.label.slice(0, 58)}...` : edge.label;
+              return (
+                <text
+                  key={`${edge.source}-${edge.target}-label-${i}`}
+                  x={(src.x + tgt.x) / 2}
+                  y={(src.y + tgt.y) / 2 - 4}
+                  textAnchor="middle"
+                  className="fill-muted-foreground"
+                  fontSize="4"
+                  fontFamily="Inter, sans-serif"
+                  opacity="0.72"
+                >
+                  {label}
+                </text>
+              );
+            })}
+
           {/* Mission glow circle */}
           <circle cx="0" cy="0" r="70" fill="url(#mission-glow)" className="animate-pulse-glow" />
 
           {/* Nodes */}
-          {GRAPH_NODES.map(node => {
+          {nodes.map(node => {
             const size = NODE_SIZES[node.role] || 12;
             const color = NODE_COLORS[node.role] || "hsl(260, 30%, 60%)";
             const isSelected = selectedNode?.id === node.id;
@@ -294,10 +549,10 @@ export default function GraphVisualization() {
                       MISSION
                     </text>
                     <text x={node.x} y={node.y + 2} textAnchor="middle" fill="white" fontSize="3.5" fontFamily="Inter, sans-serif" opacity={0.8}>
-                      Sustainable Textiles
+                      {node.label.slice(0, 24)}
                     </text>
                     <text x={node.x} y={node.y + 8} textAnchor="middle" fill="white" fontSize="3.5" fontFamily="Inter, sans-serif" opacity={0.8}>
-                      & Circular Materials
+                      {node.label.length > 24 ? node.label.slice(24, 48) : "Search Results"}
                     </text>
                   </>
                 ) : (
@@ -380,6 +635,10 @@ export default function GraphVisualization() {
             <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-dashed border-primary/50" />
             <span className="text-muted-foreground">Bridge researcher</span>
           </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-0.5 w-5 rounded bg-[hsl(160,45%,55%)]" />
+            <span className="text-muted-foreground">Relevant paper co-author</span>
+          </div>
         </div>
 
         {/* Info overlay */}
@@ -390,6 +649,10 @@ export default function GraphVisualization() {
           <p className="text-[11px] text-muted-foreground mt-0.5">
             {GRAPH_MODES.find(m => m.id === mode)?.description}
           </p>
+          <div className="mt-2 space-y-1 border-t border-border pt-2 text-[10px] leading-relaxed text-muted-foreground">
+            <p><span className="font-semibold text-foreground">Bridge Match</span>: connects the mission to people in other departments or faculties through relevant co-authored papers or shared themes.</p>
+            <p><span className="font-semibold text-foreground">Adjacent Match</span>: relevant to the mission, but with weaker direct evidence or fewer interdisciplinary links.</p>
+          </div>
         </div>
       </div>
 
@@ -399,12 +662,7 @@ export default function GraphVisualization() {
           <GraphSidePanel
             node={selectedNode}
             researcher={getResearcher(selectedNode.id)}
-            connectedNodes={GRAPH_NODES.filter(n =>
-              visibleEdges.some(e =>
-                (e.source === selectedNode.id && e.target === n.id) ||
-                (e.target === selectedNode.id && e.source === n.id)
-              ) && n.id !== selectedNode.id && n.role !== "mission"
-            )}
+            connections={getConnections(selectedNode)}
             onClose={() => setSelectedNode(null)}
           />
         )}

@@ -4,10 +4,14 @@ export interface Publication {
   year: number;
   citations: number;
   relevanceScore?: number;
+  openalexWorkId?: string;
 }
 
 export interface Researcher {
   id: string;
+  openalexId?: string;
+  profileUrl?: string;
+  email?: string;
   name: string;
   title: string;
   department: string;

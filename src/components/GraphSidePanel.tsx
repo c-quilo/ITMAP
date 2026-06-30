@@ -1,16 +1,22 @@
 import { motion } from "framer-motion";
-import { X, Sparkles, FileText, Users, MapPin } from "lucide-react";
+import { X, Sparkles, FileText, Users, MapPin, Network } from "lucide-react";
 import type { GraphNode } from "@/data/graphData";
 import type { Researcher } from "@/data/mockData";
 
 interface GraphSidePanelProps {
   node: GraphNode;
   researcher?: Researcher;
-  connectedNodes: GraphNode[];
+  connections: Array<{
+    node: GraphNode;
+    labels: string[];
+    types: string[];
+    isCrossDepartment: boolean;
+    isCrossFaculty: boolean;
+  }>;
   onClose: () => void;
 }
 
-export default function GraphSidePanel({ node, researcher, connectedNodes, onClose }: GraphSidePanelProps) {
+export default function GraphSidePanel({ node, researcher, connections, onClose }: GraphSidePanelProps) {
   return (
     <motion.div
       initial={{ x: 400, opacity: 0 }}
@@ -54,6 +60,31 @@ export default function GraphSidePanel({ node, researcher, connectedNodes, onClo
           )}
         </div>
 
+        {/* Interdisciplinarity */}
+        <div className="mb-4 rounded-lg border border-border bg-secondary/40 px-3 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5">
+              <Network className="h-3.5 w-3.5 text-primary" />
+              <p className="section-label">Interdisciplinarity</p>
+            </div>
+            <span className="font-brand text-sm font-semibold text-foreground">
+              {node.interdisciplinarityScore ?? 0}%
+            </span>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Based on relevant co-authored papers, with extra weight for links across departments and faculties.
+          </p>
+          {node.interdisciplinaryReasons && node.interdisciplinaryReasons.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {node.interdisciplinaryReasons.map(reason => (
+                <span key={reason} className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {reason}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Summary */}
         {researcher && (
           <div className="mb-4">
@@ -94,29 +125,54 @@ export default function GraphSidePanel({ node, researcher, connectedNodes, onClo
         )}
 
         {/* Connected Researchers */}
-        {connectedNodes.length > 0 && (
+        {connections.length > 0 && (
           <div className="mb-4">
             <div className="flex items-center gap-1.5 mb-2">
               <Users className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="section-label">Connected Researchers</p>
+              <p className="section-label">Connection Evidence</p>
             </div>
             <div className="space-y-2">
-              {connectedNodes.map(cn => (
-                <div key={cn.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
-                  <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                    <span className="text-[10px] font-semibold text-primary">
-                      {cn.label.split(" ").map(w => w[0]).filter(Boolean).slice(-2).join("")}
+              {connections.map(connection => (
+                <div key={connection.node.id} className="rounded-lg px-3 py-2 hover:bg-secondary transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                      <span className="text-[10px] font-semibold text-primary">
+                        {connection.node.label.split(" ").map(w => w[0]).filter(Boolean).slice(-2).join("")}
+                      </span>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-foreground truncate">{connection.node.label}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{connection.node.shortTitle}</p>
+                    </div>
+                    <span className={`ml-auto text-[10px] font-bold shrink-0 ${
+                      connection.node.relevanceScore >= 80 ? "text-relevance-high" : connection.node.relevanceScore >= 60 ? "text-relevance-medium" : "text-relevance-low"
+                    }`}>
+                      {connection.node.relevanceScore}%
                     </span>
                   </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-foreground truncate">{cn.label}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">{cn.shortTitle}</p>
+                  {connection.labels.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {connection.labels.slice(0, 2).map(label => (
+                        <p key={label} className="text-[10px] leading-snug text-muted-foreground">
+                          {connection.types.includes("coauthor") ? "Co-authored paper" : "Link"}: {label}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {connection.types.includes("coauthor") && (
+                      <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">co-authorship</span>
+                    )}
+                    {connection.types.includes("thematic") && (
+                      <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">shared theme</span>
+                    )}
+                    {connection.isCrossDepartment && (
+                      <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">cross-department</span>
+                    )}
+                    {connection.isCrossFaculty && (
+                      <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">cross-faculty</span>
+                    )}
                   </div>
-                  <span className={`ml-auto text-[10px] font-bold shrink-0 ${
-                    cn.relevanceScore >= 80 ? "text-relevance-high" : cn.relevanceScore >= 60 ? "text-relevance-medium" : "text-relevance-low"
-                  }`}>
-                    {cn.relevanceScore}%
-                  </span>
                 </div>
               ))}
             </div>

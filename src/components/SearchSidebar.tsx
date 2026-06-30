@@ -1,20 +1,31 @@
 import { useState } from "react";
-import { Search, SlidersHorizontal, Sparkles, Type, List, ChevronDown, ChevronUp, X } from "lucide-react";
-import { GRADES, FACULTIES, DEPARTMENTS, KEYWORD_OPTIONS } from "@/data/mockData";
+import { Search, SlidersHorizontal, Sparkles, Type, List, ChevronDown, ChevronUp, X, Upload, Loader2 } from "lucide-react";
+import { GRADES, FACULTIES, KEYWORD_OPTIONS } from "@/data/mockData";
 
 type SearchMode = "semantic" | "keyword" | "browse";
 
 interface SearchSidebarProps {
-  onSearch?: () => void;
+  onSearch?: (query: string, mode: SearchMode) => void;
+  isSearching?: boolean;
   activeFilters: string[];
   onToggleFilter: (filter: string) => void;
   onClearFilters: () => void;
+  departmentOptions: string[];
 }
 
 const SEMANTIC_PLACEHOLDER = `I need to find experts at Imperial College London working on sustainable textiles, circular materials, low-impact manufacturing, and supply-chain innovation for environmentally responsible fashion and related industrial applications.`;
 
-export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFilters }: SearchSidebarProps) {
+export default function SearchSidebar({
+  activeFilters,
+  onToggleFilter,
+  onClearFilters,
+  onSearch,
+  isSearching = false,
+  departmentOptions,
+}: SearchSidebarProps) {
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
+  const [semanticQuery, setSemanticQuery] = useState(SEMANTIC_PLACEHOLDER);
+  const [keywordQuery, setKeywordQuery] = useState("sustainable textiles, circular materials");
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     grade: true,
     keywords: true,
@@ -31,6 +42,18 @@ export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFi
   const filteredKeywords = KEYWORD_OPTIONS.filter(k =>
     k.toLowerCase().includes(keywordSearch.toLowerCase())
   );
+
+  const runSearch = () => {
+    const query = searchMode === "keyword" ? keywordQuery : semanticQuery;
+    onSearch?.(query, searchMode);
+  };
+
+  const handleDocumentUpload = async (file?: File) => {
+    if (!file) return;
+    const text = await file.text();
+    setSemanticQuery(text.slice(0, 12000));
+    setSearchMode("semantic");
+  };
 
   return (
     <aside className="w-full h-full overflow-y-auto border-r border-border bg-card">
@@ -66,12 +89,23 @@ export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFi
             <p className="section-label mb-2">Natural Language Query</p>
             <textarea
               className="search-box-semantic"
-              defaultValue={SEMANTIC_PLACEHOLDER}
+              value={semanticQuery}
+              onChange={event => setSemanticQuery(event.target.value)}
               placeholder="Describe the expertise you're looking for..."
             />
-            <p className="text-[11px] text-muted-foreground mt-1.5">
-              AI-powered search finds researchers by meaning, not just keywords
-            </p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <label className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary cursor-pointer transition-colors">
+                <Upload className="h-3.5 w-3.5" />
+                Attach text
+                <input
+                  type="file"
+                  accept=".txt,.md,.csv"
+                  className="hidden"
+                  onChange={event => handleDocumentUpload(event.target.files?.[0])}
+                />
+              </label>
+              <span className="text-[11px] text-muted-foreground">{semanticQuery.length.toLocaleString()} chars</span>
+            </div>
           </div>
         )}
 
@@ -85,7 +119,8 @@ export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFi
                 type="text"
                 className="w-full rounded-lg border border-border bg-card pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
                 placeholder="Search by keyword..."
-                defaultValue="sustainable textiles, circular materials"
+                value={keywordQuery}
+                onChange={event => setKeywordQuery(event.target.value)}
               />
             </div>
           </div>
@@ -93,9 +128,17 @@ export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFi
 
         {/* Search Button */}
         {(searchMode === "semantic" || searchMode === "keyword") && (
-          <button className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors">
-            <Search className="h-4 w-4" />
-            Search Researchers
+          <button
+            onClick={runSearch}
+            disabled={isSearching}
+            className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isSearching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Search className="h-4 w-4" />
+            )}
+            {isSearching ? "Searching..." : "Search Researchers"}
           </button>
         )}
 
@@ -226,19 +269,23 @@ export default function SearchSidebar({ activeFilters, onToggleFilter, onClearFi
           onToggle={() => toggleSection("department")}
         >
           <div className="space-y-1">
-            {DEPARTMENTS.map(d => (
-              <button
-                key={d}
-                className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors ${
-                  activeFilters.includes(d)
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-secondary text-foreground"
-                }`}
-                onClick={() => onToggleFilter(d)}
-              >
-                {d}
-              </button>
-            ))}
+            {departmentOptions.length > 0 ? (
+              departmentOptions.map(d => (
+                <button
+                  key={d}
+                  className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors ${
+                    activeFilters.includes(d)
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-secondary text-foreground"
+                  }`}
+                  onClick={() => onToggleFilter(d)}
+                >
+                  {d}
+                </button>
+              ))
+            ) : (
+              <p className="px-3 py-2 text-xs text-muted-foreground">Run a search to see departments</p>
+            )}
           </div>
         </FilterSection>
       </div>

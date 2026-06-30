@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+.DS_Store
+**/.DS_Store
+node_modules/
+dist/
+supabase/.temp/
+
+# Generated OpenAlex / matching artifacts
+imperial_authors_count.csv
+imperial_authors_export.csv
+imperial_profiles_match_input.csv
+imperial_profiles_openalex_all_matches.csv
+imperial_profiles_openalex_athena_input.csv
+imperial_profiles_openalex_sample20.csv
+imperial_profiles_openalex_sample20_matches.csv
+researcher_papers.csv
+researcher_search_documents.csv
+researcher_search_documents.jsonl
+researcher_paper_search_documents.jsonl
