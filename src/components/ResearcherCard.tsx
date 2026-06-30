@@ -38,6 +38,58 @@ function PublicationItem({ pub }: { pub: Publication }) {
   );
 }
 
+function ScoreBar({ label, value }: { label: string; value?: number }) {
+  if (typeof value !== "number") return null;
+  const bounded = Math.max(0, Math.min(100, value));
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium text-muted-foreground">{label}</span>
+        <span className="text-[10px] font-semibold text-foreground">{bounded}%</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
+        <div className="h-full rounded-full bg-primary/70" style={{ width: `${bounded}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ScoreExplanation({ researcher }: { researcher: Researcher }) {
+  const score = researcher.scoreExplanation || {
+    finalScore: researcher.relevanceScore,
+    llmRerank: researcher.relevanceScore,
+    profileAuthority: Math.min(100, researcher.relevanceScore),
+    paperEvidence: researcher.publications.length > 0 ? Math.min(100, 55 + researcher.publications.length * 5) : 0,
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Score breakdown</span>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            Final score is ITMAP's rerank of profile fit, publication evidence, and mission coverage.
+          </p>
+        </div>
+        {score.matchType && (
+          <span className="shrink-0 rounded-full bg-card px-2 py-1 text-[10px] font-semibold capitalize text-primary">
+            {score.matchType}
+          </span>
+        )}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <ScoreBar label="ITMAP rerank" value={score.llmRerank ?? score.finalScore} />
+        <ScoreBar label="Profile authority" value={score.profileAuthority} />
+        <ScoreBar label="Profile coverage" value={score.profileConcept} />
+        <ScoreBar label="Profile semantic fit" value={score.profileSemantic} />
+        <ScoreBar label="Paper evidence" value={score.paperEvidence} />
+        <ScoreBar label="Paper depth" value={score.paperDepth} />
+      </div>
+    </div>
+  );
+}
+
 export default function ResearcherCard({ researcher, showSemanticExplanation = true }: ResearcherCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [profileExpanded, setProfileExpanded] = useState(false);
@@ -122,6 +174,8 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
           </div>
         </div>
       )}
+
+      <ScoreExplanation researcher={researcher} />
 
       {/* Expand Publications */}
       <button

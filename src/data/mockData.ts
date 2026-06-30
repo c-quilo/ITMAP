@@ -20,6 +20,16 @@ export interface Researcher {
   keywords: string[];
   matchedKeywords: string[];
   relevanceScore: number;
+  scoreExplanation?: {
+    finalScore: number;
+    matchType?: string;
+    profileAuthority?: number;
+    profileConcept?: number;
+    profileSemantic?: number;
+    paperEvidence?: number;
+    paperDepth?: number;
+    llmRerank?: number;
+  };
   semanticExplanation?: string;
   publications: Publication[];
   imageInitials: string;

@@ -30,6 +30,13 @@ interface SupabaseResearcher {
   profile_url?: string | null;
   email?: string | null;
   similarity?: number | null;
+  llm_rerank_score?: number | null;
+  llm_match_type?: string | null;
+  profile_authority_score?: number | null;
+  profile_concept_score?: number | null;
+  profile_similarity?: number | null;
+  paper_similarity?: number | null;
+  paper_depth_score?: number | null;
   match_reason?: string | null;
   papers?: SupabasePublication[] | null;
 }
@@ -80,6 +87,16 @@ function toResearcher(row: SupabaseResearcher): Researcher {
     keywords,
     matchedKeywords: keywords.slice(0, 4),
     relevanceScore: Math.max(1, Math.min(100, Math.round(similarity * 100))),
+    scoreExplanation: {
+      finalScore: Math.max(1, Math.min(100, Math.round(similarity * 100))),
+      matchType: row.llm_match_type || undefined,
+      profileAuthority: typeof row.profile_authority_score === "number" ? Math.round(row.profile_authority_score * 100) : undefined,
+      profileConcept: typeof row.profile_concept_score === "number" ? Math.round(row.profile_concept_score * 100) : undefined,
+      profileSemantic: typeof row.profile_similarity === "number" ? Math.round(row.profile_similarity * 100) : undefined,
+      paperEvidence: typeof row.paper_similarity === "number" ? Math.round(row.paper_similarity * 100) : undefined,
+      paperDepth: typeof row.paper_depth_score === "number" ? Math.round(row.paper_depth_score * 100) : undefined,
+      llmRerank: typeof row.llm_rerank_score === "number" ? Math.round(row.llm_rerank_score) : undefined,
+    },
     semanticExplanation: row.match_reason || "Matched from the researcher profile, paper titles, abstracts, and OpenAlex metadata.",
     publications: (row.papers || []).map(toPublication),
     imageInitials: initials(row.full_name),
