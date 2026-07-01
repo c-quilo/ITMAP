@@ -9,6 +9,14 @@ export interface Publication {
   doiUrl?: string;
 }
 
+export interface ExternalEvidence {
+  source: "openai_web" | "ukri" | string;
+  evidenceType: "media" | "startup" | "grant" | "video" | "general" | string;
+  title: string;
+  snippet?: string;
+  url?: string;
+}
+
 export interface Researcher {
   id: string;
   openalexId?: string;
@@ -33,9 +41,18 @@ export interface Researcher {
     llmRerank?: number;
   };
   semanticExplanation?: string;
+  externalEvidence?: ExternalEvidence[];
+  schoolMissionMatch?: {
+    school: string;
+    mission: string;
+    confidence: number;
+    reason: string;
+  };
   publications: Publication[];
   imageInitials: string;
   bookmarked?: boolean;
+  savedFromMission?: string;
+  savedAt?: string;
   role: "pi" | "lecturer" | "postdoc" | "phd";
   cluster?: string;
   isBridge?: boolean;

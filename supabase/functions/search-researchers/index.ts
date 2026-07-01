@@ -6,10 +6,14 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
+  action?: "search" | "match_school_missions" | "summarize_pool";
   query?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
+  enable_rerank?: boolean;
+  include_external_evidence?: boolean;
+  researchers?: SchoolMissionResearcher[];
 };
 
 type MissionExpansion = {
@@ -27,6 +31,113 @@ type RerankedCandidate = {
   match_type?: "strong" | "adjacent" | "weak";
   best_paper_titles?: string[];
 };
+
+type ExternalEvidence = {
+  source: "openai_web" | "ukri";
+  evidence_type: "media" | "startup" | "grant" | "video" | "general";
+  title: string;
+  snippet?: string;
+  url?: string;
+};
+
+type SchoolMissionResearcher = {
+  id?: string;
+  name?: string;
+  title?: string;
+  department?: string;
+  faculty?: string;
+  summary?: string;
+  keywords?: string[];
+  match_reason?: string;
+  publications?: string[];
+  external_evidence?: Array<Record<string, unknown>>;
+};
+
+type SchoolMissionMatch = {
+  researcher_id: string;
+  school: string;
+  mission: string;
+  confidence: number;
+  reason: string;
+};
+
+type ResearchPoolSummary = {
+  headline: string;
+  summary: string;
+  themes: string[];
+  notable_researchers: Array<{
+    name: string;
+    reason: string;
+  }>;
+  gaps: string[];
+};
+
+const SCHOOL_MISSIONS = [
+  {
+    school: "Health and Technology",
+    missions: [
+      {
+        name: "AITHER",
+        description: "Diagnostics in real-world settings, sensing, interpreting and shaping health outside conventional clinical boundaries, programmable health, continuous adaptive health systems, disadvantaged populations and global health equity.",
+      },
+      {
+        name: "UBUNTU",
+        description: "Affordable programmable health architectures, context-appropriate health innovation, operational resilience, maintenance, adaptation, governance and implementation across diverse health systems.",
+      },
+    ],
+  },
+  {
+    school: "Human and Artificial Intelligence",
+    missions: [
+      {
+        name: "SYMBIOSIS",
+        description: "Human-centred AI at scale, human behaviour, workflows, social settings, co-adaptive humans and AI, learning, decision-making, collaboration, augmentation rather than displacement.",
+      },
+      {
+        name: "EMPOWER",
+        description: "Safe scaling and responsible deployment of advanced AI architectures, human empowerment, societal benefit, governance, accountability, trust and stewardship of powerful intelligence systems.",
+      },
+    ],
+  },
+  {
+    school: "Space, Security and Telecoms",
+    missions: [
+      {
+        name: "LACE",
+        description: "Low-Altitude Advanced Communications and Earth Observation, resilient sovereign communications, real-time monitoring, next-generation satellites, AI, materials, cybersecurity, environmental monitoring, VLEO and recoverable satellite systems.",
+      },
+      {
+        name: "Space 2099",
+        description: "Earth-based space-analogue living lab for future space colonisation technologies, security of humankind, systems design, space habitation, exploration and 2030 demonstrators.",
+      },
+      {
+        name: "Thunderbird",
+        description: "Autonomous disaster response, ultra-fast self-deploying infrastructure and relief, communications, logistics, deployable infrastructure, humanitarian impact and hard-to-reach communities.",
+      },
+    ],
+  },
+  {
+    school: "Sustainability",
+    missions: [
+      {
+        name: "Nurturing",
+        description: "Optimising production of energy, food, materials and vital services for and from nature, ecological health, biology, engineering, land use, supply chains, policy and nature as infrastructure.",
+      },
+      {
+        name: "Powering",
+        description: "Equitable access to clean healthy energy for 10 billion people by 2050, energy transition, generation, storage, grids, markets, behaviour, public health, fairness and policy.",
+      },
+      {
+        name: "Re-Engineering",
+        description: "Systems that share stewardship of critical resources and deliver utility without pollution, circularity, resource stewardship, pollution reduction, industrial systems, materials, infrastructure and governance.",
+      },
+      {
+        name: "Thriving",
+        description: "Resilient global societies under frequent large-scale environmental shocks, adaptation, preparedness, social resilience, communities, cities, industries, states, prosperity and wellbeing under environmental stress.",
+      },
+    ],
+  },
+];
 
 const GRADE_FILTERS = new Set([
   "Professor",
@@ -627,6 +738,24 @@ function parseJsonObject(text: string) {
   }
 }
 
+async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 3500) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error("External evidence fetch failed", error);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function openAiJson(
   openAiKey: string,
   model: string,
@@ -656,6 +785,41 @@ async function openAiJson(
   const content = json.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenAI JSON response was empty");
   return parseJsonObject(content);
+}
+
+async function openAiWebSearchJson(
+  openAiKey: string,
+  model: string,
+  input: string,
+  maxOutputTokens = 900,
+) {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openAiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input,
+      tools: [{ type: "web_search_preview" }],
+      max_output_tokens: maxOutputTokens,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`OpenAI web search request failed: ${detail}`);
+  }
+
+  const json = await response.json();
+  const outputText = json.output_text
+    || (json.output || [])
+      .flatMap((item: Record<string, unknown>) => item.content || [])
+      .map((content: Record<string, unknown>) => content.text || "")
+      .join("\n");
+  if (!outputText) throw new Error("OpenAI web search response was empty");
+  return parseJsonObject(outputText);
 }
 
 async function expandMission(openAiKey: string, model: string, query: string): Promise<MissionExpansion> {
@@ -696,6 +860,202 @@ async function expandMission(openAiKey: string, model: string, query: string): P
   }
 }
 
+function classifyExternalEvidence(text: string): ExternalEvidence["evidence_type"] {
+  const normalized = text.toLowerCase();
+  if (/\b(ukri|grant|funded|funding|award|project)\b/.test(normalized)) return "grant";
+  if (/\b(video|webinar|youtube|vimeo|talk|lecture|recording|seminar)\b/.test(normalized)) return "video";
+  if (/\b(startup|start-up|spinout|spin-out|company|venture|founder|co-founder|commerciali[sz]ation)\b/.test(normalized)) return "startup";
+  if (/\b(media|news|interview|podcast|bbc|guardian|times|conversation|press|feature)\b/.test(normalized)) return "media";
+  return "general";
+}
+
+async function fetchOpenAiWebEvidence(
+  openAiKey: string,
+  model: string,
+  row: Record<string, unknown>,
+  query: string,
+): Promise<ExternalEvidence[]> {
+  const name = String(row.full_name || "").trim();
+  if (!name) return [];
+
+  try {
+    const result = await openAiWebSearchJson(
+      openAiKey,
+      Deno.env.get("OPENAI_WEB_SEARCH_MODEL") || model,
+      [
+        "Search the public web for concise external evidence about this Imperial College London researcher.",
+        "Focus on mission-relevant media appearances, interviews, news coverage, videos, recorded talks, webinars, startups, spinouts, companies, founder roles, patents, policy or public-impact activity.",
+        "Do not include ordinary academic profile pages unless they mention translational/public impact.",
+        "Return JSON only with shape: {\"evidence\":[{\"title\":\"...\",\"snippet\":\"...\",\"url\":\"...\",\"evidence_type\":\"media|startup|grant|video|general\"}]}",
+        "Use evidence_type video for YouTube, Vimeo, webinars, recorded seminars, conference talks, or public lecture recordings.",
+        "Keep at most 4 evidence items. Use only evidence you can find in public web results.",
+        `Researcher: ${name}`,
+        `Imperial role: ${row.position_name || row.position || ""}`,
+        `Department: ${row.affiliation || row.research || ""}`,
+        `Mission: ${query}`,
+      ].join("\n"),
+      900,
+    ) as { evidence?: Array<Record<string, unknown>> };
+
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    return evidence
+      .map(item => {
+        const title = truncateText(item.title, 160);
+        const snippet = truncateText(item.snippet, 260);
+        const url = String(item.url || "");
+        const requestedType = String(item.evidence_type || "") as ExternalEvidence["evidence_type"];
+        const evidenceText = `${title} ${snippet} ${url}`;
+        const evidenceType = ["media", "startup", "grant", "video", "general"].includes(requestedType)
+          ? requestedType
+          : classifyExternalEvidence(evidenceText);
+        return {
+          source: "openai_web" as const,
+          evidence_type: evidenceType,
+          title,
+          snippet,
+          url,
+        };
+      })
+      .filter(item => item.title)
+      .slice(0, 4);
+  } catch (error) {
+    console.error("OpenAI web evidence failed", error);
+    return [];
+  }
+}
+
+function ukriLinks(value: unknown): Record<string, unknown>[] {
+  const linkValue = (value as Record<string, unknown> | undefined)?.link;
+  if (Array.isArray(linkValue)) return linkValue as Record<string, unknown>[];
+  return linkValue ? [linkValue as Record<string, unknown>] : [];
+}
+
+function normalisePersonName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ukriPersonMatches(person: Record<string, unknown>, fullName: string) {
+  const expected = normalisePersonName(fullName);
+  const candidate = normalisePersonName([
+    person.firstName,
+    person.otherNames,
+    person.surname,
+  ].filter(Boolean).join(" "));
+
+  if (!expected || !candidate) return false;
+  if (candidate === expected) return true;
+
+  const expectedParts = expected.split(/\s+/).filter(Boolean);
+  const candidateParts = candidate.split(/\s+/).filter(Boolean);
+  const expectedFirst = expectedParts[0];
+  const expectedLast = expectedParts[expectedParts.length - 1];
+  const candidateFirst = candidateParts[0];
+  const candidateLast = candidateParts[candidateParts.length - 1];
+
+  return Boolean(expectedFirst && expectedLast && expectedFirst === candidateFirst && expectedLast === candidateLast);
+}
+
+function missionEvidenceMatches(text: string, query: string, terms: string[]) {
+  const groups = conceptGroups(query, terms);
+  return conceptCoverage(
+    query,
+    terms,
+    { title: text, abstract: text, source_display_name: "" },
+    groups,
+  ) >= 1;
+}
+
+async function fetchUkriEvidence(row: Record<string, unknown>, query: string): Promise<ExternalEvidence[]> {
+  const name = String(row.full_name || "").trim();
+  if (!name) return [];
+
+  const personUrl = new URL("https://gtr.ukri.org/gtr/api/persons");
+  personUrl.searchParams.set("q", name);
+  personUrl.searchParams.set("fetchSize", "10");
+
+  const personJson = await fetchJsonWithTimeout(
+    personUrl.toString(),
+    { headers: { Accept: "application/json" } },
+    4500,
+  ) as Record<string, unknown> | null;
+
+  const personValue = personJson?.person;
+  const people = Array.isArray(personValue)
+    ? personValue
+    : personValue
+      ? [personValue]
+      : [];
+  const matchedPerson = (people as Record<string, unknown>[]).find(person => ukriPersonMatches(person, name));
+  if (!matchedPerson) return [];
+
+  const projectLinks = ukriLinks(matchedPerson.links)
+    .filter(link => ["PI_PER", "COI_PER", "PM_PER"].includes(String(link.rel || "")))
+    .map(link => String(link.href || "").replace(/^http:\/\//, "https://"))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (projectLinks.length === 0) return [];
+
+  const terms = queryTerms(query);
+  const projects = await Promise.all(projectLinks.map(link =>
+    fetchJsonWithTimeout(link, { headers: { Accept: "application/json" } }, 4500) as Promise<Record<string, unknown> | null>
+  ));
+
+  return projects
+    .filter((project): project is Record<string, unknown> => Boolean(project))
+    .map(project => {
+      const title = truncateText(project.title || project.projectTitle || project.name, 170);
+      const id = String(project.id || project.href || "").replace(/^https?:\/\/gtr\.ukri\.org\/gtr\/api\/projects\//, "");
+      const snippet = truncateText(
+        project.abstractText || project.techAbstractText || project.potentialImpact || project.abstract || project.description,
+        260,
+      );
+      const url = id.startsWith("http")
+        ? id
+        : id
+          ? `https://gtr.ukri.org/projects?ref=${encodeURIComponent(id)}`
+          : undefined;
+      return {
+        source: "ukri" as const,
+        evidence_type: "grant" as const,
+        title,
+        snippet,
+        url,
+      };
+    })
+    .filter(item => item.title)
+    .filter(item => missionEvidenceMatches(`${item.title} ${item.snippet || ""}`, query, terms))
+    .slice(0, 5);
+}
+
+async function addExternalEvidenceToCandidates(
+  openAiKey: string,
+  model: string,
+  candidates: Record<string, unknown>[],
+  query: string,
+) {
+  const concurrency = 4;
+  let index = 0;
+
+  async function worker() {
+    while (index < candidates.length) {
+      const candidate = candidates[index++];
+      const [webEvidence, ukriEvidence] = await Promise.all([
+        fetchOpenAiWebEvidence(openAiKey, model, candidate, query),
+        fetchUkriEvidence(candidate, query),
+      ]);
+      candidate.external_evidence = [...webEvidence, ...ukriEvidence].slice(0, 8);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
+}
+
 function candidateEvidence(row: Record<string, unknown>) {
   const papers = ((row.papers as Record<string, unknown>[]) || []).slice(0, 8).map(paper => ({
     title: truncateText(paper.title, 220),
@@ -704,7 +1064,7 @@ function candidateEvidence(row: Record<string, unknown>) {
   }));
   const allPaperTitles = ((row.all_paper_titles as string[]) || [])
     .map(title => truncateText(title, 180))
-    .slice(0, 600);
+    .slice(0, 250);
 
   return {
     researcher_id: row.researcher_id,
@@ -722,6 +1082,144 @@ function candidateEvidence(row: Record<string, unknown>) {
     papers,
     all_paper_titles: allPaperTitles,
     all_paper_title_count: allPaperTitles.length,
+    external_evidence: ((row.external_evidence as ExternalEvidence[]) || []).slice(0, 4).map(item => ({
+      source: item.source,
+      evidence_type: item.evidence_type,
+      title: truncateText(item.title, 180),
+      snippet: truncateText(item.snippet, 240),
+      url: item.url,
+    })),
+  };
+}
+
+function schoolMissionEvidence(researcher: SchoolMissionResearcher) {
+  return {
+    researcher_id: String(researcher.id || researcher.name || ""),
+    name: truncateText(researcher.name, 120),
+    title: truncateText(researcher.title, 160),
+    department: truncateText(researcher.department, 160),
+    faculty: truncateText(researcher.faculty, 160),
+    profile: truncateText(researcher.summary, 1200),
+    keywords: Array.isArray(researcher.keywords) ? researcher.keywords.slice(0, 12).map(String) : [],
+    match_reason: truncateText(researcher.match_reason, 650),
+    paper_titles: Array.isArray(researcher.publications)
+      ? researcher.publications.map(title => truncateText(title, 180)).slice(0, 20)
+      : [],
+    external_evidence: Array.isArray(researcher.external_evidence)
+      ? researcher.external_evidence.slice(0, 5).map(item => ({
+        evidence_type: item.evidence_type,
+        title: truncateText(item.title, 160),
+        snippet: truncateText(item.snippet, 220),
+      }))
+      : [],
+  };
+}
+
+async function matchSchoolMissionsWithLlm(
+  openAiKey: string,
+  model: string,
+  query: string,
+  researchers: SchoolMissionResearcher[],
+) {
+  if (researchers.length === 0) return [] as SchoolMissionMatch[];
+
+  const result = await openAiJson(
+    openAiKey,
+    model,
+    [
+      {
+        role: "system",
+        content: [
+          "You match Imperial College London researchers to the School of Convergence Science missions.",
+          "Use only the supplied researcher evidence and the supplied mission brief.",
+          "Assign a mission only when the profile, role, keywords, paper titles or evidence make a plausible connection.",
+          "Prefer the single strongest mission. If none are plausible, omit that researcher.",
+          "Return JSON only: {\"mission_matches\":[{\"researcher_id\":\"...\",\"school\":\"...\",\"mission\":\"...\",\"confidence\":0-100,\"reason\":\"...\"}]}",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          user_search: query,
+          school_missions: SCHOOL_MISSIONS,
+          researchers: researchers.slice(0, 20).map(schoolMissionEvidence),
+        }),
+      },
+    ],
+    5000,
+  ) as { mission_matches?: SchoolMissionMatch[] };
+
+  const allowed = new Set(SCHOOL_MISSIONS.flatMap(school =>
+    school.missions.map(mission => `${school.school}|||${mission.name}`)
+  ));
+
+  return (Array.isArray(result.mission_matches) ? result.mission_matches : [])
+    .map(item => ({
+      researcher_id: String(item.researcher_id || ""),
+      school: truncateText(item.school, 90),
+      mission: truncateText(item.mission, 90),
+      confidence: Math.max(0, Math.min(100, Number(item.confidence || 0))),
+      reason: truncateText(item.reason, 500),
+    }))
+    .filter(item => item.researcher_id && allowed.has(`${item.school}|||${item.mission}`))
+    .slice(0, researchers.length);
+}
+
+async function summarizePoolWithLlm(
+  openAiKey: string,
+  model: string,
+  query: string,
+  researchers: SchoolMissionResearcher[],
+) {
+  if (researchers.length === 0) {
+    return {
+      headline: "No researchers to summarise",
+      summary: "",
+      themes: [],
+      notable_researchers: [],
+      gaps: [],
+    } as ResearchPoolSummary;
+  }
+
+  const result = await openAiJson(
+    openAiKey,
+    model,
+    [
+      {
+        role: "system",
+        content: [
+          "You summarise the pool of relevant Imperial College London researchers returned by an expert-finding search.",
+          "Use only the supplied researcher evidence. Do not invent publications, grants, affiliations, or capabilities.",
+          "Explain the main expertise patterns in the pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
+          "Keep it concise and useful for a user deciding who to contact.",
+          "Return JSON only: {\"headline\":\"...\",\"summary\":\"...\",\"themes\":[\"...\"],\"notable_researchers\":[{\"name\":\"...\",\"reason\":\"...\"}],\"gaps\":[\"...\"]}",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          user_search: query,
+          researchers: researchers.slice(0, 20).map(schoolMissionEvidence),
+        }),
+      },
+    ],
+    4500,
+  ) as ResearchPoolSummary;
+
+  return {
+    headline: truncateText(result.headline || "What ITMAP found", 140),
+    summary: truncateText(result.summary || "", 900),
+    themes: Array.isArray(result.themes) ? result.themes.map(item => truncateText(item, 120)).filter(Boolean).slice(0, 6) : [],
+    notable_researchers: Array.isArray(result.notable_researchers)
+      ? result.notable_researchers
+        .map(item => ({
+          name: truncateText(item.name, 120),
+          reason: truncateText(item.reason, 240),
+        }))
+        .filter(item => item.name && item.reason)
+        .slice(0, 6)
+      : [],
+    gaps: Array.isArray(result.gaps) ? result.gaps.map(item => truncateText(item, 160)).filter(Boolean).slice(0, 4) : [],
   };
 }
 
@@ -745,6 +1243,9 @@ async function rerankCandidatesWithLlm(
             "You are reranking Imperial College London researchers for a mission.",
             "Use only the supplied position, profile, fields, shortlisted papers, and full list of paper titles. Do not invent papers, affiliations, or expertise.",
             "The all_paper_titles field is broader evidence than the shortlisted papers and should be used to detect whether the person has a substantial publication pattern relevant to the mission.",
+            "External evidence may include media appearances, startup/spinout signals, company activity, and UKRI grant/project records. Treat it as a small supporting signal only.",
+            "Only give a small boost for external evidence when it is clearly relevant to the mission or shows translational impact. Do not let generic publicity override weak research/profile evidence.",
+            "UKRI grants and mission-relevant startups/spinouts are stronger external signals than generic media mentions.",
             "Reward candidates who satisfy all central mission requirements, especially method+domain combinations such as AI applied to weather.",
             "Demote adjacent candidates who match only the domain or only the method.",
             "You must return one ranked item for every supplied candidate. If evidence is weak, give a low score and match_type weak.",
@@ -951,11 +1452,6 @@ Deno.serve(async req => {
     const query = (body.query || "").trim();
     const limit = Math.max(1, Math.min(body.limit || 30, 50));
 
-    if (!query) {
-      return Response.json({ results: [] }, { headers: corsHeaders });
-    }
-
-    const mode = body.mode || "semantic";
     const openAiKey = Deno.env.get("OPENAI_API_KEY");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -966,6 +1462,26 @@ Deno.serve(async req => {
     if (!openAiKey || !supabaseUrl || !serviceRoleKey) {
       throw new Error("Missing OPENAI_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_ROLE_KEY");
     }
+
+    if (body.action === "match_school_missions") {
+      const researchers = Array.isArray(body.researchers) ? body.researchers : [];
+      const missionMatches = await matchSchoolMissionsWithLlm(openAiKey, rankingModel, query, researchers);
+      return Response.json({ mission_matches: missionMatches }, { headers: corsHeaders });
+    }
+
+    if (body.action === "summarize_pool") {
+      const researchers = Array.isArray(body.researchers) ? body.researchers : [];
+      const summary = await summarizePoolWithLlm(openAiKey, rankingModel, query, researchers);
+      return Response.json({ summary }, { headers: corsHeaders });
+    }
+
+    if (!query) {
+      return Response.json({ results: [] }, { headers: corsHeaders });
+    }
+
+    const mode = body.mode || "semantic";
+    const enableRerank = body.enable_rerank !== false;
+    const includeExternalEvidence = body.include_external_evidence !== false;
 
     const rawKeywordTerms = queryTerms(query);
     const mission = mode === "keyword"
@@ -1262,25 +1778,37 @@ Deno.serve(async req => {
     const llmPoolIds = llmPool
       .map(row => String(row.researcher_id || ""))
       .filter(Boolean);
-    const allPapersByResearcher = await fetchAllPapersForResearchers(supabase, llmPoolIds);
-    for (const row of llmPool) {
-      const allPapers = allPapersByResearcher.get(String(row.researcher_id || "")) || [];
-      row.all_paper_records = allPapers;
-      row.all_paper_titles = allPapers.map(paper => {
-        const title = String(paper.title || "").replace(/\s+/g, " ").trim();
-        return paper.publication_year ? `${title} (${paper.publication_year})` : title;
-      });
+    if (enableRerank) {
+      const allPapersByResearcher = await fetchAllPapersForResearchers(supabase, llmPoolIds);
+      for (const row of llmPool) {
+        const allPapers = allPapersByResearcher.get(String(row.researcher_id || "")) || [];
+        row.all_paper_records = allPapers;
+        row.all_paper_titles = allPapers.map(paper => {
+          const title = String(paper.title || "").replace(/\s+/g, " ").trim();
+          return paper.publication_year ? `${title} (${paper.publication_year})` : title;
+        });
+      }
     }
-    const llmReranks = await rerankCandidatesWithLlm(openAiKey, rankingModel, query, mission, llmPool);
-    const rankedCandidates = llmReranks.size > 0
+    const externalEvidencePool = llmPool.slice(0, Math.min(10, llmPool.length));
+    if (includeExternalEvidence) {
+      await addExternalEvidenceToCandidates(openAiKey, rankingModel, externalEvidencePool, query);
+    }
+    const llmReranks = enableRerank
+      ? await rerankCandidatesWithLlm(openAiKey, rankingModel, query, mission, llmPool)
+      : new Map<string, RerankedCandidate>();
+    const rankedCandidates = enableRerank && llmReranks.size > 0
       ? llmPool
         .map((row, index) => {
           const rerank = llmReranks.get(String(row.researcher_id || ""));
           if (!rerank) {
+            const evidenceScore = normalise(Number(row.combined_similarity || 0), minCombinedScore, maxCombinedScore, 0.38, 0.56);
+            const rankPenalty = Math.min(0.08, Math.log2(index + 1) * 0.012);
+            const externalBoost = Math.min(0.025, (((row.external_evidence as ExternalEvidence[]) || []).length) * 0.005);
+            const fallbackScore = Math.round(Math.max(0.35, Math.min(0.52, evidenceScore - rankPenalty + externalBoost)) * 100);
             return {
               ...row,
-              llm_rerank_score: Math.min(45, Number(row.combined_similarity || 0) * 100),
-              llm_match_type: "unreviewed",
+              llm_rerank_score: fallbackScore,
+              llm_match_type: "evidence",
               llm_rank_index: index + 1000,
             };
           }
@@ -1307,7 +1835,7 @@ Deno.serve(async req => {
 
     const results = rankedCandidates
       .map((row, index) => {
-        if (llmReranks.size > 0) {
+        if (enableRerank && llmReranks.size > 0) {
           return {
             ...row,
             similarity: Math.max(0.01, Math.min(0.99, Number(row.llm_rerank_score || 0) / 100)),

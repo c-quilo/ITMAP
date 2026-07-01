@@ -1,10 +1,31 @@
-import { MOCK_RESEARCHERS, type Publication, type Researcher } from "@/data/mockData";
+import { MOCK_RESEARCHERS, type ExternalEvidence, type Publication, type Researcher } from "@/data/mockData";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 
 export interface SearchPayload {
   query: string;
   mode: "semantic" | "keyword";
   filters: string[];
+  enableRerank?: boolean;
+  includeExternalEvidence?: boolean;
+}
+
+export interface SchoolMissionMatch {
+  researcherId: string;
+  school: string;
+  mission: string;
+  confidence: number;
+  reason: string;
+}
+
+export interface ResearchPoolSummary {
+  headline: string;
+  summary: string;
+  themes: string[];
+  notableResearchers: Array<{
+    name: string;
+    reason: string;
+  }>;
+  gaps: string[];
 }
 
 interface SupabasePublication {
@@ -15,6 +36,14 @@ interface SupabasePublication {
   relevance_score?: number | null;
   openalex_work_id?: string | null;
   doi?: string | null;
+}
+
+interface SupabaseExternalEvidence {
+  source?: string | null;
+  evidence_type?: string | null;
+  title?: string | null;
+  snippet?: string | null;
+  url?: string | null;
 }
 
 interface SupabaseResearcher {
@@ -40,6 +69,7 @@ interface SupabaseResearcher {
   paper_depth_score?: number | null;
   match_reason?: string | null;
   papers?: SupabasePublication[] | null;
+  external_evidence?: SupabaseExternalEvidence[] | null;
 }
 
 function initials(name: string) {
@@ -79,6 +109,19 @@ function toPublication(pub: SupabasePublication): Publication {
   };
 }
 
+function toExternalEvidence(item: SupabaseExternalEvidence): ExternalEvidence | null {
+  const title = item.title?.trim();
+  if (!title) return null;
+
+  return {
+    source: item.source || "openai_web",
+    evidenceType: item.evidence_type || "general",
+    title,
+    snippet: item.snippet || undefined,
+    url: item.url || undefined,
+  };
+}
+
 function toResearcher(row: SupabaseResearcher): Researcher {
   const similarity = typeof row.similarity === "number" ? row.similarity : 0;
   const keywords = splitKeywords(row.fields_of_research);
@@ -108,6 +151,9 @@ function toResearcher(row: SupabaseResearcher): Researcher {
       llmRerank: typeof row.llm_rerank_score === "number" ? Math.round(row.llm_rerank_score) : undefined,
     },
     semanticExplanation: row.match_reason || "Matched from the researcher profile, paper titles, abstracts, and OpenAlex metadata.",
+    externalEvidence: (row.external_evidence || [])
+      .map(toExternalEvidence)
+      .filter((item): item is ExternalEvidence => Boolean(item)),
     publications: (row.papers || []).map(toPublication),
     imageInitials: initials(row.full_name),
     role: "lecturer",
@@ -151,6 +197,8 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
       mode: payload.mode,
       filters: payload.filters,
       limit: 30,
+      enable_rerank: payload.enableRerank ?? true,
+      include_external_evidence: payload.includeExternalEvidence ?? true,
     },
   });
 
@@ -160,4 +208,104 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
 
   const rows = Array.isArray(data?.results) ? data.results : [];
   return rows.map(toResearcher);
+}
+
+export async function matchSchoolMissions(query: string, researchers: Researcher[]): Promise<SchoolMissionMatch[]> {
+  if (!hasSupabaseConfig || !supabase || researchers.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "match_school_missions",
+      query,
+      researchers: researchers.slice(0, 20).map(researcher => ({
+        id: researcher.id,
+        name: researcher.name,
+        title: researcher.title,
+        department: researcher.department,
+        faculty: researcher.faculty,
+        summary: researcher.summary,
+        keywords: researcher.keywords,
+        match_reason: researcher.semanticExplanation,
+        publications: researcher.publications.slice(0, 10).map(publication => publication.title),
+        external_evidence: (researcher.externalEvidence || []).slice(0, 4).map(item => ({
+          title: item.title,
+          evidence_type: item.evidenceType,
+          snippet: item.snippet,
+        })),
+      })),
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = Array.isArray(data?.mission_matches) ? data.mission_matches : [];
+  return rows
+    .map((row: Record<string, unknown>) => ({
+      researcherId: String(row.researcher_id || row.researcherId || ""),
+      school: String(row.school || ""),
+      mission: String(row.mission || ""),
+      confidence: Math.max(0, Math.min(100, Number(row.confidence || 0))),
+      reason: String(row.reason || ""),
+    }))
+    .filter(row => row.researcherId && row.school && row.mission);
+}
+
+export async function summarizeResearchPool(query: string, researchers: Researcher[]): Promise<ResearchPoolSummary> {
+  if (!hasSupabaseConfig || !supabase || researchers.length === 0) {
+    return {
+      headline: "No summary available",
+      summary: "Run a search with Supabase configured to generate a pool summary.",
+      themes: [],
+      notableResearchers: [],
+      gaps: [],
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "summarize_pool",
+      query,
+      researchers: researchers.slice(0, 20).map(researcher => ({
+        id: researcher.id,
+        name: researcher.name,
+        title: researcher.title,
+        department: researcher.department,
+        faculty: researcher.faculty,
+        summary: researcher.summary,
+        keywords: researcher.keywords,
+        match_reason: researcher.semanticExplanation,
+        publications: researcher.publications.slice(0, 10).map(publication => publication.title),
+        external_evidence: (researcher.externalEvidence || []).slice(0, 4).map(item => ({
+          title: item.title,
+          evidence_type: item.evidenceType,
+          snippet: item.snippet,
+        })),
+      })),
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const summary = data?.summary && typeof data.summary === "object" ? data.summary as Record<string, unknown> : {};
+  return {
+    headline: String(summary.headline || "What ITMAP found"),
+    summary: String(summary.summary || ""),
+    themes: Array.isArray(summary.themes) ? summary.themes.map(String).slice(0, 6) : [],
+    notableResearchers: Array.isArray(summary.notable_researchers)
+      ? summary.notable_researchers
+        .map((item: Record<string, unknown>) => ({
+          name: String(item.name || ""),
+          reason: String(item.reason || ""),
+        }))
+        .filter(item => item.name && item.reason)
+        .slice(0, 6)
+      : [],
+    gaps: Array.isArray(summary.gaps) ? summary.gaps.map(String).slice(0, 4) : [],
+  };
 }

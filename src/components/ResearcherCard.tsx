@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Bookmark, BookmarkCheck, Sparkles, FileText, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronUp, Bookmark, BookmarkCheck, Sparkles, FileText, ExternalLink, Radio, Rocket, Newspaper, BadgePoundSterling, PlayCircle, Target } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import type { Researcher, Publication } from "@/data/mockData";
+import type { ExternalEvidence, Researcher, Publication } from "@/data/mockData";
 
 interface ResearcherCardProps {
   researcher: Researcher;
-  showSemanticExplanation?: boolean;
+  bookmarked?: boolean;
+  onToggleBookmark?: (researcher: Researcher) => void;
 }
 
 function RelevanceBadge({ score }: { score: number }) {
@@ -16,7 +17,7 @@ function RelevanceBadge({ score }: { score: number }) {
       <span className={`inline-block h-2 w-2 rounded-full ${
         level === "high" ? "bg-relevance-high" : level === "medium" ? "bg-relevance-medium" : "bg-relevance-low"
       }`} />
-      {score}% — {labels[level]}
+      {labels[level]}
     </span>
   );
 }
@@ -43,86 +44,130 @@ function PublicationItem({ pub }: { pub: Publication }) {
         <p className="text-sm font-medium text-foreground leading-snug">{title}</p>
         <p className="text-xs text-muted-foreground mt-0.5">
           {pub.journal} · {pub.year} · {pub.citations} citations
-          {pub.relevanceScore && (
-            <span className="ml-2 text-imperial-teal font-medium">{pub.relevanceScore}% relevant</span>
-          )}
         </p>
       </div>
     </div>
   );
 }
 
-function ScoreBar({ label, value }: { label: string; value?: number }) {
-  if (typeof value !== "number") return null;
-  const bounded = Math.max(0, Math.min(100, value));
-
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-medium text-muted-foreground">{label}</span>
-        <span className="text-[10px] font-semibold text-foreground">{bounded}%</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
-        <div className="h-full rounded-full bg-primary/70" style={{ width: `${bounded}%` }} />
-      </div>
-    </div>
-  );
+function evidenceConfig(type: string) {
+  if (type === "video") return { label: "Video", Icon: PlayCircle };
+  if (type === "startup") return { label: "Startup", Icon: Rocket };
+  if (type === "grant") return { label: "Grant", Icon: BadgePoundSterling };
+  if (type === "media") return { label: "Media", Icon: Newspaper };
+  return { label: "Signal", Icon: Radio };
 }
 
-function ScoreExplanation({ researcher }: { researcher: Researcher }) {
-  const score = researcher.scoreExplanation || {
-    finalScore: researcher.relevanceScore,
-    llmRerank: researcher.relevanceScore,
-    profileAuthority: Math.min(100, researcher.relevanceScore),
-    paperEvidence: researcher.publications.length > 0 ? Math.min(100, 55 + researcher.publications.length * 5) : 0,
-  };
+function ExternalEvidenceItem({ item }: { item: ExternalEvidence }) {
+  const { label, Icon } = evidenceConfig(item.evidenceType);
+  const title = item.url ? (
+    <a
+      href={item.url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-start gap-1.5 text-primary hover:underline"
+    >
+      <span>{item.title}</span>
+      <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+    </a>
+  ) : (
+    item.title
+  );
 
   return (
-    <div className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2.5">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Score breakdown</span>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-            Final score is ITMAP's rerank of profile fit, publication evidence, and mission coverage.
-          </p>
-        </div>
-        {score.matchType && (
-          <span className="shrink-0 rounded-full bg-card px-2 py-1 text-[10px] font-semibold capitalize text-primary">
-            {score.matchType}
-          </span>
+    <div className="rounded-md border border-border bg-card px-3 py-2">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+          <Icon className="h-3 w-3" />
+          {label}
+        </span>
+        {item.source === "ukri" && (
+          <span className="text-[10px] font-medium text-muted-foreground">UKRI</span>
         )}
       </div>
+      <p className="text-xs font-medium leading-snug text-foreground">{title}</p>
+      {item.snippet && (
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{item.snippet}</p>
+      )}
+    </div>
+  );
+}
+
+function ExternalEvidenceSummary({ evidence }: { evidence?: ExternalEvidence[] }) {
+  const items = (evidence || []).filter(item => item.title).slice(0, 6);
+  if (items.length === 0) return null;
+
+  const videos = items.filter(item => item.evidenceType === "video").length;
+  const startups = items.filter(item => item.evidenceType === "startup").length;
+  const grants = items.filter(item => item.evidenceType === "grant").length;
+  const media = items.filter(item => item.evidenceType === "media").length;
+  const parts = [
+    videos > 0 ? `${videos} video${videos === 1 ? "" : "s"}` : "",
+    startups > 0 ? `${startups} startup/spinout signal${startups === 1 ? "" : "s"}` : "",
+    grants > 0 ? `${grants} grant signal${grants === 1 ? "" : "s"}` : "",
+    media > 0 ? `${media} media signal${media === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-secondary/30 px-3 py-2.5">
+      <div className="mb-2 flex items-start gap-2">
+        <Radio className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+        <div>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">External signals</span>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+            {parts.length > 0
+              ? `Found ${parts.join(", ")} that may support translational or public impact.`
+              : "Found public web or UKRI evidence that may support translational or public impact."}
+          </p>
+        </div>
+      </div>
       <div className="grid gap-2 sm:grid-cols-2">
-        <ScoreBar label="ITMAP rerank" value={score.llmRerank ?? score.finalScore} />
-        <ScoreBar label="Profile authority" value={score.profileAuthority} />
-        <ScoreBar label="Profile coverage" value={score.profileConcept} />
-        <ScoreBar label="Profile semantic fit" value={score.profileSemantic} />
-        <ScoreBar label="Paper evidence" value={score.paperEvidence} />
-        <ScoreBar label="Paper depth" value={score.paperDepth} />
+        {items.map((item, index) => (
+          <ExternalEvidenceItem key={`${item.title}-${index}`} item={item} />
+        ))}
       </div>
     </div>
   );
 }
 
-export default function ResearcherCard({ researcher, showSemanticExplanation = true }: ResearcherCardProps) {
+export default function ResearcherCard({
+  researcher,
+  bookmarked = false,
+  onToggleBookmark,
+}: ResearcherCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [profileExpanded, setProfileExpanded] = useState(false);
-  const [bookmarked, setBookmarked] = useState(researcher.bookmarked ?? false);
 
   const visiblePubs = researcher.publications.slice(0, 10);
 
   return (
-    <div className="result-card animate-fade-in">
-      <div className="flex items-start justify-between gap-4">
+    <div className="result-card animate-fade-in h-fit">
+      <div className="flex items-start justify-between gap-3">
         {/* Avatar + Info */}
-        <div className="flex items-start gap-4 min-w-0">
-          <div className="shrink-0 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <span className="text-sm font-semibold text-primary">{researcher.imageInitials}</span>
+        <div className="flex items-start gap-3 min-w-0">
+          <div className="shrink-0 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+            <span className="text-xs font-semibold text-primary">{researcher.imageInitials}</span>
           </div>
           <div className="min-w-0">
-            <h3 className="font-brand text-lg font-semibold text-foreground leading-tight">{researcher.name}</h3>
-            <p className="text-sm text-muted-foreground">{researcher.title}</p>
+            <h3 className="font-brand text-base font-semibold text-foreground leading-tight">{researcher.name}</h3>
+            <p className="text-xs text-muted-foreground">{researcher.title}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{researcher.department} · {researcher.faculty}</p>
+            {researcher.savedFromMission && (
+              <p className="mt-1 line-clamp-2 text-[11px] font-medium text-primary">
+                Saved from: {researcher.savedFromMission}
+              </p>
+            )}
+            {researcher.schoolMissionMatch && (
+              <div
+                className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
+                title={researcher.schoolMissionMatch.reason}
+              >
+                <Target className="h-3 w-3 shrink-0" />
+                <span className="truncate">
+                  Relevant to {researcher.schoolMissionMatch.school} · {researcher.schoolMissionMatch.mission}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -130,8 +175,9 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
         <div className="flex items-center gap-2 shrink-0">
           <RelevanceBadge score={researcher.relevanceScore} />
           <button
-            onClick={() => setBookmarked(!bookmarked)}
+            onClick={() => onToggleBookmark?.(researcher)}
             className="p-1.5 rounded-md hover:bg-secondary transition-colors"
+            title={bookmarked ? "Remove from saved researchers" : "Save researcher"}
           >
             {bookmarked ? (
               <BookmarkCheck className="h-4 w-4 text-imperial-gold" />
@@ -178,18 +224,18 @@ export default function ResearcherCard({ researcher, showSemanticExplanation = t
         )}
       </AnimatePresence>
 
-      {/* Semantic Explanation */}
-      {showSemanticExplanation && researcher.semanticExplanation && (
+      {/* Match Explanation */}
+      {researcher.semanticExplanation && (
         <div className="mt-3 flex items-start gap-2 px-3 py-2.5 rounded-lg bg-imperial-light/50 border border-primary/10">
           <Sparkles className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
           <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Why matched</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Why they matched</span>
             <p className="text-xs text-foreground/70 mt-0.5 leading-relaxed">{researcher.semanticExplanation}</p>
           </div>
         </div>
       )}
 
-      <ScoreExplanation researcher={researcher} />
+      <ExternalEvidenceSummary evidence={researcher.externalEvidence} />
 
       {/* Expand Publications */}
       <button
