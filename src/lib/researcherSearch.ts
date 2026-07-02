@@ -28,6 +28,14 @@ export interface ResearchPoolSummary {
   gaps: string[];
 }
 
+export interface MissionRewrite {
+  rewrittenQuery: string;
+  mustHave: string[];
+  niceToHave: string[];
+  methodTerms: string[];
+  domainTerms: string[];
+}
+
 interface SupabasePublication {
   title: string;
   journal?: string | null;
@@ -196,7 +204,7 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
       query: payload.query,
       mode: payload.mode,
       filters: payload.filters,
-      limit: 30,
+      limit: 50,
       enable_rerank: payload.enableRerank ?? true,
       include_external_evidence: payload.includeExternalEvidence ?? true,
     },
@@ -208,6 +216,37 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
 
   const rows = Array.isArray(data?.results) ? data.results : [];
   return rows.map(toResearcher);
+}
+
+export async function rewriteMission(query: string): Promise<MissionRewrite> {
+  if (!hasSupabaseConfig || !supabase) {
+    return {
+      rewrittenQuery: query,
+      mustHave: [],
+      niceToHave: [],
+      methodTerms: [],
+      domainTerms: [],
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "rewrite_mission",
+      query,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    rewrittenQuery: String(data?.rewritten_query || query),
+    mustHave: Array.isArray(data?.must_have) ? data.must_have.map(String) : [],
+    niceToHave: Array.isArray(data?.nice_to_have) ? data.nice_to_have.map(String) : [],
+    methodTerms: Array.isArray(data?.method_terms) ? data.method_terms.map(String) : [],
+    domainTerms: Array.isArray(data?.domain_terms) ? data.domain_terms.map(String) : [],
+  };
 }
 
 export async function matchSchoolMissions(query: string, researchers: Researcher[]): Promise<SchoolMissionMatch[]> {

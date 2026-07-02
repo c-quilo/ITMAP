@@ -4,7 +4,8 @@ import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/co
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { matchSchoolMissions, searchResearchers, summarizeResearchPool, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { matchSchoolMissions, rewriteMission, searchResearchers, summarizeResearchPool, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
@@ -26,6 +27,13 @@ type SaveFilePicker = (options?: {
 
 type SavedSearch = SavedSearchSummary & {
   results: Researcher[];
+};
+
+type PendingRewriteSearch = {
+  originalQuery: string;
+  rewrittenQuery: string;
+  mode: SearchMode;
+  options: SearchOptions;
 };
 
 const SAVED_SEARCHES_KEY = "itmap.savedSearches.v1";
@@ -140,14 +148,14 @@ function poolSummaryCacheKey(query: string, researchers: Researcher[]) {
 const SEARCH_STEPS = [
   {
     at: 0,
-    label: "Expanding the mission",
-    detail: "ITMAP is clarifying the intent and separating must-have expertise from nice-to-have signals.",
+    label: "Reading the mission",
+    detail: "ITMAP is using the mission exactly as written to start the semantic search.",
     Icon: Sparkles,
   },
   {
     at: 7,
     label: "Searching profiles and papers",
-    detail: "Matching the expanded mission against researcher profiles, fields, positions, and paper evidence.",
+    detail: "Matching the mission against researcher profiles, fields, positions, and paper evidence.",
     Icon: Database,
   },
   {
@@ -278,6 +286,9 @@ export default function Index() {
   const [isGeneratingPoolSummary, setIsGeneratingPoolSummary] = useState(false);
   const [poolSummaryError, setPoolSummaryError] = useState("");
   const [poolSummaryDone, setPoolSummaryDone] = useState(false);
+  const [pendingRewriteSearch, setPendingRewriteSearch] = useState<PendingRewriteSearch | null>(null);
+  const [editableRewrite, setEditableRewrite] = useState("");
+  const [isRewritingMission, setIsRewritingMission] = useState(false);
 
   useEffect(() => {
     try {
@@ -517,7 +528,7 @@ export default function Index() {
     setTabMode("search");
   };
 
-  const handleSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
+  const executeSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
       setSearchError("Type a mission or keyword before searching.");
@@ -554,6 +565,47 @@ export default function Index() {
     } finally {
       setIsSearching(false);
     }
+  };
+
+  const handleSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      setSearchError("Type a mission or keyword before searching.");
+      setHasSearched(false);
+      setSearchResults([]);
+      return;
+    }
+
+    if (mode === "semantic" && options.rewriteMission) {
+      setIsRewritingMission(true);
+      setSearchError("");
+      try {
+        const rewrite = await rewriteMission(trimmedQuery);
+        const rewrittenQuery = rewrite.rewrittenQuery.trim() || trimmedQuery;
+        setPendingRewriteSearch({
+          originalQuery: trimmedQuery,
+          rewrittenQuery,
+          mode,
+          options,
+        });
+        setEditableRewrite(rewrittenQuery);
+      } catch (error) {
+        setSearchError(error instanceof Error ? error.message : "Could not rewrite the mission.");
+      } finally {
+        setIsRewritingMission(false);
+      }
+      return;
+    }
+
+    await executeSearch(trimmedQuery, mode, options);
+  };
+
+  const continueRewriteSearch = async (query: string) => {
+    if (!pendingRewriteSearch) return;
+    const search = pendingRewriteSearch;
+    setPendingRewriteSearch(null);
+    setEditableRewrite("");
+    await executeSearch(query, search.mode, search.options);
   };
 
   const applySchoolMissionMatches = (matches: Awaited<ReturnType<typeof matchSchoolMissions>>) => {
@@ -666,7 +718,10 @@ export default function Index() {
       const departmentMatch = selectedDepartments.length === 0
         || selectedDepartments.includes(researcher.department);
       const gradeMatch = filterByAny([researcher.title], selectedGrades);
-      const matchStrengthMatch = selectedMatches.length === 0 || selectedMatches.includes(matchLabel(researcher.relevanceScore));
+      const researcherMatchLabel = matchLabel(researcher.relevanceScore);
+      const matchStrengthMatch = selectedMatches.length === 0
+        ? researcherMatchLabel !== "Weak"
+        : selectedMatches.includes(researcherMatchLabel);
       const schoolMissionThemeMatch = selectedSchoolMissionThemes.length === 0
         || (researcher.schoolMissionMatch && selectedSchoolMissionThemes.includes(researcher.schoolMissionMatch.school));
       const schoolMissionMatch = selectedSchoolMissions.length === 0
@@ -696,6 +751,64 @@ export default function Index() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <Dialog
+        open={Boolean(pendingRewriteSearch)}
+        onOpenChange={open => {
+          if (!open) {
+            setPendingRewriteSearch(null);
+            setEditableRewrite("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Review rewritten mission</DialogTitle>
+            <DialogDescription>
+              ITMAP can search with the original mission, the rewritten mission, or your edited version.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingRewriteSearch && (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Original mission
+                </label>
+                <textarea
+                  value={pendingRewriteSearch.originalQuery}
+                  readOnly
+                  className="h-28 w-full resize-none rounded-lg border border-border bg-secondary/60 px-3 py-2 text-sm leading-relaxed text-foreground focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Rewritten mission
+                </label>
+                <textarea
+                  value={editableRewrite}
+                  onChange={event => setEditableRewrite(event.target.value)}
+                  className="h-44 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+              <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => continueRewriteSearch(pendingRewriteSearch.originalQuery)}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+                >
+                  Use original
+                </button>
+                <button
+                  type="button"
+                  onClick={() => continueRewriteSearch(editableRewrite || pendingRewriteSearch.rewrittenQuery)}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Continue with rewritten
+                </button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       {/* Header */}
       <header className="h-24 border-b border-border bg-card flex items-center justify-between px-6 shrink-0 relative overflow-hidden">
         {/* Swoosh background */}
@@ -770,7 +883,7 @@ export default function Index() {
               onClearFilters={() => setActiveFilters([])}
               onSearch={handleSearch}
               onLoadSavedSearch={loadSavedSearch}
-              isSearching={isSearching}
+              isSearching={isSearching || isRewritingMission}
               departmentOptions={availableDepartments}
               keywordOptions={availableKeywords}
               schoolMissionOptions={availableSchoolMissions}

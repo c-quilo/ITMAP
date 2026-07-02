@@ -7,6 +7,7 @@ type SearchMode = "semantic" | "keyword";
 export type SearchOptions = {
   enableRerank: boolean;
   includeExternalEvidence: boolean;
+  rewriteMission: boolean;
 };
 
 export interface SavedSearchSummary {
@@ -100,6 +101,7 @@ export default function SearchSidebar({
   const [keywordQuery, setKeywordQuery] = useState("");
   const [enableRerank, setEnableRerank] = useState(true);
   const [includeExternalEvidence, setIncludeExternalEvidence] = useState(true);
+  const [rewriteMission, setRewriteMission] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     match: true,
     grade: true,
@@ -114,8 +116,8 @@ export default function SearchSidebar({
   const [isReadingAttachment, setIsReadingAttachment] = useState(false);
 
   useEffect(() => {
-    onOptionsChange?.({ enableRerank, includeExternalEvidence });
-  }, [enableRerank, includeExternalEvidence, onOptionsChange]);
+    onOptionsChange?.({ enableRerank, includeExternalEvidence, rewriteMission });
+  }, [enableRerank, includeExternalEvidence, rewriteMission, onOptionsChange]);
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -127,7 +129,7 @@ export default function SearchSidebar({
 
   const runSearch = () => {
     const query = searchMode === "keyword" ? keywordQuery : semanticQuery;
-    onSearch?.(query, searchMode, { enableRerank, includeExternalEvidence });
+    onSearch?.(query, searchMode, { enableRerank, includeExternalEvidence, rewriteMission });
   };
 
   const handleDocumentUpload = async (file?: File) => {
@@ -214,6 +216,26 @@ export default function SearchSidebar({
               className="mt-0.5 h-4 w-4 accent-primary"
             />
           </label>
+          {searchMode === "semantic" && (
+            <label
+              className="flex cursor-pointer items-start justify-between gap-3"
+              title="Ask ITMAP to rewrite the mission first. You will review the original and rewritten text before any search runs."
+            >
+              <span>
+                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                  Rewrite mission first
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </span>
+                <span className="block text-[11px] leading-relaxed text-muted-foreground">Review and edit the rewritten mission before searching.</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={rewriteMission}
+                onChange={event => setRewriteMission(event.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+            </label>
+          )}
         </div>
 
         {/* Semantic Search Box */}
@@ -328,7 +350,7 @@ export default function SearchSidebar({
         {/* Match Filter */}
         <FilterSection
           title="Match Strength"
-          help="Filter by ITMAP's final strong, moderate, or weak match judgement."
+          help="Filter by ITMAP's final strong, moderate, or weak match judgement. Weak matches are hidden by default until selected."
           expanded={expandedSections.match ?? true}
           onToggle={() => toggleSection("match")}
         >

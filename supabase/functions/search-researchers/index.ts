@@ -6,7 +6,7 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "match_school_missions" | "summarize_pool";
+  action?: "search" | "rewrite_mission" | "match_school_missions" | "summarize_pool";
   query?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
@@ -30,6 +30,7 @@ type RerankedCandidate = {
   reason: string;
   match_type?: "strong" | "adjacent" | "weak";
   best_paper_titles?: string[];
+  best_paper_ids?: string[];
 };
 
 type ExternalEvidence = {
@@ -156,6 +157,8 @@ const STOP_WORDS = new Set([
   "after",
   "also",
   "and",
+  "application",
+  "applications",
   "are",
   "based",
   "been",
@@ -392,6 +395,37 @@ function conceptCoverage(
   return 1;
 }
 
+function domainEvidenceHit(text: string, groups: ReturnType<typeof conceptGroups>) {
+  const domainVariants = groups.domainTerms.flatMap(expandedTermVariants);
+  return domainVariants.length === 0 || textHasAny(text.toLowerCase(), domainVariants);
+}
+
+function methodDomainEvidenceScore(
+  row: Record<string, unknown>,
+  groups: ReturnType<typeof conceptGroups>,
+) {
+  if (!groups.hasMethodIntent || groups.domainTerms.length === 0) return 1;
+
+  const profileText = researcherCoreText(row);
+  const paperText = ((row.papers as Record<string, unknown>[]) || [])
+    .map(paper => [
+      paper.title,
+      paper.abstract,
+      paper.journal,
+      paper.source_display_name,
+    ].map(value => String(value || "")).join(" "))
+    .join(" ")
+    .toLowerCase();
+  const allText = `${profileText} ${paperText}`;
+  const methodHit = hasMethodEvidence(allText);
+  const domainHit = domainEvidenceHit(allText, groups);
+
+  if (methodHit && domainHit) return 1;
+  if (domainHit) return 0.58;
+  if (methodHit) return 0.3;
+  return 0.18;
+}
+
 function researcherText(row: Record<string, unknown>) {
   return [
     row.full_name,
@@ -562,6 +596,58 @@ function profileAuthorityScore(query: string, terms: string[], row: Record<strin
   return Math.max(0, Math.min(1, score));
 }
 
+function countOccurrences(text: string, phrase: string) {
+  if (!text || !phrase) return 0;
+  let count = 0;
+  let index = text.indexOf(phrase);
+  while (index !== -1 && count < 20) {
+    count += 1;
+    index = text.indexOf(phrase, index + phrase.length);
+  }
+  return count;
+}
+
+function exactProfileEvidenceScore(query: string, terms: string[], row: Record<string, unknown>) {
+  const titleText = [
+    row.position_name,
+    row.position,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const fieldsText = String(row.fields_of_research || "").toLowerCase();
+  const profileText = [
+    row.bio_about,
+    row.research,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const coreText = researcherCoreText(row);
+  const departmentText = [
+    row.affiliation,
+    row.research,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const phrases = directQueryPhrases(query);
+  let score = 0;
+
+  for (const phrase of phrases) {
+    if (titleText.includes(phrase)) score += 0.55;
+    if (fieldsText.includes(phrase)) score += 0.35;
+    if (departmentText.includes(phrase)) score += 0.25;
+    const profileHits = countOccurrences(profileText, phrase);
+    if (profileHits > 0) score += Math.min(0.78, 0.48 + profileHits * 0.05);
+  }
+
+  const meaningfulTerms = terms
+    .map(singularise)
+    .filter(term => term.length >= 3 && !["and", "for", "with", "the"].includes(term));
+  const matchedTerms = meaningfulTerms.filter(term => textHasAny(coreText, expandedTermVariants(term))).length;
+  if (meaningfulTerms.length > 0 && matchedTerms === meaningfulTerms.length) {
+    score += 0.18;
+  }
+
+  if (ROLE_AUTHORITY_TERMS.some(role => titleText.includes(role)) && score > 0) {
+    score += 0.08;
+  }
+
+  return Math.max(0, Math.min(1, score));
+}
+
 function scorePaper(query: string, terms: string[], paper: Record<string, unknown>) {
   const title = String(paper.title || "").toLowerCase();
   const abstract = String(paper.abstract || "").toLowerCase();
@@ -592,7 +678,7 @@ function scorePaper(query: string, terms: string[], paper: Record<string, unknow
 function paperSummary(paper: Record<string, unknown>, relevanceScore?: number, rawSimilarity?: number) {
   return {
     title: paper.title,
-    abstract: paper.abstract,
+    abstract: truncateText(paper.abstract, 900),
     year: paper.publication_year,
     citations: paper.cited_by_count,
     journal: paper.source_display_name,
@@ -601,6 +687,10 @@ function paperSummary(paper: Record<string, unknown>, relevanceScore?: number, r
     openalex_work_id: paper.openalex_work_id,
     doi: paper.doi,
   };
+}
+
+function paperId(paper: Record<string, unknown>) {
+  return String(paper.openalex_work_id || paper.id || paper.doi || paperKey(paper));
 }
 
 function paperKey(paper: Record<string, unknown>) {
@@ -684,9 +774,22 @@ function rerankedPaperSummaries(
   existingPapers: Record<string, unknown>[],
   allPaperRecords: Record<string, unknown>[],
   selectedTitles: string[],
+  selectedIds: string[] = [],
 ) {
   const selected: Record<string, unknown>[] = [];
   const seen = new Set<string>();
+  const normalizedIds = selectedIds.map(id => String(id || "").trim()).filter(Boolean);
+
+  for (const selectedId of normalizedIds) {
+    const fromAll = allPaperRecords.find(paper => paperId(paper) === selectedId);
+    const fromExisting = existingPapers.find(paper => paperId(paper) === selectedId);
+    const paper = fromAll || fromExisting;
+    if (!paper) continue;
+    const key = paperKey(paper);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    selected.push(paperSummary(paper, Math.max(0.62, 0.98 - selected.length * 0.04)));
+  }
 
   for (const selectedTitle of selectedTitles) {
     const fromAll = allPaperRecords.find(paper => titleMatches(String(paper.title || ""), selectedTitle));
@@ -708,6 +811,103 @@ function rerankedPaperSummaries(
   }
 
   return selected.slice(0, 10);
+}
+
+function paperEvidenceForRerank(
+  query: string,
+  terms: string[],
+  groups: ReturnType<typeof conceptGroups>,
+  papers: Record<string, unknown>[],
+) {
+  return papers
+    .map(paper => {
+      const title = String(paper.title || "");
+      const abstract = String(paper.abstract || "");
+      const coverage = conceptCoverage(query, terms, paper, groups);
+      const lexicalScore = scorePaper(query, terms, paper);
+      return {
+        paper,
+        evidenceScore: lexicalScore + coverage * 12,
+        hasAbstract: abstract.trim().length > 0,
+        item: {
+          paper_id: paperId(paper),
+          title: truncateText(title, 240),
+          abstract: truncateText(abstract, 650),
+          year: paper.publication_year || null,
+          citations: paper.cited_by_count || 0,
+          journal: truncateText(paper.source_display_name, 120),
+          relevance_hint: Math.round(Math.max(0, Math.min(100, (lexicalScore + coverage * 12) * 5))),
+        },
+      };
+    })
+    .filter(entry => entry.item.title)
+    .sort((a, b) => {
+      const scoreDiff = b.evidenceScore - a.evidenceScore;
+      if (scoreDiff !== 0) return scoreDiff;
+      if (a.hasAbstract !== b.hasAbstract) return a.hasAbstract ? -1 : 1;
+      return Number(b.paper.cited_by_count || 0) - Number(a.paper.cited_by_count || 0);
+    })
+    .slice(0, 30)
+    .map(entry => entry.item);
+}
+
+function isBogusDuplicateSuppression(rerank: RerankedCandidate) {
+  return rerank.score <= 1
+    && hasDuplicateRerankLanguage(rerank.reason || "");
+}
+
+function hasDuplicateRerankLanguage(reason: string) {
+  return /\b(duplicate|already ranked|already represented|represented above|same candidate|same researcher)\b/i.test(reason);
+}
+
+function matchTypeForScore(score: number): "strong" | "adjacent" | "weak" {
+  if (score >= 72) return "strong";
+  if (score >= 48) return "adjacent";
+  return "weak";
+}
+
+function exactEvidenceRerankFloor(row: Record<string, unknown>) {
+  const exactProfileEvidence = Number(row.exact_profile_evidence_score || 0);
+  if (exactProfileEvidence < 0.78) return 0;
+
+  const queryText = String(row.current_query || "");
+  const profileText = [
+    row.bio_about,
+    row.research,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const repeatedExactHits = directQueryPhrases(queryText)
+    .reduce((maxHits, phrase) => Math.max(maxHits, countOccurrences(profileText, phrase)), 0);
+  const profileAuthority = Number(row.profile_authority_score || 0);
+  const profileConcept = Number(row.profile_concept_score || 0);
+  const paperDepth = Number(row.paper_depth_score || 0);
+  const titleText = [
+    row.position_name,
+    row.position,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const authorityBoost = ROLE_AUTHORITY_TERMS.some(role => titleText.includes(role)) ? 4 : 0;
+  const repeatedExactBoost = repeatedExactHits >= 5 ? 4 : repeatedExactHits >= 3 ? 2 : 0;
+  if (repeatedExactHits >= 5 && /\b(chair|director)\b/.test(titleText)) {
+    return 100;
+  }
+
+  return Math.round(Math.min(
+    99,
+    78
+      + exactProfileEvidence * 8
+      + profileAuthority * 4
+      + profileConcept * 3
+      + paperDepth * 2
+      + authorityBoost
+      + repeatedExactBoost,
+  ));
+}
+
+function methodDomainRerankCap(row: Record<string, unknown>, groups: ReturnType<typeof conceptGroups>) {
+  if (!groups.hasMethodIntent || groups.domainTerms.length === 0) return 100;
+  const score = Number(row.method_domain_evidence_score || 0);
+  if (score >= 1) return 100;
+  if (score >= 0.58) return 55;
+  return 44;
 }
 
 function normalise(value: number, min: number, max: number, floor = 0.35, ceiling = 0.98) {
@@ -1058,13 +1258,13 @@ async function addExternalEvidenceToCandidates(
 
 function candidateEvidence(row: Record<string, unknown>) {
   const papers = ((row.papers as Record<string, unknown>[]) || []).slice(0, 8).map(paper => ({
+    paper_id: paperId(paper),
     title: truncateText(paper.title, 220),
+    abstract: truncateText(paper.abstract, 500),
     year: paper.year || paper.publication_year || null,
     relevance_score: paper.relevance_score || null,
   }));
-  const allPaperTitles = ((row.all_paper_titles as string[]) || [])
-    .map(title => truncateText(title, 180))
-    .slice(0, 250);
+  const allPaperEvidence = ((row.all_paper_evidence as Record<string, unknown>[]) || []).slice(0, 30);
 
   return {
     researcher_id: row.researcher_id,
@@ -1079,9 +1279,11 @@ function candidateEvidence(row: Record<string, unknown>) {
     profile_authority_score: row.profile_authority_score || 0,
     profile_concept_score: row.profile_concept_score || 0,
     paper_similarity: row.paper_similarity || 0,
+    exact_profile_evidence_score: row.exact_profile_evidence_score || 0,
     papers,
-    all_paper_titles: allPaperTitles,
-    all_paper_title_count: allPaperTitles.length,
+    all_paper_evidence: allPaperEvidence,
+    all_paper_evidence_count: allPaperEvidence.length,
+    all_paper_total_count: row.all_paper_total_count || allPaperEvidence.length,
     external_evidence: ((row.external_evidence as ExternalEvidence[]) || []).slice(0, 4).map(item => ({
       source: item.source,
       evidence_type: item.evidence_type,
@@ -1241,15 +1443,17 @@ async function rerankCandidatesWithLlm(
           role: "system",
           content: [
             "You are reranking Imperial College London researchers for a mission.",
-            "Use only the supplied position, profile, fields, shortlisted papers, and full list of paper titles. Do not invent papers, affiliations, or expertise.",
-            "The all_paper_titles field is broader evidence than the shortlisted papers and should be used to detect whether the person has a substantial publication pattern relevant to the mission.",
+            "Use only the supplied position, profile, fields, shortlisted papers, and all_paper_evidence. Do not invent papers, affiliations, or expertise.",
+            "Candidate researcher_id values are already deduplicated by the system. Do not mark anyone as a duplicate, do not suppress anyone because they seem represented elsewhere, and never give score 0 for duplicate reasons.",
+            "The all_paper_evidence list was selected after scanning every fetched paper title and abstract for that candidate. Use these title+abstract snippets to detect whether the person has a substantial publication pattern relevant to the mission.",
+            "When selecting best papers, prefer items from all_paper_evidence and return their paper_id values in best_paper_ids. The best papers should be specifically relevant to the mission, not merely famous or highly cited.",
             "External evidence may include media appearances, startup/spinout signals, company activity, and UKRI grant/project records. Treat it as a small supporting signal only.",
             "Only give a small boost for external evidence when it is clearly relevant to the mission or shows translational impact. Do not let generic publicity override weak research/profile evidence.",
             "UKRI grants and mission-relevant startups/spinouts are stronger external signals than generic media mentions.",
             "Reward candidates who satisfy all central mission requirements, especially method+domain combinations such as AI applied to weather.",
             "Demote adjacent candidates who match only the domain or only the method.",
             "You must return one ranked item for every supplied candidate. If evidence is weak, give a low score and match_type weak.",
-            "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_titles\":[\"...\"]}]}",
+            "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[\"...\"],\"best_paper_titles\":[\"...\"]}]}",
           ].join(" "),
         },
         {
@@ -1276,6 +1480,7 @@ async function rerankCandidatesWithLlm(
         reason: truncateText(item.reason, 650),
         match_type: item.match_type,
         best_paper_titles: Array.isArray(item.best_paper_titles) ? item.best_paper_titles.slice(0, 10).map(String) : [],
+        best_paper_ids: Array.isArray(item.best_paper_ids) ? item.best_paper_ids.slice(0, 10).map(String) : [],
       });
     }
     return byId;
@@ -1343,7 +1548,7 @@ async function fetchAllPapersForResearchers(
   while (from < 20000) {
     const { data, error } = await supabase
       .from("researcher_papers")
-      .select("researcher_id,openalex_work_id,title,publication_year,cited_by_count,source_display_name,doi")
+      .select("researcher_id,openalex_work_id,title,abstract,publication_year,cited_by_count,source_display_name,doi")
       .in("researcher_id", researcherIds)
       .order("cited_by_count", { ascending: false, nullsFirst: false })
       .range(from, from + pageSize - 1);
@@ -1430,15 +1635,24 @@ async function fetchProfileKeywordCandidates(
       const faculty = String(row.faculty || "");
       const positionName = String(row.position_name || "");
       const position = String(row.position || "");
+      const exactScore = exactProfileEvidenceScore(query, terms, row);
       return (facultyFilters.length === 0 || facultyFilters.includes(faculty))
         && (
           roleFilters.length === 0
           || roleFilters.includes(positionName)
           || roleFilters.includes(position)
         )
-        && profileConceptScore(query, terms, row) >= 0.45;
+        && (profileConceptScore(query, terms, row) >= 0.45 || exactScore >= 0.55);
     })
-    .sort((a, b) => profileConceptScore(query, terms, b) - profileConceptScore(query, terms, a))
+    .map(row => ({
+      ...row,
+      exact_profile_evidence_score: exactProfileEvidenceScore(query, terms, row),
+    }))
+    .sort((a, b) => {
+      const bScore = Math.max(profileConceptScore(query, terms, b), Number(b.exact_profile_evidence_score || 0));
+      const aScore = Math.max(profileConceptScore(query, terms, a), Number(a.exact_profile_evidence_score || 0));
+      return bScore - aScore;
+    })
     .slice(0, 80);
 }
 
@@ -1463,6 +1677,20 @@ Deno.serve(async req => {
       throw new Error("Missing OPENAI_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_ROLE_KEY");
     }
 
+    if (body.action === "rewrite_mission") {
+      if (!query) {
+        return Response.json({ rewritten_query: "" }, { headers: corsHeaders });
+      }
+      const rewritten = await expandMission(openAiKey, rankingModel, query);
+      return Response.json({
+        rewritten_query: rewritten.expanded_query || query,
+        must_have: rewritten.must_have || [],
+        nice_to_have: rewritten.nice_to_have || [],
+        method_terms: rewritten.method_terms || [],
+        domain_terms: rewritten.domain_terms || [],
+      }, { headers: corsHeaders });
+    }
+
     if (body.action === "match_school_missions") {
       const researchers = Array.isArray(body.researchers) ? body.researchers : [];
       const missionMatches = await matchSchoolMissionsWithLlm(openAiKey, rankingModel, query, researchers);
@@ -1484,21 +1712,14 @@ Deno.serve(async req => {
     const includeExternalEvidence = body.include_external_evidence !== false;
 
     const rawKeywordTerms = queryTerms(query);
-    const mission = mode === "keyword"
-      ? {
-        expanded_query: query,
-        must_have: rawKeywordTerms.slice(0, 10),
-        nice_to_have: [],
-        method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
-        domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
-      }
-      : await expandMission(openAiKey, rankingModel, query);
-    const searchQuery = [
-      mission.expanded_query || query,
-      ...(mission.must_have || []),
-      ...(mission.domain_terms || []),
-      ...(mission.method_terms || []),
-    ].join(" ");
+    const mission = {
+      expanded_query: query,
+      must_have: rawKeywordTerms.slice(0, 10),
+      nice_to_have: [],
+      method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
+      domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
+    };
+    const searchQuery = query;
 
     const embeddingResponse = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
@@ -1533,7 +1754,7 @@ Deno.serve(async req => {
     const roleFilters = filters.filter(filter => GRADE_FILTERS.has(filter));
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
-    const candidateCount = Math.min(120, Math.max(60, limit * 3));
+    const candidateCount = Math.min(220, Math.max(90, limit * 5));
     const { data: researcherMatches, error: researcherError } = await supabase.rpc("match_researcher_documents", {
       query_embedding: embedding,
       match_count: candidateCount,
@@ -1602,12 +1823,15 @@ Deno.serve(async req => {
       const semanticPapers = paperMatchesByResearcher.get(row.researcher_id) || [];
       const profileConcept = profileConceptScore(searchQuery, terms, row);
       const profileAuthority = profileAuthorityScore(searchQuery, terms, row);
+      const exactProfileEvidence = exactProfileEvidenceScore(searchQuery, terms, row);
       const profileEvidence = matchedProfileEvidence(searchQuery, terms, row);
       merged.set(row.researcher_id, {
         ...row,
         profile_similarity: Number(row.similarity || 0),
         profile_concept_score: profileConcept,
         profile_authority_score: profileAuthority,
+        exact_profile_evidence_score: exactProfileEvidence,
+        current_query: searchQuery,
         profile_evidence: profileEvidence,
         paper_similarity: semanticPapers.length > 0
           ? Math.max(...semanticPapers.map(paper => Number(paper.raw_similarity || 0)))
@@ -1623,10 +1847,12 @@ Deno.serve(async req => {
       const existing = merged.get(row.researcher_id);
       const profileConcept = profileConceptScore(searchQuery, terms, row);
       const profileAuthority = profileAuthorityScore(searchQuery, terms, row);
+      const exactProfileEvidence = exactProfileEvidenceScore(searchQuery, terms, row);
       const profileEvidence = matchedProfileEvidence(searchQuery, terms, row);
       if (existing) {
         existing.profile_concept_score = Math.max(Number(existing.profile_concept_score || 0), profileConcept);
         existing.profile_authority_score = Math.max(Number(existing.profile_authority_score || 0), profileAuthority);
+        existing.exact_profile_evidence_score = Math.max(Number(existing.exact_profile_evidence_score || 0), exactProfileEvidence);
         existing.profile_evidence = [
           ...new Set([
             ...(((existing.profile_evidence as string[]) || [])),
@@ -1640,6 +1866,7 @@ Deno.serve(async req => {
           profile_similarity: Math.max(0.38, profileConcept * 0.55),
           profile_concept_score: profileConcept,
           profile_authority_score: profileAuthority,
+          exact_profile_evidence_score: exactProfileEvidence,
           profile_evidence: profileEvidence,
           paper_similarity: 0,
           papers: [],
@@ -1671,12 +1898,14 @@ Deno.serve(async req => {
         existing.match_reason = "Matched from this researcher's profile and semantically relevant publications.";
       } else {
         const profileAuthority = profileAuthorityScore(searchQuery, terms, paper);
+        const exactProfileEvidence = exactProfileEvidenceScore(searchQuery, terms, paper);
         const profileEvidence = matchedProfileEvidence(searchQuery, terms, paper);
         merged.set(paper.researcher_id, {
           ...paper,
           profile_similarity: 0,
           profile_concept_score: 0,
           profile_authority_score: profileAuthority,
+          exact_profile_evidence_score: exactProfileEvidence,
           profile_evidence: profileEvidence,
           paper_similarity: adjustedPaperScore,
           papers: [semanticPaperSummary],
@@ -1726,6 +1955,7 @@ Deno.serve(async req => {
       const profileSimilarity = Number(row.profile_similarity || row.similarity || 0);
       const profileConcept = Number(row.profile_concept_score || 0);
       const profileAuthority = Number(row.profile_authority_score || 0);
+      const exactProfileEvidence = Number(row.exact_profile_evidence_score || 0);
       const paperSimilarities = ((row.papers as Record<string, unknown>[]) || [])
         .map(paper => Number(paper.raw_similarity || 0))
         .filter(Boolean)
@@ -1736,20 +1966,36 @@ Deno.serve(async req => {
         .filter(paper => Number(paper.relevance_score || 0) >= 0.55)
         .length;
       const paperDepthScore = Math.min(1, paperEvidenceCount / 4);
+      const methodDomainScore = methodDomainEvidenceScore(row, groups);
       const profileDrivenScore = (
         profileAuthority * 0.62
         + profileConcept * 0.24
-        + profileSimilarity * 0.14
+        + profileSimilarity * 0.08
+        + exactProfileEvidence * 0.06
       );
       const balancedEvidenceScore = (
-        profileAuthority * 0.42
+        profileAuthority * 0.38
         + profileConcept * 0.2
-        + profileSimilarity * 0.14
+        + profileSimilarity * 0.1
+        + exactProfileEvidence * 0.08
         + bestPaperSimilarity * 0.14
         + topPaperAverage * 0.06
         + paperDepthScore * 0.04
       );
-      const combinedSimilarity = Math.max(profileDrivenScore, balancedEvidenceScore);
+      const exactEvidenceRescueScore = exactProfileEvidence > 0
+        ? exactProfileEvidence * 0.72 + profileAuthority * 0.16 + profileConcept * 0.12
+        : 0;
+      const methodDomainCap = groups.hasMethodIntent && groups.domainTerms.length > 0
+        ? methodDomainScore >= 1
+          ? 1
+          : methodDomainScore >= 0.58
+            ? 0.56
+            : 0.36
+        : 1;
+      const combinedSimilarity = Math.min(
+        Math.max(profileDrivenScore, balancedEvidenceScore, exactEvidenceRescueScore),
+        methodDomainCap,
+      );
       const profileEvidence = ((row.profile_evidence as string[]) || []).slice(0, 3);
 
       return {
@@ -1759,9 +2005,11 @@ Deno.serve(async req => {
         profile_similarity: profileSimilarity,
         profile_concept_score: profileConcept,
         profile_authority_score: profileAuthority,
+        exact_profile_evidence_score: exactProfileEvidence,
         profile_evidence: profileEvidence,
         paper_similarity: bestPaperSimilarity,
         paper_depth_score: paperDepthScore,
+        method_domain_evidence_score: methodDomainScore,
         match_reason: buildMatchReason(row, profileEvidence),
       };
     });
@@ -1773,7 +2021,7 @@ Deno.serve(async req => {
     const sortedCandidates = candidates
       .sort((a, b) => Number(b.combined_similarity || 0) - Number(a.combined_similarity || 0));
 
-    const llmPoolSize = Math.max(30, limit);
+    const llmPoolSize = 50;
     const llmPool = sortedCandidates.slice(0, llmPoolSize);
     const llmPoolIds = llmPool
       .map(row => String(row.researcher_id || ""))
@@ -1783,6 +2031,8 @@ Deno.serve(async req => {
       for (const row of llmPool) {
         const allPapers = allPapersByResearcher.get(String(row.researcher_id || "")) || [];
         row.all_paper_records = allPapers;
+        row.all_paper_evidence = paperEvidenceForRerank(searchQuery, terms, groups, allPapers);
+        row.all_paper_total_count = allPapers.length;
         row.all_paper_titles = allPapers.map(paper => {
           const title = String(paper.title || "").replace(/\s+/g, " ").trim();
           return paper.publication_year ? `${title} (${paper.publication_year})` : title;
@@ -1799,31 +2049,72 @@ Deno.serve(async req => {
     const rankedCandidates = enableRerank && llmReranks.size > 0
       ? llmPool
         .map((row, index) => {
-          const rerank = llmReranks.get(String(row.researcher_id || ""));
+          const returnedRerank = llmReranks.get(String(row.researcher_id || ""));
+          const rerank = returnedRerank && !isBogusDuplicateSuppression(returnedRerank)
+            ? returnedRerank
+            : undefined;
           if (!rerank) {
-            const evidenceScore = normalise(Number(row.combined_similarity || 0), minCombinedScore, maxCombinedScore, 0.38, 0.56);
-            const rankPenalty = Math.min(0.08, Math.log2(index + 1) * 0.012);
+            const isSuppressedDuplicate = returnedRerank ? isBogusDuplicateSuppression(returnedRerank) : false;
+            const evidenceScore = normalise(
+              Number(row.combined_similarity || 0),
+              minCombinedScore,
+              maxCombinedScore,
+              isSuppressedDuplicate ? 0.45 : 0.38,
+              isSuppressedDuplicate ? 0.88 : 0.56,
+            );
+            const rankPenalty = isSuppressedDuplicate ? 0 : Math.min(0.08, Math.log2(index + 1) * 0.012);
             const externalBoost = Math.min(0.025, (((row.external_evidence as ExternalEvidence[]) || []).length) * 0.005);
-            const fallbackScore = Math.round(Math.max(0.35, Math.min(0.52, evidenceScore - rankPenalty + externalBoost)) * 100);
+            const fallbackScore = Math.max(
+              Math.round(Math.max(0.35, Math.min(isSuppressedDuplicate ? 0.88 : 0.52, evidenceScore - rankPenalty + externalBoost)) * 100),
+              exactEvidenceRerankFloor(row),
+            );
+            const cappedFallbackScore = Math.min(fallbackScore, methodDomainRerankCap(row, groups));
+            const selectedPapers = rerankedPaperSummaries(
+              ((row.papers as Record<string, unknown>[]) || []),
+              ((row.all_paper_records as Record<string, unknown>[]) || []),
+              [],
+              ((row.all_paper_evidence as Record<string, unknown>[]) || []).slice(0, 10).map(paper => String(paper.paper_id || "")),
+            );
             return {
               ...row,
-              llm_rerank_score: fallbackScore,
-              llm_match_type: "evidence",
+              papers: selectedPapers,
+              llm_rerank_score: cappedFallbackScore,
+              llm_match_type: matchTypeForScore(cappedFallbackScore),
               llm_rank_index: index + 1000,
+              match_reason: isSuppressedDuplicate
+                ? buildMatchReason({ ...row, papers: selectedPapers }, ((row.profile_evidence as string[]) || []))
+                : row.match_reason,
+              similarity: cappedFallbackScore / 100,
             };
           }
+          const exactFloor = exactEvidenceRerankFloor(row);
+          const finalRerankScore = Math.min(
+            Math.max(rerank.score, exactFloor),
+            methodDomainRerankCap(row, groups),
+          );
           return {
             ...row,
             papers: rerankedPaperSummaries(
               ((row.papers as Record<string, unknown>[]) || []),
               ((row.all_paper_records as Record<string, unknown>[]) || []),
               rerank.best_paper_titles || [],
+              rerank.best_paper_ids || [],
             ),
-            llm_rerank_score: rerank.score,
-            llm_match_type: rerank.match_type || "adjacent",
+            llm_rerank_score: finalRerankScore,
+            llm_match_type: matchTypeForScore(finalRerankScore),
             llm_rank_index: index,
-            match_reason: rerank.reason || row.match_reason,
-            similarity: rerank.score / 100,
+            match_reason: hasDuplicateRerankLanguage(rerank.reason || "")
+              ? buildMatchReason({
+                ...row,
+                papers: rerankedPaperSummaries(
+                  ((row.papers as Record<string, unknown>[]) || []),
+                  ((row.all_paper_records as Record<string, unknown>[]) || []),
+                  rerank.best_paper_titles || [],
+                  rerank.best_paper_ids || [],
+                ),
+              }, ((row.profile_evidence as string[]) || []))
+              : rerank.reason || row.match_reason,
+            similarity: finalRerankScore / 100,
           };
         })
         .sort((a, b) => {
