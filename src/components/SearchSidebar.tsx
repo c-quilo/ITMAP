@@ -33,6 +33,53 @@ interface SearchSidebarProps {
 }
 
 const MATCH_FILTERS = ["Strong Match", "Moderate", "Weak"];
+const ATTACHMENT_CHAR_LIMIT = 20000;
+
+async function extractPdfText(file: File) {
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    import.meta.url,
+  ).toString();
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+  const pages: string[] = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    pages.push(
+      content.items
+        .map(item => "str" in item ? item.str : "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
+  }
+
+  return pages.filter(Boolean).join("\n\n");
+}
+
+async function extractDocxText(file: File) {
+  const mammoth = await import("mammoth");
+  const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  return result.value.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function extractAttachmentText(file: File) {
+  const filename = file.name.toLowerCase();
+  if (filename.endsWith(".pdf") || file.type === "application/pdf") {
+    return extractPdfText(file);
+  }
+  if (
+    filename.endsWith(".docx")
+    || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return extractDocxText(file);
+  }
+  return file.text();
+}
 
 export default function SearchSidebar({
   activeFilters,
@@ -63,6 +110,8 @@ export default function SearchSidebar({
   });
   const [keywordSearch, setKeywordSearch] = useState("");
   const [showKeywordDropdown, setShowKeywordDropdown] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [isReadingAttachment, setIsReadingAttachment] = useState(false);
 
   useEffect(() => {
     onOptionsChange?.({ enableRerank, includeExternalEvidence });
@@ -83,9 +132,21 @@ export default function SearchSidebar({
 
   const handleDocumentUpload = async (file?: File) => {
     if (!file) return;
-    const text = await file.text();
-    setSemanticQuery(text.slice(0, 12000));
-    setSearchMode("semantic");
+    setIsReadingAttachment(true);
+    setAttachmentError("");
+    try {
+      const text = (await extractAttachmentText(file)).trim();
+      if (!text) {
+        setAttachmentError("I could not find readable text in that file.");
+        return;
+      }
+      setSemanticQuery(text.slice(0, ATTACHMENT_CHAR_LIMIT));
+      setSearchMode("semantic");
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "Could not read that file.");
+    } finally {
+      setIsReadingAttachment(false);
+    }
   };
 
   return (
@@ -167,17 +228,27 @@ export default function SearchSidebar({
             />
             <div className="mt-2 flex items-center justify-between gap-2">
               <label className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary cursor-pointer transition-colors">
-                <Upload className="h-3.5 w-3.5" />
-                Attach text
+                {isReadingAttachment ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                {isReadingAttachment ? "Reading..." : "Attach file"}
                 <input
                   type="file"
-                  accept=".txt,.md,.csv"
+                  accept=".txt,.md,.csv,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   className="hidden"
-                  onChange={event => handleDocumentUpload(event.target.files?.[0])}
+                  onChange={event => {
+                    handleDocumentUpload(event.target.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
                 />
               </label>
               <span className="text-[11px] text-muted-foreground">{semanticQuery.length.toLocaleString()} chars</span>
             </div>
+            {attachmentError && (
+              <p className="mt-1 text-[11px] leading-relaxed text-destructive">{attachmentError}</p>
+            )}
           </div>
         )}
 
