@@ -1,6 +1,25 @@
 import { MOCK_RESEARCHERS, type ExternalEvidence, type Publication, type Researcher } from "@/data/mockData";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 
+export const FALLBACK_KEYWORD_SUGGESTIONS = [
+  "air pollution",
+  "artificial intelligence",
+  "bioengineering",
+  "biomaterials",
+  "cancer",
+  "climate change",
+  "data science",
+  "deep learning",
+  "energy systems",
+  "environmental exposure",
+  "health services",
+  "machine learning",
+  "materials science",
+  "public health",
+  "robotics",
+  "sustainability",
+];
+
 export interface SearchPayload {
   query: string;
   mode: "semantic" | "keyword";
@@ -36,6 +55,33 @@ export interface MissionRewrite {
   domainTerms: string[];
 }
 
+export interface ResearcherSuggestion {
+  researcherId: string;
+  openalexId?: string;
+  name: string;
+  title: string;
+  department: string;
+  faculty: string;
+  score: number;
+}
+
+export interface ResearcherProfile {
+  researcherId: string;
+  openalexId?: string;
+  profileUrl?: string;
+  email?: string;
+  name: string;
+  title: string;
+  department: string;
+  faculty: string;
+  summary: string;
+  profile: string;
+  research: string;
+  fieldsOfResearch: string;
+  paperCount: number;
+  papers: Publication[];
+}
+
 interface SupabasePublication {
   title: string;
   journal?: string | null;
@@ -44,6 +90,7 @@ interface SupabasePublication {
   relevance_score?: number | null;
   openalex_work_id?: string | null;
   doi?: string | null;
+  abstract?: string | null;
 }
 
 interface SupabaseExternalEvidence {
@@ -97,6 +144,14 @@ function splitKeywords(value?: string | null) {
     .slice(0, 8);
 }
 
+function normaliseDepartment(value?: string | null) {
+  const department = String(value || "").trim();
+  if (department.toLowerCase() === "institute for climate change") {
+    return "Grantham Institute for Climate Change";
+  }
+  return department || "Imperial College London";
+}
+
 function toPublication(pub: SupabasePublication): Publication {
   const doi = pub.doi?.trim();
   const doiUrl = doi
@@ -142,7 +197,7 @@ function toResearcher(row: SupabaseResearcher): Researcher {
     email: row.email || undefined,
     name: row.full_name,
     title: row.position_name || row.position || "Imperial researcher",
-    department: row.affiliation || "Imperial College London",
+    department: normaliseDepartment(row.affiliation),
     faculty: row.faculty || "Imperial College London",
     summary: summary || row.fields_of_research || "Profile and publication metadata available in the search index.",
     keywords,
@@ -247,6 +302,109 @@ export async function rewriteMission(query: string): Promise<MissionRewrite> {
     methodTerms: Array.isArray(data?.method_terms) ? data.method_terms.map(String) : [],
     domainTerms: Array.isArray(data?.domain_terms) ? data.domain_terms.map(String) : [],
   };
+}
+
+export async function suggestResearchers(query: string): Promise<ResearcherSuggestion[]> {
+  if (!hasSupabaseConfig || !supabase || query.trim().length < 2) {
+    return [];
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "suggest_researchers",
+      query,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  return rows.map((row: Record<string, unknown>) => ({
+    researcherId: String(row.researcher_id || ""),
+    openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
+    name: String(row.full_name || ""),
+    title: String(row.title || "Imperial researcher"),
+    department: normaliseDepartment(String(row.department || "")),
+    faculty: String(row.faculty || "Imperial College London"),
+    score: Number(row.score || 0),
+  })).filter(row => row.researcherId && row.name);
+}
+
+export async function getResearcherProfile(researcherId: string): Promise<ResearcherProfile> {
+  if (!hasSupabaseConfig || !supabase) {
+    const fallback = MOCK_RESEARCHERS.find(researcher => researcher.id === researcherId) || MOCK_RESEARCHERS[0];
+    return {
+      researcherId: fallback.id,
+      openalexId: fallback.openalexId,
+      profileUrl: fallback.profileUrl,
+      email: fallback.email,
+      name: fallback.name,
+      title: fallback.title,
+      department: normaliseDepartment(fallback.department),
+      faculty: fallback.faculty,
+      summary: fallback.summary,
+      profile: fallback.summary,
+      research: fallback.department,
+      fieldsOfResearch: fallback.keywords.join("; "),
+      paperCount: fallback.publications.length,
+      papers: fallback.publications,
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "researcher_profile",
+      researcher_id: researcherId,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const row = data?.researcher || {};
+  const papers = Array.isArray(data?.papers) ? data.papers : [];
+  const profile = String(row.bio_about || "");
+  const research = String(row.research || "");
+
+  return {
+    researcherId: String(row.researcher_id || researcherId),
+    openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
+    profileUrl: row.profile_url ? String(row.profile_url) : undefined,
+    email: row.email ? String(row.email) : undefined,
+    name: String(row.full_name || "Imperial researcher"),
+    title: String(row.position_name || row.position || "Imperial researcher"),
+    department: normaliseDepartment(String(row.affiliation || research || "")),
+    faculty: String(row.faculty || "Imperial College London"),
+    summary: String(row.profile_summary || profile || research || row.fields_of_research || ""),
+    profile,
+    research,
+    fieldsOfResearch: String(row.fields_of_research || ""),
+    paperCount: Number(row.paper_count || papers.length || 0),
+    papers: papers.map(toPublication),
+  };
+}
+
+export async function getKeywordSuggestions(query = ""): Promise<string[]> {
+  if (!hasSupabaseConfig || !supabase) {
+    return FALLBACK_KEYWORD_SUGGESTIONS;
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "keyword_suggestions",
+      query,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const suggestions = Array.isArray(data?.suggestions) ? data.suggestions.map(String) : [];
+  return [...new Set([...suggestions, ...FALLBACK_KEYWORD_SUGGESTIONS])];
 }
 
 export async function matchSchoolMissions(query: string, researchers: Researcher[]): Promise<SchoolMissionMatch[]> {

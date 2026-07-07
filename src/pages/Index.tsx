@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { matchSchoolMissions, rewriteMission, searchResearchers, summarizeResearchPool, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type ResearcherProfile, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "graph" | "saved";
+type TabMode = "search" | "deep-search" | "profile" | "graph" | "saved";
 type SearchMode = "semantic" | "keyword";
 type SaveFilePicker = (options?: {
   suggestedName?: string;
@@ -69,6 +69,20 @@ const FACULTY_FILTERS = new Set([
   "Imperial College Business School",
 ]);
 
+const ROLE_GROUPS = [
+  { label: "Chair", rank: 0, terms: ["chair"] },
+  { label: "Professor", rank: 1, terms: ["professor", "prof "] },
+  { label: "Associate Professor", rank: 2, terms: ["associate professor"] },
+  { label: "Reader", rank: 3, terms: ["reader"] },
+  { label: "Senior Lecturer", rank: 4, terms: ["senior lecturer"] },
+  { label: "Lecturer", rank: 5, terms: ["lecturer"] },
+  { label: "Research Fellow", rank: 6, terms: ["research fellow", "fellow"] },
+  { label: "Research Associate", rank: 7, terms: ["research associate", "research assistant"] },
+  { label: "Postdoc", rank: 8, terms: ["postdoc", "postdoctoral", "post-doctoral"] },
+  { label: "PhD", rank: 9, terms: ["phd", "doctoral", "research postgraduate"] },
+  { label: "Other", rank: 10, terms: [] },
+];
+
 function normaliseFaculty(value: string) {
   return value.replace(/^Faculty of /, "").toLowerCase();
 }
@@ -83,6 +97,16 @@ function matchLabel(score: number) {
   if (score >= 80) return "Strong Match";
   if (score >= 60) return "Moderate";
   return "Weak";
+}
+
+function roleGroupForTitle(title: string) {
+  const lowerTitle = title.toLowerCase();
+  const associateProfessor = ROLE_GROUPS.find(group => group.label === "Associate Professor")!;
+  if (lowerTitle.includes("associate professor")) return associateProfessor;
+
+  return ROLE_GROUPS.find(group =>
+    group.terms.some(term => lowerTitle.includes(term))
+  ) || ROLE_GROUPS[ROLE_GROUPS.length - 1];
 }
 
 function isPersistentFilter(filter: string) {
@@ -267,7 +291,128 @@ function ResearchPoolSummaryPanel({ summary }: { summary: ResearchPoolSummary })
   );
 }
 
+function ResearcherProfileView({
+  profile,
+  paperPage,
+  onPageChange,
+}: {
+  profile: ResearcherProfile;
+  paperPage: number;
+  onPageChange: (page: number) => void;
+}) {
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(profile.papers.length / pageSize));
+  const safePage = Math.min(Math.max(0, paperPage), pageCount - 1);
+  const papers = profile.papers.slice(safePage * pageSize, safePage * pageSize + pageSize);
+
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
+      <aside className="space-y-4">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+              {profile.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold leading-tight text-foreground">{profile.name}</h2>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{profile.title}</p>
+            </div>
+          </div>
+          <div className="mt-4 space-y-2 text-xs text-muted-foreground">
+            <p><span className="font-medium text-foreground">Department:</span> {profile.department}</p>
+            <p><span className="font-medium text-foreground">Faculty:</span> {profile.faculty}</p>
+            {profile.email && <p><span className="font-medium text-foreground">Email:</span> {profile.email}</p>}
+            {profile.openalexId && <p><span className="font-medium text-foreground">OpenAlex:</span> {profile.openalexId}</p>}
+            <p><span className="font-medium text-foreground">Papers:</span> {profile.paperCount.toLocaleString()}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-primary/15 bg-card p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <p className="text-sm font-semibold text-foreground">Profile Summary</p>
+          </div>
+          <p className="text-sm leading-relaxed text-foreground/75">{profile.summary || "No profile summary available."}</p>
+        </div>
+
+        {profile.fieldsOfResearch && (
+          <div className="rounded-lg border border-border bg-card p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fields of Research</p>
+            <p className="mt-2 text-sm leading-relaxed text-foreground/75">{profile.fieldsOfResearch}</p>
+          </div>
+        )}
+      </aside>
+
+      <section className="min-w-0 space-y-4">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Profile</p>
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/80">
+            {profile.profile || profile.research || "No profile text available."}
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card">
+          <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-primary" />
+                <p className="text-sm font-semibold text-foreground">Paper Titles</p>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Showing {papers.length === 0 ? 0 : safePage * pageSize + 1}-{Math.min(profile.papers.length, safePage * pageSize + papers.length)} of {profile.papers.length.toLocaleString()} papers
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onPageChange(Math.max(0, safePage - 1))}
+                disabled={safePage === 0}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Previous
+              </button>
+              <span className="text-xs text-muted-foreground">Group {safePage + 1} / {pageCount}</span>
+              <button
+                onClick={() => onPageChange(Math.min(pageCount - 1, safePage + 1))}
+                disabled={safePage >= pageCount - 1}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          {papers.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-muted-foreground">No papers found for this researcher.</p>
+          ) : (
+            <div className="divide-y divide-border">
+              {papers.map((paper, index) => (
+                <div key={`${paper.openalexWorkId || paper.doi || paper.title}-${index}`} className="px-4 py-3">
+                  <a
+                    href={paper.doiUrl || (paper.openalexWorkId ? `https://openalex.org/${paper.openalexWorkId.replace(/^https?:\/\/openalex.org\//, "")}` : undefined)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm font-medium leading-relaxed text-foreground hover:text-primary"
+                  >
+                    {paper.title}
+                  </a>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    {paper.year > 0 && <span>{paper.year}</span>}
+                    {paper.journal && <span>{paper.journal}</span>}
+                    {paper.citations > 0 && <span>{paper.citations.toLocaleString()} citations</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function Index() {
+  const searchRunIdRef = useRef(0);
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [tabMode, setTabMode] = useState<TabMode>("search");
@@ -289,6 +434,15 @@ export default function Index() {
   const [pendingRewriteSearch, setPendingRewriteSearch] = useState<PendingRewriteSearch | null>(null);
   const [editableRewrite, setEditableRewrite] = useState("");
   const [isRewritingMission, setIsRewritingMission] = useState(false);
+  const [profileQuery, setProfileQuery] = useState("");
+  const [profileSuggestions, setProfileSuggestions] = useState<ResearcherSuggestion[]>([]);
+  const [isLoadingProfileSuggestions, setIsLoadingProfileSuggestions] = useState(false);
+  const [profileSuggestionError, setProfileSuggestionError] = useState("");
+  const [selectedResearcherProfile, setSelectedResearcherProfile] = useState<ResearcherProfile | null>(null);
+  const [isLoadingResearcherProfile, setIsLoadingResearcherProfile] = useState(false);
+  const [researcherProfileError, setResearcherProfileError] = useState("");
+  const [profilePaperPage, setProfilePaperPage] = useState(0);
+  const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
 
   useEffect(() => {
     try {
@@ -325,6 +479,54 @@ export default function Index() {
 
     return () => window.clearInterval(timer);
   }, [isSearching]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getKeywordSuggestions()
+      .then(suggestions => {
+        if (!cancelled) setKeywordSearchSuggestions([...new Set([...suggestions, ...FALLBACK_KEYWORD_SUGGESTIONS])]);
+      })
+      .catch(() => {
+        if (!cancelled) setKeywordSearchSuggestions(FALLBACK_KEYWORD_SUGGESTIONS);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const trimmedQuery = profileQuery.trim();
+    if (tabMode !== "profile" || trimmedQuery.length < 2) {
+      setProfileSuggestions([]);
+      setProfileSuggestionError("");
+      setIsLoadingProfileSuggestions(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsLoadingProfileSuggestions(true);
+      setProfileSuggestionError("");
+      try {
+        const suggestions = await suggestResearchers(trimmedQuery);
+        if (!cancelled) setProfileSuggestions(suggestions);
+      } catch (error) {
+        if (!cancelled) {
+          setProfileSuggestions([]);
+          setProfileSuggestionError(error instanceof Error ? error.message : "Could not load researcher suggestions.");
+        }
+      } finally {
+        if (!cancelled) setIsLoadingProfileSuggestions(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [profileQuery, tabMode]);
 
   const availableDepartments = useMemo(() => {
     if (!hasSearched) return [];
@@ -528,6 +730,30 @@ export default function Index() {
     setTabMode("search");
   };
 
+  const loadResearcherProfile = async (suggestion: ResearcherSuggestion) => {
+    setProfileQuery(suggestion.name);
+    setProfileSuggestions([]);
+    setIsLoadingResearcherProfile(true);
+    setResearcherProfileError("");
+    setProfilePaperPage(0);
+    try {
+      const profile = await getResearcherProfile(suggestion.researcherId);
+      setSelectedResearcherProfile(profile);
+    } catch (error) {
+      setSelectedResearcherProfile(null);
+      setResearcherProfileError(error instanceof Error ? error.message : "Could not load researcher profile.");
+    } finally {
+      setIsLoadingResearcherProfile(false);
+    }
+  };
+
+  const cancelSearch = () => {
+    searchRunIdRef.current += 1;
+    setIsSearching(false);
+    setIsRewritingMission(false);
+    setSearchError("Search stopped.");
+  };
+
   const executeSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
@@ -536,6 +762,8 @@ export default function Index() {
       setSearchResults([]);
       return;
     }
+    const searchRunId = searchRunIdRef.current + 1;
+    searchRunIdRef.current = searchRunId;
     setIsSearching(true);
     setSearchError("");
     setSchoolMissionError("");
@@ -551,6 +779,7 @@ export default function Index() {
         enableRerank: options.enableRerank,
         includeExternalEvidence: options.includeExternalEvidence,
       });
+      if (searchRunIdRef.current !== searchRunId) return;
       const nextDepartments = new Set(results.map(researcher => researcher.department).filter(Boolean));
       setActiveFilters(prev => prev.filter(filter =>
         isPersistentFilter(filter) || (!departmentFilters.has(filter) && nextDepartments.has(filter))
@@ -560,10 +789,13 @@ export default function Index() {
       setHasSearched(true);
       saveSearch(trimmedQuery, mode, results);
     } catch (error) {
+      if (searchRunIdRef.current !== searchRunId) return;
       setSearchError(error instanceof Error ? error.message : "Search failed");
       setHasSearched(true);
     } finally {
-      setIsSearching(false);
+      if (searchRunIdRef.current === searchRunId) {
+        setIsSearching(false);
+      }
     }
   };
 
@@ -577,10 +809,13 @@ export default function Index() {
     }
 
     if (mode === "semantic" && options.rewriteMission) {
+      const searchRunId = searchRunIdRef.current + 1;
+      searchRunIdRef.current = searchRunId;
       setIsRewritingMission(true);
       setSearchError("");
       try {
         const rewrite = await rewriteMission(trimmedQuery);
+        if (searchRunIdRef.current !== searchRunId) return;
         const rewrittenQuery = rewrite.rewrittenQuery.trim() || trimmedQuery;
         setPendingRewriteSearch({
           originalQuery: trimmedQuery,
@@ -590,9 +825,12 @@ export default function Index() {
         });
         setEditableRewrite(rewrittenQuery);
       } catch (error) {
+        if (searchRunIdRef.current !== searchRunId) return;
         setSearchError(error instanceof Error ? error.message : "Could not rewrite the mission.");
       } finally {
-        setIsRewritingMission(false);
+        if (searchRunIdRef.current === searchRunId) {
+          setIsRewritingMission(false);
+        }
       }
       return;
     }
@@ -746,8 +984,21 @@ export default function Index() {
   const sortedResearchers = [...filteredResearchers].sort((a, b) => {
     if (sortBy === "relevance") return b.relevanceScore - a.relevanceScore;
     if (sortBy === "name") return a.name.localeCompare(b.name);
-    return b.relevanceScore - a.relevanceScore;
+    const aGroup = roleGroupForTitle(a.title);
+    const bGroup = roleGroupForTitle(b.title);
+    if (aGroup.rank !== bGroup.rank) return aGroup.rank - bGroup.rank;
+    return b.relevanceScore - a.relevanceScore || a.name.localeCompare(b.name);
   });
+
+  const seniorityGroups = useMemo(() => {
+    if (sortBy !== "seniority") return [];
+    return ROLE_GROUPS
+      .map(group => ({
+        ...group,
+        researchers: sortedResearchers.filter(researcher => roleGroupForTitle(researcher.title).label === group.label),
+      }))
+      .filter(group => group.researchers.length > 0);
+  }, [sortBy, sortedResearchers]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -839,6 +1090,28 @@ export default function Index() {
             Search
           </button>
           <button
+            onClick={() => setTabMode("deep-search")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+              tabMode === "deep-search"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Brain className="h-3.5 w-3.5" />
+            Deep Search
+          </button>
+          <button
+            onClick={() => setTabMode("profile")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+              tabMode === "profile"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <UserRound className="h-3.5 w-3.5" />
+            Researcher Profile
+          </button>
+          <button
             onClick={() => setTabMode("graph")}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
               tabMode === "graph"
@@ -873,7 +1146,7 @@ export default function Index() {
       </header>
 
       {/* Body */}
-      {tabMode === "search" ? (
+      {tabMode === "search" || tabMode === "deep-search" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Sidebar */}
           <div className="max-h-[46vh] w-full shrink-0 overflow-hidden border-b border-border lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r">
@@ -882,10 +1155,12 @@ export default function Index() {
               onToggleFilter={toggleFilter}
               onClearFilters={() => setActiveFilters([])}
               onSearch={handleSearch}
+              onCancelSearch={cancelSearch}
               onLoadSavedSearch={loadSavedSearch}
               isSearching={isSearching || isRewritingMission}
               departmentOptions={availableDepartments}
               keywordOptions={availableKeywords}
+              keywordSearchSuggestions={keywordSearchSuggestions}
               schoolMissionOptions={availableSchoolMissions}
               schoolMissionThemeOptions={availableSchoolMissionThemes}
               savedSearches={savedSearches}
@@ -928,7 +1203,7 @@ export default function Index() {
                     >
                       <option value="relevance">Relevance</option>
                       <option value="name">Name</option>
-                      <option value="seniority">Seniority</option>
+                      <option value="seniority">Role / Seniority</option>
                     </select>
                   </div>
                 </div>
@@ -1025,15 +1300,128 @@ export default function Index() {
                   No researchers matched this search. Try a broader mission or turn on ITMAP rerank.
                 </div>
               )}
-              {sortedResearchers.map(r => (
-                <ResearcherCard
-                  key={r.id}
-                  researcher={r}
-                  bookmarked={savedResearcherIds.has(r.id)}
-                  onToggleBookmark={toggleSavedResearcher}
-                />
-              ))}
+              {sortBy === "seniority" ? (
+                seniorityGroups.map(group => (
+                  <div key={group.label} className="contents">
+                    <div className="xl:col-span-2 mt-1 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-border" />
+                      <span className="rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
+                        {group.label} · {group.researchers.length}
+                      </span>
+                      <div className="h-px flex-1 bg-border" />
+                    </div>
+                    {group.researchers.map(r => (
+                      <ResearcherCard
+                        key={r.id}
+                        researcher={r}
+                        bookmarked={savedResearcherIds.has(r.id)}
+                        onToggleBookmark={toggleSavedResearcher}
+                      />
+                    ))}
+                  </div>
+                ))
+              ) : (
+                sortedResearchers.map(r => (
+                  <ResearcherCard
+                    key={r.id}
+                    researcher={r}
+                    bookmarked={savedResearcherIds.has(r.id)}
+                    onToggleBookmark={toggleSavedResearcher}
+                  />
+                ))
+              )}
             </div>
+          </main>
+        </div>
+      ) : tabMode === "profile" ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row">
+          <aside className="w-full shrink-0 border-b border-border bg-card lg:w-[380px] lg:border-b-0 lg:border-r">
+            <div className="space-y-4 p-5">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Find a researcher</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Start typing a name and choose the closest Imperial profile from the suggestions.
+                </p>
+              </div>
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <input
+                  value={profileQuery}
+                  onChange={event => setProfileQuery(event.target.value)}
+                  placeholder="Type a researcher name..."
+                  className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+              {profileSuggestionError && (
+                <p className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  {profileSuggestionError}
+                </p>
+              )}
+              <div className="space-y-2">
+                {isLoadingProfileSuggestions && (
+                  <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    Finding names...
+                  </div>
+                )}
+                {!isLoadingProfileSuggestions && profileQuery.trim().length >= 2 && profileSuggestions.length === 0 && !profileSuggestionError && (
+                  <div className="rounded-lg border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+                    No matching researchers yet.
+                  </div>
+                )}
+                {profileSuggestions.map(suggestion => (
+                  <button
+                    key={suggestion.researcherId}
+                    type="button"
+                    onClick={() => loadResearcherProfile(suggestion)}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-secondary"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-foreground">{suggestion.name}</p>
+                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{suggestion.title}</p>
+                        <p className="mt-1 truncate text-[11px] text-muted-foreground">{suggestion.department}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
+                        {Math.round(suggestion.score * 100)}%
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex min-h-0 flex-1 overflow-hidden">
+            {isLoadingResearcherProfile ? (
+              <div className="flex flex-1 items-center justify-center">
+                <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  Loading profile and papers...
+                </div>
+              </div>
+            ) : researcherProfileError ? (
+              <div className="flex flex-1 items-center justify-center p-6">
+                <div className="max-w-md rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
+                  {researcherProfileError}
+                </div>
+              </div>
+            ) : selectedResearcherProfile ? (
+              <ResearcherProfileView
+                profile={selectedResearcherProfile}
+                paperPage={profilePaperPage}
+                onPageChange={setProfilePaperPage}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center p-6">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+                    <UserRound className="h-7 w-7 text-primary" />
+                  </div>
+                  <p className="mt-4 text-base font-semibold text-foreground">Select a researcher profile</p>
+                </div>
+              </div>
+            )}
           </main>
         </div>
       ) : tabMode === "graph" ? (

@@ -20,6 +20,7 @@ export interface SavedSearchSummary {
 
 interface SearchSidebarProps {
   onSearch?: (query: string, mode: SearchMode, options: SearchOptions) => void;
+  onCancelSearch?: () => void;
   onOptionsChange?: (options: SearchOptions) => void;
   onLoadSavedSearch?: (id: string) => void;
   isSearching?: boolean;
@@ -28,6 +29,7 @@ interface SearchSidebarProps {
   onClearFilters: () => void;
   departmentOptions: string[];
   keywordOptions: string[];
+  keywordSearchSuggestions: string[];
   schoolMissionOptions: string[];
   schoolMissionThemeOptions: string[];
   savedSearches: SavedSearchSummary[];
@@ -87,11 +89,13 @@ export default function SearchSidebar({
   onToggleFilter,
   onClearFilters,
   onSearch,
+  onCancelSearch,
   onOptionsChange,
   onLoadSavedSearch,
   isSearching = false,
   departmentOptions,
   keywordOptions,
+  keywordSearchSuggestions,
   schoolMissionOptions,
   schoolMissionThemeOptions,
   savedSearches,
@@ -99,8 +103,8 @@ export default function SearchSidebar({
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [semanticQuery, setSemanticQuery] = useState("");
   const [keywordQuery, setKeywordQuery] = useState("");
-  const [enableRerank, setEnableRerank] = useState(true);
-  const [includeExternalEvidence, setIncludeExternalEvidence] = useState(true);
+  const [enableRerank, setEnableRerank] = useState(false);
+  const [includeExternalEvidence, setIncludeExternalEvidence] = useState(false);
   const [rewriteMission, setRewriteMission] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     match: true,
@@ -126,8 +130,15 @@ export default function SearchSidebar({
   const filteredKeywords = keywordOptions.filter(k =>
     k.toLowerCase().includes(keywordSearch.toLowerCase())
   );
+  const keywordQuerySuggestions = keywordSearchSuggestions
+    .filter(keyword => keyword.toLowerCase().includes(keywordQuery.toLowerCase()))
+    .slice(0, 8);
 
   const runSearch = () => {
+    if (isSearching) {
+      onCancelSearch?.();
+      return;
+    }
     const query = searchMode === "keyword" ? keywordQuery : semanticQuery;
     onSearch?.(query, searchMode, { enableRerank, includeExternalEvidence, rewriteMission });
   };
@@ -277,17 +288,48 @@ export default function SearchSidebar({
         {/* Keyword Search Box */}
         {searchMode === "keyword" && (
           <div>
-            <p className="section-label mb-2" title="Use this when you want exact words or phrases to appear in profiles, fields, or papers.">Keyword Search</p>
+            <p className="section-label mb-2" title="Use exact terms, quoted phrases, and Boolean operators such as AND, OR, and NOT.">Keyword Search</p>
             <div className="relative">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <input
                 type="text"
                 className="w-full rounded-lg border border-border bg-card pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
-                placeholder="Search by keyword..."
+                placeholder='e.g. "air pollution" AND health NOT indoor'
                 value={keywordQuery}
                 onChange={event => setKeywordQuery(event.target.value)}
               />
+              {keywordQuery.trim().length > 0 && keywordQuerySuggestions.length > 0 && (
+                <div className="absolute z-20 top-full mt-1 w-full overflow-hidden rounded-lg border border-border bg-card shadow-lg">
+                  {keywordQuerySuggestions.map(keyword => (
+                    <button
+                      key={keyword}
+                      type="button"
+                      className="w-full px-3 py-2 text-left text-xs text-foreground transition-colors hover:bg-secondary"
+                      onMouseDown={() => setKeywordQuery(keyword)}
+                    >
+                      {keyword}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+            {keywordQuery.trim().length === 0 && keywordSearchSuggestions.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {keywordSearchSuggestions.slice(0, 8).map(keyword => (
+                  <button
+                    key={keyword}
+                    type="button"
+                    onClick={() => setKeywordQuery(keyword)}
+                    className="rounded-md bg-secondary px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                  >
+                    {keyword}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              Supports quoted phrases plus AND, OR, and NOT. Plain keywords still work.
+            </p>
           </div>
         )}
 
@@ -545,15 +587,18 @@ export default function SearchSidebar({
         <div className="shrink-0 border-t border-border bg-card p-4">
           <button
             onClick={runSearch}
-            disabled={isSearching}
-            className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              isSearching
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
+            }`}
           >
             {isSearching ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <X className="h-4 w-4" />
             ) : (
               <Search className="h-4 w-4" />
             )}
-            {isSearching ? "Searching..." : "Search Researchers"}
+            {isSearching ? "Stop Search" : "Search Researchers"}
           </button>
         </div>
       )}

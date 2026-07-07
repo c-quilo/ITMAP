@@ -6,8 +6,9 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "match_school_missions" | "summarize_pool";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "keyword_suggestions" | "match_school_missions" | "summarize_pool";
   query?: string;
+  researcher_id?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
@@ -177,6 +178,8 @@ const STOP_WORDS = new Set([
   "london",
   "mission",
   "need",
+  "not",
+  "or",
   "research",
   "researcher",
   "researchers",
@@ -228,6 +231,31 @@ const ROLE_AUTHORITY_TERMS = [
   "director",
   "lead",
   "principal investigator",
+];
+
+let keywordSuggestionCache: {
+  createdAt: number;
+  suggestions: string[];
+} | null = null;
+
+const KEYWORD_SUGGESTION_TTL_MS = 24 * 60 * 60 * 1000;
+const FALLBACK_KEYWORD_SUGGESTIONS = [
+  "air pollution",
+  "artificial intelligence",
+  "bioengineering",
+  "biomaterials",
+  "cancer",
+  "climate change",
+  "data science",
+  "deep learning",
+  "energy systems",
+  "environmental exposure",
+  "health services",
+  "machine learning",
+  "materials science",
+  "public health",
+  "robotics",
+  "sustainability",
 ];
 
 function normaliseFaculty(filter: string) {
@@ -358,6 +386,133 @@ function textHasAny(text: string, terms: string[]) {
   });
 }
 
+type KeywordBooleanToken =
+  | { type: "term"; value: string; exact: boolean }
+  | { type: "op"; value: "AND" | "OR" | "NOT" };
+
+function parseKeywordBooleanQuery(query: string) {
+  const hasBooleanSyntax = /\b(AND|OR|NOT)\b/i.test(query) || /"[^"]+"/.test(query);
+  if (!hasBooleanSyntax) {
+    return {
+      hasBooleanSyntax: false,
+      tokens: [] as KeywordBooleanToken[],
+    };
+  }
+
+  const rawTokens = query.match(/"[^"]+"|\bAND\b|\bOR\b|\bNOT\b|[^\s"]+/gi) || [];
+  const tokens: KeywordBooleanToken[] = [];
+  let phraseParts: string[] = [];
+
+  const flushPhrase = () => {
+    const value = phraseParts.join(" ").replace(/\s+/g, " ").trim();
+    if (value) tokens.push({ type: "term", value, exact: false });
+    phraseParts = [];
+  };
+
+  for (const raw of rawTokens) {
+    const upper = raw.toUpperCase();
+    if (upper === "AND" || upper === "OR" || upper === "NOT") {
+      flushPhrase();
+      tokens.push({ type: "op", value: upper });
+      continue;
+    }
+
+    if (raw.startsWith("\"") && raw.endsWith("\"")) {
+      flushPhrase();
+      const value = raw.slice(1, -1).replace(/\s+/g, " ").trim();
+      if (value) tokens.push({ type: "term", value, exact: true });
+      continue;
+    }
+
+    phraseParts.push(raw);
+  }
+
+  flushPhrase();
+
+  const withImplicitOperators: KeywordBooleanToken[] = [];
+  for (const token of tokens) {
+    const previous = withImplicitOperators[withImplicitOperators.length - 1];
+    if (
+      previous
+      && (
+        (previous.type === "term" && token.type === "term")
+        || (previous.type === "term" && token.type === "op" && token.value === "NOT")
+        || (previous.type === "op" && previous.value === "NOT" && token.type === "op" && token.value === "NOT")
+      )
+    ) {
+      withImplicitOperators.push({ type: "op", value: "AND" });
+    }
+    withImplicitOperators.push(token);
+  }
+
+  return {
+    hasBooleanSyntax: withImplicitOperators.some(token => token.type === "term"),
+    tokens: withImplicitOperators,
+  };
+}
+
+function keywordBooleanTermMatches(text: string, token: Extract<KeywordBooleanToken, { type: "term" }>) {
+  const normalizedText = text.toLowerCase();
+  const value = token.value.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!value) return false;
+  if (token.exact || value.includes(" ")) {
+    return normalizedText.includes(value);
+  }
+  return textHasAny(normalizedText, expandedTermVariants(value));
+}
+
+function evaluateKeywordBooleanExpression(
+  text: string,
+  tokens: KeywordBooleanToken[],
+) {
+  if (tokens.length === 0) return true;
+  let index = 0;
+
+  const parseFactor = (): boolean => {
+    const token = tokens[index];
+    if (!token) return false;
+    if (token.type === "op" && token.value === "NOT") {
+      index += 1;
+      return !parseFactor();
+    }
+    if (token.type === "term") {
+      index += 1;
+      return keywordBooleanTermMatches(text, token);
+    }
+    index += 1;
+    return false;
+  };
+
+  const parseAnd = (): boolean => {
+    let value = parseFactor();
+    while (tokens[index]?.type === "op" && tokens[index].value === "AND") {
+      index += 1;
+      value = value && parseFactor();
+    }
+    return value;
+  };
+
+  let value = parseAnd();
+  while (tokens[index]?.type === "op" && tokens[index].value === "OR") {
+    index += 1;
+    value = value || parseAnd();
+  }
+  return value;
+}
+
+function rowKeywordBooleanText(row: Record<string, unknown>) {
+  const profileText = researcherText(row);
+  const paperText = ((row.papers as Record<string, unknown>[]) || [])
+    .map(paper => [
+      paper.title,
+      paper.abstract,
+      paper.journal,
+      paper.source_display_name,
+    ].map(value => String(value || "")).join(" "))
+    .join(" ");
+  return `${profileText} ${paperText}`.toLowerCase();
+}
+
 function hasMethodEvidence(text: string) {
   const normalized = text.toLowerCase();
   if (METHOD_PHRASES.some(phrase => normalized.includes(phrase))) return true;
@@ -451,6 +606,16 @@ function researcherCoreText(row: Record<string, unknown>) {
     row.bio_about,
     row.research,
   ].map(value => String(value || "").toLowerCase()).join(" ");
+}
+
+function isVisitingResearcher(row: Record<string, unknown>) {
+  const roleText = [
+    row.position_name,
+    row.position,
+    row.title,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+
+  return /\b(visiting|visitor)\b/.test(roleText);
 }
 
 function directQueryPhrases(query: string) {
@@ -1393,7 +1558,7 @@ async function summarizePoolWithLlm(
           "You summarise the pool of relevant Imperial College London researchers returned by an expert-finding search.",
           "Use only the supplied researcher evidence. Do not invent publications, grants, affiliations, or capabilities.",
           "Explain the main expertise patterns in the pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
-          "Keep it concise and useful for a user deciding who to contact.",
+          "Write the summary field as about 300 words, useful for a user deciding who to contact.",
           "Return JSON only: {\"headline\":\"...\",\"summary\":\"...\",\"themes\":[\"...\"],\"notable_researchers\":[{\"name\":\"...\",\"reason\":\"...\"}],\"gaps\":[\"...\"]}",
         ].join(" "),
       },
@@ -1405,12 +1570,12 @@ async function summarizePoolWithLlm(
         }),
       },
     ],
-    4500,
+    6500,
   ) as ResearchPoolSummary;
 
   return {
     headline: truncateText(result.headline || "What ITMAP found", 140),
-    summary: truncateText(result.summary || "", 900),
+    summary: truncateText(result.summary || "", 2600),
     themes: Array.isArray(result.themes) ? result.themes.map(item => truncateText(item, 120)).filter(Boolean).slice(0, 6) : [],
     notable_researchers: Array.isArray(result.notable_researchers)
       ? result.notable_researchers
@@ -1518,6 +1683,209 @@ function escapeIlike(value: string) {
   return value.replace(/[%_]/g, "\\$&").replace(/[,()]/g, " ");
 }
 
+function cleanKeywordSuggestion(value: string) {
+  return value
+    .replace(/[_/]+/g, " ")
+    .replace(/[^\p{L}\p{N}\s&-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function keywordSuggestionTokens(value: string) {
+  return cleanKeywordSuggestion(value)
+    .toLowerCase()
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token =>
+      (token.length > 2 || token === "ai" || token === "ml")
+      && !STOP_WORDS.has(token)
+      && !/^\d+$/.test(token)
+    );
+}
+
+function isUsefulKeywordSuggestion(value: string) {
+  const cleaned = cleanKeywordSuggestion(value);
+  const lowered = cleaned.toLowerCase();
+  const tokens = keywordSuggestionTokens(cleaned);
+  if (tokens.length === 0 || tokens.length > 5) return false;
+  if (cleaned.length < 3 || cleaned.length > 70) return false;
+  if (STOP_WORDS.has(lowered)) return false;
+  if (["faculty", "department", "university", "group", "centre", "center"].includes(lowered)) return false;
+  return true;
+}
+
+function addKeywordSuggestion(
+  counts: Map<string, number>,
+  value: string,
+  weight: number,
+) {
+  const cleaned = cleanKeywordSuggestion(value);
+  if (!isUsefulKeywordSuggestion(cleaned)) return;
+  const key = cleaned.toLowerCase();
+  counts.set(key, (counts.get(key) || 0) + weight);
+}
+
+function addKeywordSuggestionsFromText(
+  counts: Map<string, number>,
+  value: unknown,
+  weight: number,
+) {
+  const text = cleanKeywordSuggestion(String(value || ""));
+  if (!text) return;
+  const tokens = keywordSuggestionTokens(text);
+  for (const token of tokens) addKeywordSuggestion(counts, token, weight);
+  for (let size = 2; size <= 3; size += 1) {
+    for (let index = 0; index <= tokens.length - size; index += 1) {
+      addKeywordSuggestion(counts, tokens.slice(index, index + size).join(" "), weight + size);
+    }
+  }
+}
+
+async function buildKeywordSuggestions(supabase: ReturnType<typeof createClient>) {
+  const now = Date.now();
+  if (
+    keywordSuggestionCache
+    && keywordSuggestionCache.suggestions.length > 0
+    && now - keywordSuggestionCache.createdAt < KEYWORD_SUGGESTION_TTL_MS
+  ) {
+    return keywordSuggestionCache.suggestions;
+  }
+
+  const counts = new Map<string, number>();
+  const pageSize = 1000;
+  let from = 0;
+
+  while (from < 12000) {
+    const { data, error } = await supabase
+      .from("researchers")
+      .select("fields_of_research,bio_about,research,position_name,position,affiliation,faculty")
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    const rows = data || [];
+
+    for (const row of rows) {
+      const fields = String(row.fields_of_research || "");
+      fields
+        .split(/[;,|]/)
+        .map(item => item.trim())
+        .filter(Boolean)
+        .forEach(item => addKeywordSuggestion(counts, item, 12));
+
+      addKeywordSuggestionsFromText(counts, row.fields_of_research, 5);
+      addKeywordSuggestionsFromText(counts, row.bio_about, 1);
+      addKeywordSuggestionsFromText(counts, row.research, 1);
+      addKeywordSuggestion(counts, String(row.affiliation || ""), 3);
+      addKeywordSuggestion(counts, String(row.faculty || ""), 2);
+    }
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  from = 0;
+  while (from < 12000) {
+    const { data, error } = await supabase
+      .from("researcher_documents")
+      .select("document_text")
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    const rows = data || [];
+
+    for (const row of rows) {
+      addKeywordSuggestionsFromText(counts, row.document_text, 1);
+    }
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const suggestions = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([keyword]) => keyword)
+    .filter(keyword => !keyword.includes("undefined"))
+    .slice(0, 250);
+
+  const finalSuggestions = suggestions.length > 0 ? suggestions : FALLBACK_KEYWORD_SUGGESTIONS;
+  keywordSuggestionCache = { createdAt: now, suggestions: finalSuggestions };
+  return finalSuggestions;
+}
+
+async function keywordSuggestions(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+) {
+  const suggestions = await buildKeywordSuggestions(supabase);
+  const cleanedQuery = cleanKeywordSuggestion(query).toLowerCase();
+  if (!cleanedQuery) return suggestions.slice(0, 80);
+
+  return suggestions
+    .filter(keyword => keyword.includes(cleanedQuery))
+    .slice(0, 40);
+}
+
+function normalizeName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function nameTokens(value: string) {
+  return normalizeName(value)
+    .split(/[\s-]+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 2);
+}
+
+function editDistance(a: string, b: string) {
+  if (a === b) return 0;
+  if (!a) return b.length;
+  if (!b) return a.length;
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = Array.from({ length: b.length + 1 }, () => 0);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) previous[j] = current[j];
+  }
+
+  return previous[b.length];
+}
+
+function tokenSimilarity(queryToken: string, candidateToken: string) {
+  if (!queryToken || !candidateToken) return 0;
+  if (candidateToken === queryToken) return 1;
+  if (candidateToken.startsWith(queryToken) || queryToken.startsWith(candidateToken)) return 0.92;
+  const distance = editDistance(queryToken, candidateToken);
+  return Math.max(0, 1 - distance / Math.max(queryToken.length, candidateToken.length));
+}
+
+function researcherNameScore(query: string, fullName: string) {
+  const queryParts = nameTokens(query);
+  const candidateParts = nameTokens(fullName);
+  if (queryParts.length === 0 || candidateParts.length === 0) return 0;
+
+  const matched = queryParts.map(queryPart =>
+    Math.max(...candidateParts.map(candidatePart => tokenSimilarity(queryPart, candidatePart)))
+  );
+  const averageScore = matched.reduce((sum, score) => sum + score, 0) / matched.length;
+  const exactPhraseBoost = normalizeName(fullName).includes(normalizeName(query)) ? 0.15 : 0;
+  return Math.min(1, averageScore + exactPhraseBoost);
+}
+
 async function fetchPapersForResearchers(
   supabase: ReturnType<typeof createClient>,
   researcherIds: string[],
@@ -1570,6 +1938,172 @@ async function fetchAllPapersForResearchers(
   }
 
   return papersByResearcher;
+}
+
+async function suggestResearchersByName(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+) {
+  const terms = nameTokens(query).slice(0, 4);
+  if (terms.length === 0) return [];
+
+  const orFilter = terms
+    .map(term => `full_name.ilike.%${escapeIlike(term)}%`)
+    .join(",");
+
+  const { data, error } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,full_name,position_name,position,affiliation,faculty")
+    .or(orFilter)
+    .limit(80);
+
+  if (error) throw error;
+
+  return (data || [])
+    .map((row: Record<string, unknown>) => ({
+      researcher_id: row.id,
+      openalex_id: row.openalex_id,
+      full_name: row.full_name,
+      title: row.position_name || row.position,
+      department: row.affiliation,
+      faculty: row.faculty,
+      score: researcherNameScore(query, String(row.full_name || "")),
+    }))
+    .filter(row => Number(row.score || 0) >= 0.45)
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    .slice(0, 10);
+}
+
+async function fetchAllPapersForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+) {
+  const allPapers: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  let from = 0;
+
+  while (from < 20000) {
+    const { data, error } = await supabase
+      .from("researcher_papers")
+      .select("openalex_work_id,title,abstract,publication_year,cited_by_count,source_display_name,doi")
+      .eq("researcher_id", researcherId)
+      .order("publication_year", { ascending: false, nullsFirst: false })
+      .order("cited_by_count", { ascending: false, nullsFirst: false })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    const rows = data || [];
+    allPapers.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return allPapers;
+}
+
+async function summarizeResearcherProfileWithLlm(
+  openAiKey: string,
+  model: string,
+  researcher: Record<string, unknown>,
+  papers: Record<string, unknown>[],
+) {
+  const fallback = truncateText(
+    [researcher.bio_about, researcher.research, researcher.fields_of_research]
+      .filter(Boolean)
+      .join(" "),
+    900,
+  );
+  if (!fallback && papers.length === 0) return "";
+
+  try {
+    const result = await openAiJson(
+      openAiKey,
+      model,
+      [
+        {
+          role: "system",
+          content: [
+            "You write concise researcher profile summaries for an Imperial College London expert-finding tool.",
+            "Use only the supplied profile, position, fields, and paper titles.",
+            "Do not invent affiliations, grants, papers, or claims.",
+            "Write the summary as 100-150 words.",
+            "Return JSON only: {\"summary\":\"...\"}",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            name: researcher.full_name,
+            position: researcher.position_name || researcher.position,
+            department: researcher.affiliation || researcher.research,
+            faculty: researcher.faculty,
+            fields_of_research: researcher.fields_of_research,
+            profile: truncateText(researcher.bio_about, 1800),
+            research: truncateText(researcher.research, 700),
+            paper_count: papers.length,
+            paper_titles: papers.slice(0, 80).map(paper => ({
+              title: truncateText(paper.title, 220),
+              year: paper.publication_year || null,
+              journal: truncateText(paper.source_display_name, 120),
+            })),
+          }),
+        },
+      ],
+      1800,
+    ) as { summary?: string };
+
+    return truncateText(result.summary || fallback, 1400);
+  } catch (error) {
+    console.error("Researcher profile summary failed", error);
+    return fallback;
+  }
+}
+
+async function researcherProfileById(
+  supabase: ReturnType<typeof createClient>,
+  openAiKey: string,
+  model: string,
+  researcherId: string,
+) {
+  const { data: researcher, error } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,profile_url,full_name,email,bio_about,research,position_name,position,affiliation,faculty,fields_of_research")
+    .eq("id", researcherId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!researcher) throw new Error("Researcher not found");
+
+  const papers = await fetchAllPapersForResearcher(supabase, researcherId);
+  const profileSummary = await summarizeResearcherProfileWithLlm(openAiKey, model, researcher, papers);
+
+  return {
+    researcher: {
+      researcher_id: researcher.id,
+      openalex_id: researcher.openalex_id,
+      profile_url: researcher.profile_url,
+      full_name: researcher.full_name,
+      email: researcher.email,
+      bio_about: researcher.bio_about,
+      research: researcher.research,
+      position_name: researcher.position_name,
+      position: researcher.position,
+      affiliation: researcher.affiliation,
+      faculty: researcher.faculty,
+      fields_of_research: researcher.fields_of_research,
+      profile_summary: profileSummary,
+      paper_count: papers.length,
+    },
+    papers: papers.map(paper => ({
+      title: paper.title,
+      abstract: truncateText(paper.abstract, 800),
+      year: paper.publication_year,
+      citations: paper.cited_by_count,
+      journal: paper.source_display_name,
+      openalex_work_id: paper.openalex_work_id,
+      doi: paper.doi,
+    })),
+  };
 }
 
 async function fetchProfileKeywordCandidates(
@@ -1691,6 +2225,34 @@ Deno.serve(async req => {
       }, { headers: corsHeaders });
     }
 
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+    if (body.action === "suggest_researchers") {
+      const suggestions = query
+        ? await suggestResearchersByName(supabase, query)
+        : [];
+      return Response.json({ suggestions }, { headers: corsHeaders });
+    }
+
+    if (body.action === "researcher_profile") {
+      const researcherId = String(body.researcher_id || "");
+      if (!researcherId) {
+        return Response.json(
+          { error: "Missing researcher_id" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const profile = await researcherProfileById(supabase, openAiKey, rankingModel, researcherId);
+      return Response.json(profile, { headers: corsHeaders });
+    }
+
+    if (body.action === "keyword_suggestions") {
+      const suggestions = await keywordSuggestions(supabase, query);
+      return Response.json({
+        suggestions: suggestions.length > 0 ? suggestions : FALLBACK_KEYWORD_SUGGESTIONS,
+      }, { headers: corsHeaders });
+    }
+
     if (body.action === "match_school_missions") {
       const researchers = Array.isArray(body.researchers) ? body.researchers : [];
       const missionMatches = await matchSchoolMissionsWithLlm(openAiKey, rankingModel, query, researchers);
@@ -1747,13 +2309,13 @@ Deno.serve(async req => {
     const filters = body.filters || [];
     const terms = queryTerms(searchQuery);
     const groups = conceptGroups(searchQuery, terms);
+    const keywordBooleanQuery = parseKeywordBooleanQuery(searchQuery);
     const isLongMission = terms.length > 10;
     const facultyFilters = filters
       .filter(filter => filter.startsWith("Faculty of") || filter === "Imperial College Business School")
       .map(normaliseFaculty);
     const roleFilters = filters.filter(filter => GRADE_FILTERS.has(filter));
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
     const candidateCount = Math.min(220, Math.max(90, limit * 5));
     const { data: researcherMatches, error: researcherError } = await supabase.rpc("match_researcher_documents", {
       query_embedding: embedding,
@@ -1916,6 +2478,12 @@ Deno.serve(async req => {
       }
     }
 
+    for (const [researcherId, row] of merged.entries()) {
+      if (isVisitingResearcher(row)) {
+        merged.delete(researcherId);
+      }
+    }
+
     const researcherIds = [...merged.keys()];
     if (researcherIds.length > 0) {
       const paperRows = await fetchPapersForResearchers(supabase, researcherIds);
@@ -1947,6 +2515,14 @@ Deno.serve(async req => {
           if (existingPapers.length === 0) {
             row.match_reason = "Matched from this researcher profile; publications shown are ranked against the mission text.";
           }
+        }
+      }
+    }
+
+    if (mode === "keyword" && keywordBooleanQuery.hasBooleanSyntax) {
+      for (const [researcherId, row] of merged.entries()) {
+        if (!evaluateKeywordBooleanExpression(rowKeywordBooleanText(row), keywordBooleanQuery.tokens)) {
+          merged.delete(researcherId);
         }
       }
     }

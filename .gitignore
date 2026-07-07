@@ -19,3 +19,4 @@ researcher_papers.csv
 researcher_search_documents.csv
 researcher_search_documents.jsonl
 researcher_paper_search_documents.jsonl
+openalex_author_works_backfill_state.json
