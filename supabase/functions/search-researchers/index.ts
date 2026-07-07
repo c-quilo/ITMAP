@@ -2283,6 +2283,60 @@ Deno.serve(async req => {
     };
     const searchQuery = query;
 
+    const filters = body.filters || [];
+    const terms = queryTerms(searchQuery);
+    const groups = conceptGroups(searchQuery, terms);
+    const keywordBooleanQuery = parseKeywordBooleanQuery(searchQuery);
+    const isLongMission = terms.length > 10;
+    const facultyFilters = filters
+      .filter(filter => filter.startsWith("Faculty of") || filter === "Imperial College Business School")
+      .map(normaliseFaculty);
+    const roleFilters = filters.filter(filter => GRADE_FILTERS.has(filter));
+
+    if (mode === "keyword") {
+      const keywordMatchCount = Math.min(150, Math.max(60, limit * 4));
+      const { data: keywordMatches, error: keywordError } = await supabase.rpc("match_keyword_researchers", {
+        search_query: searchQuery,
+        match_count: keywordMatchCount,
+        faculty_filters: facultyFilters,
+        role_filters: roleFilters,
+      });
+
+      if (keywordError) {
+        throw keywordError;
+      }
+
+      const filteredKeywordMatches = (keywordMatches || [])
+        .filter((row: Record<string, unknown>) => !isVisitingResearcher(row))
+        .filter((row: Record<string, unknown>) => {
+          if (!keywordBooleanQuery.hasBooleanSyntax) return true;
+          return evaluateKeywordBooleanExpression(rowKeywordBooleanText(row), keywordBooleanQuery.tokens);
+        });
+      const keywordScores = filteredKeywordMatches
+        .map((row: Record<string, unknown>) => Number(row.similarity || 0))
+        .filter(Boolean);
+      const minKeywordScore = keywordScores.length > 0 ? Math.min(...keywordScores) : 0;
+      const maxKeywordScore = keywordScores.length > 0 ? Math.max(...keywordScores) : 1;
+
+      const results = filteredKeywordMatches
+        .sort((a: Record<string, unknown>, b: Record<string, unknown>) => Number(b.similarity || 0) - Number(a.similarity || 0))
+        .map((row: Record<string, unknown>, index: number) => ({
+          ...row,
+          profile_similarity: Number(row.keyword_profile_rank || 0),
+          paper_similarity: Number(row.keyword_paper_rank || 0),
+          profile_concept_score: profileConceptScore(searchQuery, terms, row),
+          profile_authority_score: profileAuthorityScore(searchQuery, terms, row),
+          exact_profile_evidence_score: exactProfileEvidenceScore(searchQuery, terms, row),
+          profile_evidence: matchedProfileEvidence(searchQuery, terms, row),
+          similarity: normalise(Number(row.similarity || 0), minKeywordScore, maxKeywordScore, 0.48, 0.98)
+            - Math.min(0.05, Math.log2(index + 1) * 0.006),
+          match_reason: "",
+        }))
+        .slice(0, limit);
+
+      return Response.json({ results }, { headers: corsHeaders });
+    }
+
     const embeddingResponse = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
@@ -2305,16 +2359,6 @@ Deno.serve(async req => {
     if (!Array.isArray(embedding)) {
       throw new Error("Embedding response did not include a vector");
     }
-
-    const filters = body.filters || [];
-    const terms = queryTerms(searchQuery);
-    const groups = conceptGroups(searchQuery, terms);
-    const keywordBooleanQuery = parseKeywordBooleanQuery(searchQuery);
-    const isLongMission = terms.length > 10;
-    const facultyFilters = filters
-      .filter(filter => filter.startsWith("Faculty of") || filter === "Imperial College Business School")
-      .map(normaliseFaculty);
-    const roleFilters = filters.filter(filter => GRADE_FILTERS.has(filter));
 
     const candidateCount = Math.min(220, Math.max(90, limit * 5));
     const { data: researcherMatches, error: researcherError } = await supabase.rpc("match_researcher_documents", {

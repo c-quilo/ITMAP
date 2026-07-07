@@ -140,7 +140,11 @@ export default function SearchSidebar({
       return;
     }
     const query = searchMode === "keyword" ? keywordQuery : semanticQuery;
-    onSearch?.(query, searchMode, { enableRerank, includeExternalEvidence, rewriteMission });
+    onSearch?.(query, searchMode, {
+      enableRerank,
+      includeExternalEvidence: searchMode === "semantic" ? includeExternalEvidence : false,
+      rewriteMission,
+    });
   };
 
   const handleDocumentUpload = async (file?: File) => {
@@ -209,24 +213,26 @@ export default function SearchSidebar({
               className="mt-0.5 h-4 w-4 accent-primary"
             />
           </label>
-          <label
-            className="flex cursor-pointer items-start justify-between gap-3"
-            title="Adds public web, video, startup/spinout, media, and UKRI grant signals. These only give a small boost when clearly relevant."
-          >
-            <span>
-              <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                Media, grants and startups
-                <HelpCircle className="h-3 w-3 text-muted-foreground" />
+          {searchMode === "semantic" && (
+            <label
+              className="flex cursor-pointer items-start justify-between gap-3"
+              title="Adds public web, video, startup/spinout, media, and UKRI grant signals. These only give a small boost when clearly relevant."
+            >
+              <span>
+                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                  Media, grants and startups
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </span>
+                <span className="block text-[11px] leading-relaxed text-muted-foreground">Add web search and UKRI evidence.</span>
               </span>
-              <span className="block text-[11px] leading-relaxed text-muted-foreground">Add web search and UKRI evidence.</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={includeExternalEvidence}
-              onChange={event => setIncludeExternalEvidence(event.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-primary"
-            />
-          </label>
+              <input
+                type="checkbox"
+                checked={includeExternalEvidence}
+                onChange={event => setIncludeExternalEvidence(event.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+            </label>
+          )}
           {searchMode === "semantic" && (
             <label
               className="flex cursor-pointer items-start justify-between gap-3"

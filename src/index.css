@@ -136,30 +136,40 @@
   }
 
   /* Graph styles */
+  .graph-canvas {
+    background:
+      radial-gradient(circle at 50% 44%, hsl(268 65% 50% / 0.08), transparent 32%),
+      radial-gradient(circle at 78% 18%, hsl(196 55% 43% / 0.08), transparent 30%),
+      linear-gradient(hsl(260 18% 70% / 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(260 18% 70% / 0.08) 1px, transparent 1px),
+      hsl(250 20% 98%);
+    background-size: auto, auto, 44px 44px, 44px 44px, auto;
+  }
+
   .graph-node {
     cursor: pointer;
-    transition: transform 0.2s ease, filter 0.2s ease;
+    transition: filter 0.18s ease, opacity 0.18s ease;
   }
 
   .graph-node:hover {
-    filter: brightness(1.1);
+    filter: saturate(1.08) brightness(1.04);
   }
 
   .graph-tooltip {
-    @apply bg-card border border-border rounded-xl shadow-xl p-4;
+    @apply bg-card/95 border border-border/80 rounded-xl shadow-xl p-4 backdrop-blur-xl;
     @apply text-sm;
     pointer-events: none;
     max-width: 280px;
   }
 
   .graph-mode-btn {
-    @apply px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150;
-    @apply border border-border text-muted-foreground;
-    @apply hover:bg-accent hover:text-accent-foreground hover:border-primary/30;
+    @apply whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-150;
+    @apply border border-transparent text-muted-foreground;
+    @apply hover:bg-background hover:text-foreground hover:shadow-sm;
   }
 
   .graph-mode-btn-active {
-    @apply bg-primary text-primary-foreground border-primary;
-    @apply hover:bg-primary/90;
+    @apply border-primary/20 bg-primary text-primary-foreground shadow-sm;
+    @apply hover:bg-primary/90 hover:text-primary-foreground;
   }
 }

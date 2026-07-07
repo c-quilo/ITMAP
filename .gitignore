@@ -6,6 +6,7 @@
 node_modules/
 dist/
 supabase/.temp/
+.codex-gh-config/
 
 # Generated OpenAlex / matching artifacts
 imperial_authors_count.csv

@@ -7,6 +7,7 @@ interface ResearcherCardProps {
   researcher: Researcher;
   bookmarked?: boolean;
   onToggleBookmark?: (researcher: Researcher) => void;
+  showMatchExplanation?: boolean;
 }
 
 function RelevanceBadge({ score }: { score: number }) {
@@ -134,6 +135,7 @@ export default function ResearcherCard({
   researcher,
   bookmarked = false,
   onToggleBookmark,
+  showMatchExplanation = true,
 }: ResearcherCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [profileExpanded, setProfileExpanded] = useState(false);
@@ -225,7 +227,7 @@ export default function ResearcherCard({
       </AnimatePresence>
 
       {/* Match Explanation */}
-      {researcher.semanticExplanation && (
+      {showMatchExplanation && researcher.semanticExplanation && (
         <div className="mt-3 flex items-start gap-2 px-3 py-2.5 rounded-lg bg-imperial-light/50 border border-primary/10">
           <Sparkles className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
           <div>

@@ -421,6 +421,7 @@ export default function Index() {
   const [searchError, setSearchError] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [currentMission, setCurrentMission] = useState("");
+  const [currentSearchMode, setCurrentSearchMode] = useState<SearchMode>("semantic");
   const [searchSeconds, setSearchSeconds] = useState(0);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [savedResearchers, setSavedResearchers] = useState<Researcher[]>([]);
@@ -720,6 +721,7 @@ export default function Index() {
     ));
     setSearchResults(saved.results);
     setCurrentMission(saved.query);
+    setCurrentSearchMode(saved.mode);
     setHasSearched(true);
     setMissionCheckDone(saved.results.some(researcher => researcher.schoolMissionMatch));
     setSchoolMissionError("");
@@ -786,6 +788,7 @@ export default function Index() {
       ));
       setSearchResults(results);
       setCurrentMission(trimmedQuery);
+      setCurrentSearchMode(mode);
       setHasSearched(true);
       saveSearch(trimmedQuery, mode, results);
     } catch (error) {
@@ -1090,15 +1093,16 @@ export default function Index() {
             Search
           </button>
           <button
-            onClick={() => setTabMode("deep-search")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
-              tabMode === "deep-search"
-                ? "bg-card shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
+            type="button"
+            disabled
+            title="Deep Search is coming soon"
+            className="flex cursor-not-allowed items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium text-muted-foreground/70 opacity-75"
           >
             <Brain className="h-3.5 w-3.5" />
             Deep Search
+            <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-muted-foreground">
+              Coming soon
+            </span>
           </button>
           <button
             onClick={() => setTabMode("profile")}
@@ -1316,6 +1320,7 @@ export default function Index() {
                         researcher={r}
                         bookmarked={savedResearcherIds.has(r.id)}
                         onToggleBookmark={toggleSavedResearcher}
+                        showMatchExplanation={currentSearchMode === "semantic"}
                       />
                     ))}
                   </div>
@@ -1327,6 +1332,7 @@ export default function Index() {
                     researcher={r}
                     bookmarked={savedResearcherIds.has(r.id)}
                     onToggleBookmark={toggleSavedResearcher}
+                    showMatchExplanation={currentSearchMode === "semantic"}
                   />
                 ))
               )}

@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ZoomIn, ZoomOut, Maximize2, Info } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, Info, Network, Users, GitBranch } from "lucide-react";
 import {
   GRAPH_MODES,
   type GraphNode,
@@ -12,28 +12,30 @@ import type { Researcher } from "@/data/mockData";
 import GraphSidePanel from "./GraphSidePanel";
 
 const NODE_SIZES: Record<string, number> = {
-  mission: 38,
-  pi: 18,
-  lecturer: 14,
-  postdoc: 12,
-  phd: 10,
+  mission: 34,
+  pi: 16,
+  lecturer: 13,
+  postdoc: 11,
+  phd: 9,
 };
 
 const NODE_COLORS: Record<string, string> = {
-  mission: "hsl(268, 65%, 50%)",
-  pi: "hsl(268, 55%, 55%)",
-  lecturer: "hsl(200, 55%, 55%)",
-  postdoc: "hsl(160, 50%, 50%)",
-  phd: "hsl(30, 55%, 55%)",
+  mission: "hsl(268, 58%, 48%)",
+  pi: "hsl(268, 50%, 50%)",
+  lecturer: "hsl(196, 55%, 43%)",
+  postdoc: "hsl(165, 45%, 38%)",
+  phd: "hsl(38, 70%, 46%)",
 };
 
 const EDGE_COLORS: Record<string, string> = {
-  mission: "hsl(268, 40%, 70%)",
-  supervisor: "hsl(200, 50%, 60%)",
-  coauthor: "hsl(160, 45%, 55%)",
-  thematic: "hsl(30, 50%, 60%)",
-  department: "hsl(260, 15%, 80%)",
+  mission: "hsl(268, 34%, 64%)",
+  supervisor: "hsl(196, 45%, 48%)",
+  coauthor: "hsl(165, 45%, 42%)",
+  thematic: "hsl(38, 62%, 48%)",
+  department: "hsl(260, 12%, 72%)",
 };
+
+const CLUSTER_HUES = [268, 196, 165, 38, 340, 218, 125, 18];
 
 interface GraphVisualizationProps {
   researchers: Researcher[];
@@ -50,6 +52,13 @@ function inferGraphRole(researcher: Researcher): GraphNode["role"] {
 
 function initialsLabel(name: string) {
   return name.replace(/^prof\.?\s+/i, "").replace(/^dr\.?\s+/i, "");
+}
+
+function shortNameLabel(name: string) {
+  const clean = initialsLabel(name);
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length <= 2) return clean;
+  return `${parts[0]} ${parts[parts.length - 1]}`;
 }
 
 function sharedKeywordWeight(a: Researcher, b: Researcher) {
@@ -107,7 +116,7 @@ function buildGraph(researchers: Researcher[], missionLabel = "Current Mission")
       cy: Math.sin(angle) * clusterRadius,
       rx: Math.max(78, Math.min(145, 45 + members.length * 14)),
       ry: Math.max(55, Math.min(110, 35 + members.length * 10)),
-      color: `hsla(${(index * 53 + 200) % 360}, 55%, 58%, 0.08)`,
+      color: `hsla(${CLUSTER_HUES[index % CLUSTER_HUES.length]}, 48%, 58%, 0.08)`,
       description: department,
     };
   });
@@ -235,6 +244,17 @@ function buildGraph(researchers: Researcher[], missionLabel = "Current Mission")
   return { nodes, edges, clusters };
 }
 
+function edgePath(src: GraphNode, tgt: GraphNode, index: number) {
+  const dx = tgt.x - src.x;
+  const dy = tgt.y - src.y;
+  const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+  const curve = Math.min(34, Math.max(10, distance * 0.08));
+  const direction = index % 2 === 0 ? 1 : -1;
+  const midX = (src.x + tgt.x) / 2 + (-dy / distance) * curve * direction;
+  const midY = (src.y + tgt.y) / 2 + (dx / distance) * curve * direction;
+  return `M ${src.x} ${src.y} Q ${midX} ${midY} ${tgt.x} ${tgt.y}`;
+}
+
 function getVisibleEdges(mode: GraphMode, edges: GraphEdge[], nodes: GraphNode[]): GraphEdge[] {
   switch (mode) {
     case "relevance":
@@ -283,6 +303,8 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
 
   const visibleEdges = getVisibleEdges(mode, edges, nodes);
   const highlightedNodes = getHighlightedNodes(mode, nodes);
+  const bridgeCount = nodes.filter(node => node.isBridge).length;
+  const coauthorEdgeCount = edges.filter(edge => edge.type === "coauthor").length;
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -367,10 +389,22 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
   const viewBox = "-450 -320 900 640";
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden relative">
+    <div className="flex-1 flex flex-col overflow-hidden relative bg-[linear-gradient(135deg,hsl(250,20%,99%),hsl(260,26%,96%))]">
       {/* Graph Controls */}
-      <div className="bg-card/95 backdrop-blur-sm border-b border-border px-6 py-3 flex items-center justify-between z-10">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="z-10 flex items-center justify-between gap-4 border-b border-border/70 bg-card/80 px-6 py-3 backdrop-blur-xl">
+        <div className="flex items-center gap-3">
+          <div className="hidden items-center gap-2 rounded-lg border border-border/80 bg-background/80 px-3 py-2 text-xs text-muted-foreground shadow-sm md:flex">
+            <Network className="h-4 w-4 text-primary" />
+            <span>{nodes.length - 1} researchers</span>
+            <span className="h-3 w-px bg-border" />
+            <Users className="h-4 w-4 text-imperial-teal" />
+            <span>{coauthorEdgeCount} co-author links</span>
+            <span className="h-3 w-px bg-border" />
+            <GitBranch className="h-4 w-4 text-imperial-gold" />
+            <span>{bridgeCount} bridges</span>
+          </div>
+        </div>
+        <div className="flex flex-1 items-center justify-center gap-2 overflow-x-auto">
           {GRAPH_MODES.map(m => (
             <button
               key={m.id}
@@ -382,14 +416,14 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setTransform(p => ({ ...p, scale: Math.min(3, p.scale * 1.2) }))} className="p-2 rounded-lg hover:bg-secondary transition-colors" title="Zoom in">
+        <div className="flex items-center gap-1 rounded-lg border border-border/80 bg-background/80 p-1 shadow-sm">
+          <button onClick={() => setTransform(p => ({ ...p, scale: Math.min(3, p.scale * 1.2) }))} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Zoom in">
             <ZoomIn className="h-4 w-4 text-muted-foreground" />
           </button>
-          <button onClick={() => setTransform(p => ({ ...p, scale: Math.max(0.3, p.scale * 0.8) }))} className="p-2 rounded-lg hover:bg-secondary transition-colors" title="Zoom out">
+          <button onClick={() => setTransform(p => ({ ...p, scale: Math.max(0.3, p.scale * 0.8) }))} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Zoom out">
             <ZoomOut className="h-4 w-4 text-muted-foreground" />
           </button>
-          <button onClick={resetView} className="p-2 rounded-lg hover:bg-secondary transition-colors" title="Reset view">
+          <button onClick={resetView} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Reset view">
             <Maximize2 className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
@@ -398,7 +432,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
       {/* Graph Canvas */}
       <div
         ref={containerRef}
-        className="flex-1 relative overflow-hidden bg-background cursor-grab active:cursor-grabbing"
+        className="graph-canvas flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing"
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -412,10 +446,20 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
           style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: "center" }}
         >
           <defs>
+            <filter id="node-soft-shadow" x="-80%" y="-80%" width="260%" height="260%">
+              <feDropShadow dx="0" dy="7" stdDeviation="7" floodColor="hsl(260, 20%, 20%)" floodOpacity="0.16" />
+            </filter>
+            <filter id="mission-shadow" x="-90%" y="-90%" width="280%" height="280%">
+              <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="hsl(268, 55%, 35%)" floodOpacity="0.25" />
+            </filter>
+            <linearGradient id="mission-fill" x1="0%" x2="100%" y1="0%" y2="100%">
+              <stop offset="0%" stopColor="hsl(268, 65%, 56%)" />
+              <stop offset="100%" stopColor="hsl(196, 50%, 42%)" />
+            </linearGradient>
             {/* Mission glow */}
             <radialGradient id="mission-glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0.25" />
-              <stop offset="70%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0.05" />
+              <stop offset="0%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0.22" />
+              <stop offset="70%" stopColor="hsl(196, 50%, 45%)" stopOpacity="0.06" />
               <stop offset="100%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0" />
             </radialGradient>
             {/* Relevance rings */}
@@ -427,7 +471,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
 
           {/* Relevance rings */}
           {[150, 280, 400].map((r, i) => (
-            <circle key={i} cx="0" cy="0" r={r} fill="none" stroke="hsl(268, 20%, 85%)" strokeWidth="0.5" strokeDasharray="4 6" opacity={0.5} />
+            <circle key={i} cx="0" cy="0" r={r} fill="none" stroke="hsl(260, 18%, 78%)" strokeWidth="0.45" strokeDasharray="2 9" opacity={0.45} />
           ))}
 
           {/* Cluster hulls */}
@@ -439,21 +483,21 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                 rx={cluster.rx}
                 ry={cluster.ry}
                 fill={cluster.color}
-                stroke="hsl(260, 15%, 85%)"
-                strokeWidth="0.5"
-                strokeDasharray="6 4"
-                opacity={0.8}
+                stroke="hsl(260, 18%, 80%)"
+                strokeWidth="0.35"
+                strokeDasharray="2 7"
+                opacity={0.55}
               />
               <text
                 x={cluster.cx}
-                y={cluster.cy - cluster.ry + 14}
+                y={cluster.cy - cluster.ry + 11}
                 textAnchor="middle"
                 className="fill-muted-foreground"
-                fontSize="7"
+                fontSize="5.5"
                 fontFamily="Space Grotesk, sans-serif"
-                fontWeight="500"
-                letterSpacing="0.05em"
-                opacity="0.5"
+                fontWeight="600"
+                letterSpacing="0"
+                opacity="0.44"
               >
                 {cluster.label.toUpperCase()}
               </text>
@@ -466,20 +510,19 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             const tgt = nodes.find(n => n.id === edge.target);
             if (!src || !tgt) return null;
             const color = EDGE_COLORS[edge.type] || "hsl(260, 15%, 80%)";
-            const width = edge.type === "mission" ? 1 + edge.weight * 1.5 : 0.8 + edge.weight * 1;
-            const opacity = edge.type === "mission" ? 0.15 + edge.weight * 0.2 : 0.2 + edge.weight * 0.3;
+            const width = edge.type === "mission" ? 0.65 + edge.weight * 1.1 : 0.55 + edge.weight * 0.8;
+            const opacity = edge.type === "mission" ? 0.1 + edge.weight * 0.18 : 0.14 + edge.weight * 0.28;
             const isHighlighted = selectedNode && (edge.source === selectedNode.id || edge.target === selectedNode.id);
             return (
-              <line
+              <path
                 key={`${edge.source}-${edge.target}-${i}`}
-                x1={src.x}
-                y1={src.y}
-                x2={tgt.x}
-                y2={tgt.y}
+                d={edgePath(src, tgt, i)}
+                fill="none"
                 stroke={color}
-                strokeWidth={isHighlighted ? width * 2 : width}
-                opacity={isHighlighted ? 0.8 : selectedNode ? opacity * 0.3 : opacity}
+                strokeWidth={isHighlighted ? width * 2.2 : width}
+                opacity={isHighlighted ? 0.72 : selectedNode ? opacity * 0.22 : opacity}
                 strokeLinecap="round"
+                strokeLinejoin="round"
               />
             );
           })}
@@ -502,7 +545,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                   className="fill-muted-foreground"
                   fontSize="4"
                   fontFamily="Inter, sans-serif"
-                  opacity="0.72"
+                  opacity="0.55"
                 >
                   {label}
                 </text>
@@ -510,7 +553,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             })}
 
           {/* Mission glow circle */}
-          <circle cx="0" cy="0" r="70" fill="url(#mission-glow)" className="animate-pulse-glow" />
+          <circle cx="0" cy="0" r="86" fill="url(#mission-glow)" className="animate-pulse-glow" />
 
           {/* Nodes */}
           {nodes.map(node => {
@@ -534,46 +577,49 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
               >
                 {/* Bridge indicator */}
                 {(node.isBridge || bridgeHighlight) && node.role !== "mission" && (
-                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke="hsl(268, 60%, 60%)" strokeWidth="1.5" strokeDasharray="3 2" opacity={0.6} />
+                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke="hsl(38, 80%, 48%)" strokeWidth="1.2" strokeDasharray="2 3" opacity={0.7} />
                 )}
                 {/* Selection ring */}
                 {isSelected && (
-                  <circle cx={node.x} cy={node.y} r={size + 4} fill="none" stroke={color} strokeWidth="2" opacity={0.8} />
+                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke={color} strokeWidth="1.8" opacity={0.85} />
                 )}
                 {/* Main circle */}
                 {node.role === "mission" ? (
                   <>
-                    <circle cx={node.x} cy={node.y} r={size} fill="hsl(268, 65%, 50%)" opacity={0.9} />
-                    <circle cx={node.x} cy={node.y} r={size - 3} fill="none" stroke="white" strokeWidth="1" opacity={0.5} />
-                    <text x={node.x} y={node.y - 6} textAnchor="middle" fill="white" fontSize="5.5" fontFamily="Space Grotesk, sans-serif" fontWeight="600" letterSpacing="0.08em">
-                      MISSION
+                    <circle cx={node.x} cy={node.y} r={size} fill="url(#mission-fill)" opacity={0.98} filter="url(#mission-shadow)" />
+                    <circle cx={node.x} cy={node.y} r={size - 4} fill="none" stroke="white" strokeWidth="0.9" opacity={0.55} />
+                    <text x={node.x} y={node.y - 5} textAnchor="middle" fill="white" fontSize="5.2" fontFamily="Space Grotesk, sans-serif" fontWeight="700" letterSpacing="0">
+                      SEARCH
                     </text>
-                    <text x={node.x} y={node.y + 2} textAnchor="middle" fill="white" fontSize="3.5" fontFamily="Inter, sans-serif" opacity={0.8}>
+                    <text x={node.x} y={node.y + 3} textAnchor="middle" fill="white" fontSize="3.6" fontFamily="Inter, sans-serif" opacity={0.86}>
                       {node.label.slice(0, 24)}
                     </text>
-                    <text x={node.x} y={node.y + 8} textAnchor="middle" fill="white" fontSize="3.5" fontFamily="Inter, sans-serif" opacity={0.8}>
+                    <text x={node.x} y={node.y + 9} textAnchor="middle" fill="white" fontSize="3.4" fontFamily="Inter, sans-serif" opacity={0.78}>
                       {node.label.length > 24 ? node.label.slice(24, 48) : "Search Results"}
                     </text>
                   </>
                 ) : (
                   <>
-                    <circle cx={node.x} cy={node.y} r={size} fill={color} opacity={0.85} />
-                    <circle cx={node.x} cy={node.y} r={size - 1.5} fill="none" stroke="white" strokeWidth="0.5" opacity={0.3} />
+                    <circle cx={node.x} cy={node.y} r={size + 3} fill={color} opacity="0.08" />
+                    <circle cx={node.x} cy={node.y} r={size} fill={color} opacity={0.95} filter="url(#node-soft-shadow)" />
+                    <circle cx={node.x - size * 0.28} cy={node.y - size * 0.35} r={Math.max(1.8, size * 0.24)} fill="white" opacity={0.28} />
                     {/* Initials */}
-                    <text x={node.x} y={node.y + 1.2} textAnchor="middle" fill="white" fontSize={size > 14 ? "7" : "5.5"} fontFamily="Space Grotesk, sans-serif" fontWeight="600">
+                    <text x={node.x} y={node.y + 1.2} textAnchor="middle" fill="white" fontSize={size > 14 ? "6.5" : "5.2"} fontFamily="Space Grotesk, sans-serif" fontWeight="700">
                       {node.label.split(" ").map(w => w[0]).filter(Boolean).slice(-2).join("")}
                     </text>
                     {/* Name label */}
-                    <text x={node.x} y={node.y + size + 10} textAnchor="middle" fill="hsl(260, 25%, 25%)" fontSize="5" fontFamily="Space Grotesk, sans-serif" fontWeight="500">
-                      {node.label.replace("Prof. ", "").replace("Dr. ", "")}
-                    </text>
-                    <text x={node.x} y={node.y + size + 17} textAnchor="middle" fill="hsl(260, 10%, 55%)" fontSize="3.8" fontFamily="Inter, sans-serif">
-                      {node.shortTitle}
-                    </text>
+                    {(isSelected || isConnected || !selectedNode) && (
+                      <>
+                        <text x={node.x} y={node.y + size + 9} textAnchor="middle" fill="hsl(260, 25%, 22%)" fontSize="4.8" fontFamily="Space Grotesk, sans-serif" fontWeight="600">
+                          {shortNameLabel(node.label)}
+                        </text>
+                        <text x={node.x} y={node.y + size + 15} textAnchor="middle" fill="hsl(260, 10%, 48%)" fontSize="3.5" fontFamily="Inter, sans-serif">
+                          {node.networkRole}
+                        </text>
+                      </>
+                    )}
                     {/* Relevance score */}
-                    <text x={node.x + size + 3} y={node.y - size + 3} textAnchor="start" fill={node.relevanceScore >= 80 ? "hsl(142, 64%, 40%)" : node.relevanceScore >= 60 ? "hsl(38, 92%, 45%)" : "hsl(0, 72%, 51%)"} fontSize="4.5" fontFamily="Space Grotesk, sans-serif" fontWeight="600">
-                      {node.relevanceScore}
-                    </text>
+                    <circle cx={node.x + size * 0.78} cy={node.y - size * 0.78} r="3.1" fill={node.relevanceScore >= 80 ? "hsl(142, 64%, 40%)" : node.relevanceScore >= 60 ? "hsl(38, 92%, 50%)" : "hsl(0, 72%, 55%)"} stroke="white" strokeWidth="0.9" />
                   </>
                 )}
               </g>
@@ -618,7 +664,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </AnimatePresence>
 
         {/* Legend */}
-        <div className="absolute bottom-4 left-4 bg-card/90 backdrop-blur-sm border border-border rounded-xl p-3 text-xs space-y-1.5 z-10">
+        <div className="absolute bottom-4 left-4 z-10 space-y-1.5 rounded-xl border border-border/80 bg-card/80 p-3 text-xs shadow-lg backdrop-blur-xl">
           <p className="font-brand text-[10px] font-semibold tracking-wider text-muted-foreground uppercase mb-2">Legend</p>
           {[
             { color: NODE_COLORS.pi, label: "Professor / PI", size: 8 },
@@ -642,7 +688,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </div>
 
         {/* Info overlay */}
-        <div className="absolute top-4 left-4 bg-card/90 backdrop-blur-sm border border-border rounded-xl px-4 py-3 max-w-xs z-10">
+        <div className="absolute top-4 left-4 z-10 max-w-xs rounded-xl border border-border/80 bg-card/80 px-4 py-3 shadow-lg backdrop-blur-xl">
           <p className="font-brand text-xs font-semibold text-foreground">
             {GRAPH_MODES.find(m => m.id === mode)?.label}
           </p>
