@@ -196,53 +196,111 @@ const SEARCH_STEPS = [
   },
 ];
 
-function SearchProgress({ seconds }: { seconds: number }) {
-  const activeIndex = SEARCH_STEPS.reduce((latest, step, index) => seconds >= step.at ? index : latest, 0);
-  const activeStep = SEARCH_STEPS[Math.max(0, activeIndex)];
+const KEYWORD_SEARCH_STEPS = [
+  {
+    at: 0,
+    label: "Looking up exact terms",
+    detail: "ITMAP is using the keyword index to find matching researcher profiles.",
+    Icon: SearchIcon,
+  },
+  {
+    at: 2,
+    label: "Ranking keyword hits",
+    detail: "Sorting profile matches with full-text relevance and your filters.",
+    Icon: Database,
+  },
+  {
+    at: 4,
+    label: "Attaching papers",
+    detail: "Adding representative publications for the matched researchers.",
+    Icon: List,
+  },
+];
+
+function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }) {
+  const isKeyword = mode === "keyword";
+  const steps = isKeyword ? KEYWORD_SEARCH_STEPS : SEARCH_STEPS;
+  const activeIndex = steps.reduce((latest, step, index) => seconds >= step.at ? index : latest, 0);
+  const activeStep = steps[Math.max(0, activeIndex)];
   const ActiveIcon = activeStep.Icon;
-  const progress = Math.min(96, 8 + seconds * 2.6);
+  const progress = isKeyword
+    ? Math.min(96, 22 + seconds * 18)
+    : Math.min(96, 8 + seconds * 2.6);
+  const accent = isKeyword ? "hsl(var(--imperial-teal))" : "hsl(var(--primary))";
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-primary/15 bg-card px-4 py-3 shadow-sm">
+    <div className={`relative overflow-hidden rounded-lg border bg-card px-4 py-3 shadow-sm ${
+      isKeyword ? "border-imperial-teal/20" : "border-primary/15"
+    }`}>
+      {isKeyword && (
+        <div className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-imperial-teal" />
+      )}
       <div className="relative z-10 flex items-start gap-3">
-        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+        <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+          isKeyword ? "bg-imperial-teal/10" : "bg-primary/10"
+        }`}>
+          <Loader2 className={`h-5 w-5 animate-spin ${isKeyword ? "text-imperial-teal" : "text-primary"}`} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <ActiveIcon className="h-4 w-4 text-primary" />
+            <ActiveIcon className={`h-4 w-4 ${isKeyword ? "text-imperial-teal" : "text-primary"}`} />
             <p className="text-sm font-semibold text-foreground">{activeStep.label}</p>
             <span className="text-xs text-muted-foreground">{seconds}s</span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{activeStep.detail}</p>
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
             <div
-              className="h-full rounded-full bg-primary transition-all duration-500"
-              style={{ width: `${progress}%` }}
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${progress}%`, backgroundColor: accent }}
             />
           </div>
-          <div className="mt-3 grid grid-cols-4 gap-1.5">
-            {SEARCH_STEPS.map((step, index) => {
-              const StepIcon = step.Icon;
-              const isActive = index === Math.max(0, activeIndex);
-              const isDone = index < Math.max(0, activeIndex);
-              return (
-                <div
-                  key={step.label}
-                  className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] ${
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : isDone
-                        ? "bg-secondary text-foreground"
-                        : "bg-secondary/60 text-muted-foreground"
-                  }`}
-                >
-                  <StepIcon className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{step.label}</span>
-                </div>
-              );
-            })}
-          </div>
+          {isKeyword ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {steps.map((step, index) => {
+                const StepIcon = step.Icon;
+                const isActive = index === Math.max(0, activeIndex);
+                const isDone = index < Math.max(0, activeIndex);
+                return (
+                  <div
+                    key={step.label}
+                    className={`flex items-center gap-1 rounded-full px-2 py-1 text-[10px] ${
+                      isActive
+                        ? "bg-imperial-teal/10 text-imperial-teal"
+                        : isDone
+                          ? "bg-secondary text-foreground"
+                          : "bg-secondary/60 text-muted-foreground"
+                    }`}
+                  >
+                    <StepIcon className="h-3 w-3 shrink-0" />
+                    <span>{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-3 grid grid-cols-4 gap-1.5">
+              {steps.map((step, index) => {
+                const StepIcon = step.Icon;
+                const isActive = index === Math.max(0, activeIndex);
+                const isDone = index < Math.max(0, activeIndex);
+                return (
+                  <div
+                    key={step.label}
+                    className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] ${
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : isDone
+                          ? "bg-secondary text-foreground"
+                          : "bg-secondary/60 text-muted-foreground"
+                    }`}
+                  >
+                    <StepIcon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -766,6 +824,7 @@ export default function Index() {
     }
     const searchRunId = searchRunIdRef.current + 1;
     searchRunIdRef.current = searchRunId;
+    setCurrentSearchMode(mode);
     setIsSearching(true);
     setSearchError("");
     setSchoolMissionError("");
@@ -1218,7 +1277,7 @@ export default function Index() {
             <div className="grid grid-cols-1 gap-4 p-6 xl:grid-cols-2">
               {isSearching && (
                 <div className="xl:col-span-2">
-                  <SearchProgress seconds={searchSeconds} />
+                  <SearchProgress seconds={searchSeconds} mode={currentSearchMode} />
                 </div>
               )}
               {!isSearching && !hasSearched && (
