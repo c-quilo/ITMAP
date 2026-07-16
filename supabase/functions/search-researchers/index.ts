@@ -153,6 +153,8 @@ const GRADE_FILTERS = new Set([
   "PhD Student",
 ]);
 
+const RERANK_WORKER_COUNT = 5;
+
 const STOP_WORDS = new Set([
   "about",
   "after",
@@ -1590,7 +1592,15 @@ async function summarizePoolWithLlm(
   };
 }
 
-async function rerankCandidatesWithLlm(
+function chunkItems<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function rerankCandidateChunkWithLlm(
   openAiKey: string,
   model: string,
   originalQuery: string,
@@ -1617,7 +1627,9 @@ async function rerankCandidatesWithLlm(
             "UKRI grants and mission-relevant startups/spinouts are stronger external signals than generic media mentions.",
             "Reward candidates who satisfy all central mission requirements, especially method+domain combinations such as AI applied to weather.",
             "Demote adjacent candidates who match only the domain or only the method.",
-            "You must return one ranked item for every supplied candidate. If evidence is weak, give a low score and match_type weak.",
+            "Score each candidate absolutely against the mission, not relative to only the candidates in this request chunk.",
+            "Do not penalize candidates because stronger candidates may exist outside this chunk.",
+            "You must return one ranked item for every supplied candidate in this chunk. If evidence is weak, give a low score and match_type weak.",
             "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[\"...\"],\"best_paper_titles\":[\"...\"]}]}",
           ].join(" "),
         },
@@ -1650,9 +1662,35 @@ async function rerankCandidatesWithLlm(
     }
     return byId;
   } catch (error) {
-    console.error("LLM rerank failed", error);
+    console.error("LLM rerank chunk failed", error);
     return new Map<string, RerankedCandidate>();
   }
+}
+
+async function rerankCandidatesWithLlm(
+  openAiKey: string,
+  model: string,
+  originalQuery: string,
+  mission: MissionExpansion,
+  candidates: Record<string, unknown>[],
+) {
+  if (candidates.length === 0) return new Map<string, RerankedCandidate>();
+
+  const workerCount = Math.min(RERANK_WORKER_COUNT, candidates.length);
+  const chunkSize = Math.ceil(candidates.length / workerCount);
+  const candidateChunks = chunkItems(candidates, chunkSize);
+  console.log(`LLM rerank: ${candidates.length} candidates across ${candidateChunks.length} parallel chunks`);
+
+  const chunkResults = await Promise.all(candidateChunks.map(chunk =>
+    rerankCandidateChunkWithLlm(openAiKey, model, originalQuery, mission, chunk)
+  ));
+  const byId = new Map<string, RerankedCandidate>();
+  for (const chunkResult of chunkResults) {
+    for (const [researcherId, rerank] of chunkResult) {
+      byId.set(researcherId, rerank);
+    }
+  }
+  return byId;
 }
 
 function profileSearchVariants(terms: string[]) {
