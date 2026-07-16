@@ -6,14 +6,17 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "keyword_suggestions" | "match_school_missions" | "summarize_pool";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
+  original_query?: string;
   researcher_id?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
+  offset?: number;
   enable_rerank?: boolean;
   include_external_evidence?: boolean;
+  admin_password?: string;
   researchers?: SchoolMissionResearcher[];
 };
 
@@ -72,6 +75,46 @@ type ResearchPoolSummary = {
     reason: string;
   }>;
   gaps: string[];
+};
+
+type UsageCall = {
+  kind: "chat" | "embedding" | "web_search";
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+};
+
+type UsageMetrics = {
+  calls: UsageCall[];
+  input_tokens: number;
+  output_tokens: number;
+  embedding_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  missing_pricing_models: Set<string>;
+};
+
+type SearchAuditLog = {
+  action?: string;
+  status?: string;
+  query?: string;
+  original_query?: string;
+  expanded_query?: string;
+  mode?: string;
+  enable_rerank?: boolean;
+  include_external_evidence?: boolean;
+  rewrite_used?: boolean;
+  duration_ms?: number;
+  result_count?: number;
+  candidate_count?: number;
+  llm_pool_size?: number;
+  models?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+  estimated_cost_usd?: number | null;
+  error_message?: string;
+  metadata?: Record<string, unknown>;
 };
 
 const SCHOOL_MISSIONS = [
@@ -154,6 +197,10 @@ const GRADE_FILTERS = new Set([
 ]);
 
 const RERANK_WORKER_COUNT = 5;
+
+const DEFAULT_MODEL_PRICING_USD_PER_1M: Record<string, { input?: number; output?: number; embedding?: number }> = {
+  "text-embedding-3-small": { embedding: 0.02 },
+};
 
 const STOP_WORDS = new Set([
   "about",
@@ -1123,11 +1170,186 @@ async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeout
   }
 }
 
+function createUsageMetrics(): UsageMetrics {
+  return {
+    calls: [],
+    input_tokens: 0,
+    output_tokens: 0,
+    embedding_tokens: 0,
+    total_tokens: 0,
+    estimated_cost_usd: 0,
+    missing_pricing_models: new Set<string>(),
+  };
+}
+
+function modelPricing() {
+  const raw = Deno.env.get("OPENAI_MODEL_PRICING_JSON");
+  if (!raw) return DEFAULT_MODEL_PRICING_USD_PER_1M;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, { input?: number; output?: number; embedding?: number }>;
+    return {
+      ...DEFAULT_MODEL_PRICING_USD_PER_1M,
+      ...parsed,
+    };
+  } catch (error) {
+    console.error("OPENAI_MODEL_PRICING_JSON could not be parsed", error);
+    return DEFAULT_MODEL_PRICING_USD_PER_1M;
+  }
+}
+
+function estimateOpenAiCostUsd(
+  kind: UsageCall["kind"],
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  metrics: UsageMetrics,
+) {
+  const pricing = modelPricing()[model];
+  if (!pricing) {
+    metrics.missing_pricing_models.add(model);
+    return null;
+  }
+
+  if (kind === "embedding") {
+    const price = pricing.embedding ?? pricing.input;
+    if (typeof price !== "number") {
+      metrics.missing_pricing_models.add(model);
+      return null;
+    }
+    return (inputTokens / 1_000_000) * price;
+  }
+
+  if (typeof pricing.input !== "number" || typeof pricing.output !== "number") {
+    metrics.missing_pricing_models.add(model);
+    return null;
+  }
+
+  return (inputTokens / 1_000_000) * pricing.input
+    + (outputTokens / 1_000_000) * pricing.output;
+}
+
+function recordOpenAiUsage(
+  metrics: UsageMetrics | undefined,
+  kind: UsageCall["kind"],
+  model: string,
+  usage: Record<string, unknown> | undefined,
+) {
+  if (!metrics || !usage) return;
+  const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0;
+  const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0) || 0;
+  const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens) || 0;
+  const estimatedCost = estimateOpenAiCostUsd(kind, model, inputTokens, outputTokens, metrics);
+
+  metrics.input_tokens += inputTokens;
+  metrics.output_tokens += outputTokens;
+  if (kind === "embedding") {
+    metrics.embedding_tokens += totalTokens || inputTokens;
+  }
+  metrics.total_tokens += totalTokens;
+  if (estimatedCost !== null) {
+    metrics.estimated_cost_usd += estimatedCost;
+  }
+  metrics.calls.push({
+    kind,
+    model,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    estimated_cost_usd: estimatedCost,
+  });
+}
+
+function usageMetricsJson(metrics: UsageMetrics) {
+  return {
+    input_tokens: metrics.input_tokens,
+    output_tokens: metrics.output_tokens,
+    embedding_tokens: metrics.embedding_tokens,
+    total_tokens: metrics.total_tokens,
+    estimated_cost_usd: Number(metrics.estimated_cost_usd.toFixed(6)),
+    missing_pricing_models: Array.from(metrics.missing_pricing_models),
+    calls: metrics.calls,
+  };
+}
+
+function constantTimeEqual(left: string, right: string) {
+  const maxLength = Math.max(left.length, right.length);
+  let diff = left.length === right.length ? 0 : 1;
+  for (let index = 0; index < maxLength; index += 1) {
+    diff |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+  return diff === 0;
+}
+
+async function insertSearchAuditLog(
+  supabase: ReturnType<typeof createClient>,
+  log: SearchAuditLog,
+) {
+  try {
+    const { error } = await supabase
+      .from("search_audit_logs")
+      .insert({
+        action: log.action || "search",
+        status: log.status || "success",
+        query: log.query || null,
+        original_query: log.original_query || null,
+        expanded_query: log.expanded_query || null,
+        mode: log.mode || null,
+        enable_rerank: log.enable_rerank ?? null,
+        include_external_evidence: log.include_external_evidence ?? null,
+        rewrite_used: log.rewrite_used ?? null,
+        duration_ms: log.duration_ms ?? null,
+        result_count: log.result_count ?? null,
+        candidate_count: log.candidate_count ?? null,
+        llm_pool_size: log.llm_pool_size ?? null,
+        models: log.models || {},
+        usage: log.usage || {},
+        estimated_cost_usd: log.estimated_cost_usd ?? null,
+        error_message: log.error_message || null,
+        metadata: log.metadata || {},
+      });
+    if (error) console.error("Search audit log insert failed", error);
+  } catch (error) {
+    console.error("Search audit log insert failed", error);
+  }
+}
+
+async function adminSearchLogs(
+  supabase: ReturnType<typeof createClient>,
+  body: SearchRequest,
+) {
+  const adminPassword = Deno.env.get("ITMAP_ADMIN_PASSWORD");
+  const suppliedPassword = String(body.admin_password || "");
+  if (!adminPassword) {
+    return Response.json(
+      { error: "Admin password is not configured." },
+      { status: 503, headers: corsHeaders },
+    );
+  }
+  if (!suppliedPassword || !constantTimeEqual(suppliedPassword, adminPassword)) {
+    return Response.json(
+      { error: "Invalid admin password." },
+      { status: 401, headers: corsHeaders },
+    );
+  }
+
+  const pageSize = Math.max(1, Math.min(Number(body.limit || 50), 100));
+  const offset = Math.max(0, Number(body.offset || 0));
+  const { data, error, count } = await supabase
+    .from("search_audit_logs")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .range(offset, offset + pageSize - 1);
+
+  if (error) throw error;
+  return Response.json({ logs: data || [], count: count || 0 }, { headers: corsHeaders });
+}
+
 async function openAiJson(
   openAiKey: string,
   model: string,
   messages: Array<{ role: "system" | "user"; content: string }>,
   maxCompletionTokens = 1400,
+  metrics?: UsageMetrics,
 ) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -1149,6 +1371,7 @@ async function openAiJson(
   }
 
   const json = await response.json();
+  recordOpenAiUsage(metrics, "chat", model, json.usage);
   const content = json.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenAI JSON response was empty");
   return parseJsonObject(content);
@@ -1159,6 +1382,7 @@ async function openAiWebSearchJson(
   model: string,
   input: string,
   maxOutputTokens = 900,
+  metrics?: UsageMetrics,
 ) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -1180,6 +1404,7 @@ async function openAiWebSearchJson(
   }
 
   const json = await response.json();
+  recordOpenAiUsage(metrics, "web_search", model, json.usage);
   const outputText = json.output_text
     || (json.output || [])
       .flatMap((item: Record<string, unknown>) => item.content || [])
@@ -1189,7 +1414,7 @@ async function openAiWebSearchJson(
   return parseJsonObject(outputText);
 }
 
-async function expandMission(openAiKey: string, model: string, query: string): Promise<MissionExpansion> {
+async function expandMission(openAiKey: string, model: string, query: string, metrics?: UsageMetrics): Promise<MissionExpansion> {
   const fallback = { expanded_query: query };
   try {
     const result = await openAiJson(
@@ -1211,6 +1436,7 @@ async function expandMission(openAiKey: string, model: string, query: string): P
         },
       ],
       900,
+      metrics,
     ) as MissionExpansion;
 
     const expanded = truncateText(result.expanded_query || query, 900);
@@ -1241,6 +1467,7 @@ async function fetchOpenAiWebEvidence(
   model: string,
   row: Record<string, unknown>,
   query: string,
+  metrics?: UsageMetrics,
 ): Promise<ExternalEvidence[]> {
   const name = String(row.full_name || "").trim();
   if (!name) return [];
@@ -1262,6 +1489,7 @@ async function fetchOpenAiWebEvidence(
         `Mission: ${query}`,
       ].join("\n"),
       900,
+      metrics,
     ) as { evidence?: Array<Record<string, unknown>> };
 
     const evidence = Array.isArray(result.evidence) ? result.evidence : [];
@@ -1405,6 +1633,7 @@ async function addExternalEvidenceToCandidates(
   model: string,
   candidates: Record<string, unknown>[],
   query: string,
+  metrics?: UsageMetrics,
 ) {
   const concurrency = 4;
   let index = 0;
@@ -1413,7 +1642,7 @@ async function addExternalEvidenceToCandidates(
     while (index < candidates.length) {
       const candidate = candidates[index++];
       const [webEvidence, ukriEvidence] = await Promise.all([
-        fetchOpenAiWebEvidence(openAiKey, model, candidate, query),
+        fetchOpenAiWebEvidence(openAiKey, model, candidate, query, metrics),
         fetchUkriEvidence(candidate, query),
       ]);
       candidate.external_evidence = [...webEvidence, ...ukriEvidence].slice(0, 8);
@@ -1606,6 +1835,7 @@ async function rerankCandidateChunkWithLlm(
   originalQuery: string,
   mission: MissionExpansion,
   candidates: Record<string, unknown>[],
+  metrics?: UsageMetrics,
 ) {
   if (candidates.length === 0) return new Map<string, RerankedCandidate>();
 
@@ -1643,6 +1873,7 @@ async function rerankCandidateChunkWithLlm(
         },
       ],
       8000,
+      metrics,
     ) as { ranked?: RerankedCandidate[] };
 
     const ranked = Array.isArray(result.ranked) ? result.ranked : [];
@@ -1673,6 +1904,7 @@ async function rerankCandidatesWithLlm(
   originalQuery: string,
   mission: MissionExpansion,
   candidates: Record<string, unknown>[],
+  metrics?: UsageMetrics,
 ) {
   if (candidates.length === 0) return new Map<string, RerankedCandidate>();
 
@@ -1682,7 +1914,7 @@ async function rerankCandidatesWithLlm(
   console.log(`LLM rerank: ${candidates.length} candidates across ${candidateChunks.length} parallel chunks`);
 
   const chunkResults = await Promise.all(candidateChunks.map(chunk =>
-    rerankCandidateChunkWithLlm(openAiKey, model, originalQuery, mission, chunk)
+    rerankCandidateChunkWithLlm(openAiKey, model, originalQuery, mission, chunk, metrics)
   ));
   const byId = new Map<string, RerankedCandidate>();
   for (const chunkResult of chunkResults) {
@@ -2229,13 +2461,19 @@ async function fetchProfileKeywordCandidates(
 }
 
 Deno.serve(async req => {
+  const requestStartedAt = Date.now();
+  let auditSupabase: ReturnType<typeof createClient> | null = null;
+  let auditBody: SearchRequest | null = null;
+  let auditUsage: UsageMetrics | null = null;
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
     const body = (await req.json()) as SearchRequest;
+    auditBody = body;
     const query = (body.query || "").trim();
+    const originalQuery = (body.original_query || query).trim();
     const limit = Math.max(1, Math.min(body.limit || 30, 50));
 
     const openAiKey = Deno.env.get("OPENAI_API_KEY");
@@ -2247,6 +2485,13 @@ Deno.serve(async req => {
 
     if (!openAiKey || !supabaseUrl || !serviceRoleKey) {
       throw new Error("Missing OPENAI_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_ROLE_KEY");
+    }
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    auditSupabase = supabase;
+
+    if (body.action === "admin_search_logs") {
+      return await adminSearchLogs(supabase, body);
     }
 
     if (body.action === "rewrite_mission") {
@@ -2262,8 +2507,6 @@ Deno.serve(async req => {
         domain_terms: rewritten.domain_terms || [],
       }, { headers: corsHeaders });
     }
-
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     if (body.action === "suggest_researchers") {
       const suggestions = query
@@ -2310,6 +2553,8 @@ Deno.serve(async req => {
     const mode = body.mode || "semantic";
     const enableRerank = body.enable_rerank !== false;
     const includeExternalEvidence = body.include_external_evidence !== false;
+    const searchUsage = createUsageMetrics();
+    auditUsage = searchUsage;
 
     const rawKeywordTerms = queryTerms(query);
     const mission = {
@@ -2372,6 +2617,25 @@ Deno.serve(async req => {
         }))
         .slice(0, limit);
 
+      await insertSearchAuditLog(supabase, {
+        action: "search",
+        status: "success",
+        query: searchQuery,
+        original_query: originalQuery || searchQuery,
+        expanded_query: originalQuery && originalQuery !== searchQuery ? searchQuery : undefined,
+        mode,
+        enable_rerank: false,
+        include_external_evidence: false,
+        rewrite_used: Boolean(originalQuery && originalQuery !== searchQuery),
+        duration_ms: Date.now() - requestStartedAt,
+        result_count: results.length,
+        candidate_count: filteredKeywordMatches.length,
+        llm_pool_size: 0,
+        models: {},
+        usage: usageMetricsJson(searchUsage),
+        estimated_cost_usd: 0,
+      });
+
       return Response.json({ results }, { headers: corsHeaders });
     }
 
@@ -2393,6 +2657,7 @@ Deno.serve(async req => {
     }
 
     const embeddingJson = await embeddingResponse.json();
+    recordOpenAiUsage(searchUsage, "embedding", "text-embedding-3-small", embeddingJson.usage);
     const embedding = embeddingJson.data?.[0]?.embedding;
     if (!Array.isArray(embedding)) {
       throw new Error("Embedding response did not include a vector");
@@ -2699,10 +2964,10 @@ Deno.serve(async req => {
     }
     const externalEvidencePool = llmPool.slice(0, Math.min(10, llmPool.length));
     if (includeExternalEvidence) {
-      await addExternalEvidenceToCandidates(openAiKey, rankingModel, externalEvidencePool, query);
+      await addExternalEvidenceToCandidates(openAiKey, rankingModel, externalEvidencePool, query, searchUsage);
     }
     const llmReranks = enableRerank
-      ? await rerankCandidatesWithLlm(openAiKey, rankingModel, query, mission, llmPool)
+      ? await rerankCandidatesWithLlm(openAiKey, rankingModel, query, mission, llmPool, searchUsage)
       : new Map<string, RerankedCandidate>();
     const rankedCandidates = enableRerank && llmReranks.size > 0
       ? llmPool
@@ -2799,6 +3064,33 @@ Deno.serve(async req => {
       })
       .slice(0, limit);
 
+    const usageJson = usageMetricsJson(searchUsage);
+    await insertSearchAuditLog(supabase, {
+      action: "search",
+      status: "success",
+      query: searchQuery,
+      original_query: originalQuery || searchQuery,
+      expanded_query: originalQuery && originalQuery !== searchQuery ? searchQuery : undefined,
+      mode,
+      enable_rerank: enableRerank,
+      include_external_evidence: includeExternalEvidence,
+      rewrite_used: Boolean(originalQuery && originalQuery !== searchQuery),
+      duration_ms: Date.now() - requestStartedAt,
+      result_count: results.length,
+      candidate_count: candidates.length,
+      llm_pool_size: enableRerank ? llmPool.length : 0,
+      models: {
+        ranking: rankingModel,
+        embedding: "text-embedding-3-small",
+        rerank_worker_count: RERANK_WORKER_COUNT,
+      },
+      usage: usageJson,
+      estimated_cost_usd: Number(usageJson.estimated_cost_usd || 0),
+      metadata: {
+        rerank_returned: llmReranks.size,
+      },
+    });
+
     return Response.json({ results }, { headers: corsHeaders });
   } catch (error) {
     const message = error instanceof Error
@@ -2806,6 +3098,29 @@ Deno.serve(async req => {
       : typeof error === "string"
         ? error
         : JSON.stringify(error);
+    const isSearchAction = !auditBody?.action || auditBody.action === "search";
+    if (auditSupabase && auditBody && isSearchAction) {
+      const auditQuery = (auditBody.query || "").trim();
+      const auditOriginalQuery = (auditBody.original_query || auditQuery).trim();
+      const usageJson = auditUsage ? usageMetricsJson(auditUsage) : {};
+      await insertSearchAuditLog(auditSupabase, {
+        action: "search",
+        status: "error",
+        query: auditQuery,
+        original_query: auditOriginalQuery,
+        expanded_query: auditOriginalQuery && auditOriginalQuery !== auditQuery ? auditQuery : undefined,
+        mode: auditBody.mode || "semantic",
+        enable_rerank: auditBody.enable_rerank !== false,
+        include_external_evidence: auditBody.include_external_evidence !== false,
+        rewrite_used: Boolean(auditOriginalQuery && auditOriginalQuery !== auditQuery),
+        duration_ms: Date.now() - requestStartedAt,
+        result_count: 0,
+        models: {},
+        usage: usageJson,
+        estimated_cost_usd: Number((usageJson as Record<string, unknown>).estimated_cost_usd || 0),
+        error_message: message || "Search failed",
+      });
+    }
     return Response.json(
       { error: message || "Search failed" },
       { status: 500, headers: corsHeaders },

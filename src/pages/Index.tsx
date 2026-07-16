@@ -865,6 +865,7 @@ export default function Index() {
     try {
       const results = await searchResearchers({
         query: trimmedQuery,
+        originalQuery: trimmedOriginalQuery,
         mode,
         filters: [],
         enableRerank: mode === "semantic" ? true : options.enableRerank,

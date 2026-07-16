@@ -22,6 +22,7 @@ export const FALLBACK_KEYWORD_SUGGESTIONS = [
 
 export interface SearchPayload {
   query: string;
+  originalQuery?: string;
   mode: "semantic" | "keyword";
   filters: string[];
   enableRerank?: boolean;
@@ -80,6 +81,32 @@ export interface ResearcherProfile {
   fieldsOfResearch: string;
   paperCount: number;
   papers: Publication[];
+}
+
+export interface SearchAuditLog {
+  id: string;
+  createdAt: string;
+  status: string;
+  query: string;
+  originalQuery: string;
+  expandedQuery: string;
+  mode: string;
+  enableRerank: boolean;
+  includeExternalEvidence: boolean;
+  rewriteUsed: boolean;
+  durationMs: number;
+  resultCount: number;
+  candidateCount: number;
+  llmPoolSize: number;
+  models: Record<string, unknown>;
+  usage: Record<string, unknown>;
+  estimatedCostUsd: number | null;
+  errorMessage: string;
+}
+
+export interface SearchAuditLogResponse {
+  logs: SearchAuditLog[];
+  count: number;
 }
 
 interface SupabasePublication {
@@ -257,6 +284,7 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
   const { data, error } = await supabase.functions.invoke("search-researchers", {
     body: {
       query: payload.query,
+      original_query: payload.originalQuery || payload.query,
       mode: payload.mode,
       filters: payload.filters,
       limit: 50,
@@ -271,6 +299,56 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
 
   const rows = Array.isArray(data?.results) ? data.results : [];
   return rows.map(toResearcher);
+}
+
+export async function getSearchAuditLogs(
+  adminPassword: string,
+  offset = 0,
+  limit = 50,
+): Promise<SearchAuditLogResponse> {
+  if (!hasSupabaseConfig || !supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "admin_search_logs",
+      admin_password: adminPassword,
+      offset,
+      limit,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = Array.isArray(data?.logs) ? data.logs : [];
+  return {
+    count: Number(data?.count || rows.length || 0),
+    logs: rows.map((row: Record<string, unknown>) => ({
+      id: String(row.id || ""),
+      createdAt: String(row.created_at || ""),
+      status: String(row.status || ""),
+      query: String(row.query || ""),
+      originalQuery: String(row.original_query || ""),
+      expandedQuery: String(row.expanded_query || ""),
+      mode: String(row.mode || ""),
+      enableRerank: Boolean(row.enable_rerank),
+      includeExternalEvidence: Boolean(row.include_external_evidence),
+      rewriteUsed: Boolean(row.rewrite_used),
+      durationMs: Number(row.duration_ms || 0),
+      resultCount: Number(row.result_count || 0),
+      candidateCount: Number(row.candidate_count || 0),
+      llmPoolSize: Number(row.llm_pool_size || 0),
+      models: row.models && typeof row.models === "object" ? row.models as Record<string, unknown> : {},
+      usage: row.usage && typeof row.usage === "object" ? row.usage as Record<string, unknown> : {},
+      estimatedCostUsd: row.estimated_cost_usd === null || row.estimated_cost_usd === undefined
+        ? null
+        : Number(row.estimated_cost_usd),
+      errorMessage: String(row.error_message || ""),
+    })),
+  };
 }
 
 export async function rewriteMission(query: string): Promise<MissionRewrite> {
