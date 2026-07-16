@@ -103,8 +103,6 @@ export default function SearchSidebar({
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [semanticQuery, setSemanticQuery] = useState("");
   const [keywordQuery, setKeywordQuery] = useState("");
-  const [enableRerank, setEnableRerank] = useState(false);
-  const [includeExternalEvidence, setIncludeExternalEvidence] = useState(false);
   const [rewriteMission, setRewriteMission] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     match: true,
@@ -120,8 +118,12 @@ export default function SearchSidebar({
   const [isReadingAttachment, setIsReadingAttachment] = useState(false);
 
   useEffect(() => {
-    onOptionsChange?.({ enableRerank, includeExternalEvidence, rewriteMission });
-  }, [enableRerank, includeExternalEvidence, rewriteMission, onOptionsChange]);
+    onOptionsChange?.({
+      enableRerank: searchMode === "semantic",
+      includeExternalEvidence: false,
+      rewriteMission,
+    });
+  }, [searchMode, rewriteMission, onOptionsChange]);
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -141,8 +143,8 @@ export default function SearchSidebar({
     }
     const query = searchMode === "keyword" ? keywordQuery : semanticQuery;
     onSearch?.(query, searchMode, {
-      enableRerank,
-      includeExternalEvidence: searchMode === "semantic" ? includeExternalEvidence : false,
+      enableRerank: searchMode === "semantic",
+      includeExternalEvidence: false,
       rewriteMission,
     });
   };
@@ -195,40 +197,22 @@ export default function SearchSidebar({
 
         <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
           <p className="section-label">Search Options</p>
-          <label
-            className="flex cursor-pointer items-start justify-between gap-3"
-            title="ITMAP rerank asks the model to review the narrowed candidate pool using each researcher's role, profile, paper titles, and evidence before final ranking."
-          >
-            <span>
-              <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                ITMAP rerank
-                <HelpCircle className="h-3 w-3 text-muted-foreground" />
-              </span>
-              <span className="block text-[11px] leading-relaxed text-muted-foreground">Review the narrowed pool with profile and paper evidence.</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={enableRerank}
-              onChange={event => setEnableRerank(event.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-primary"
-            />
-          </label>
           {searchMode === "semantic" && (
             <label
-              className="flex cursor-pointer items-start justify-between gap-3"
-              title="Adds public web, video, startup/spinout, media, and UKRI grant signals. These only give a small boost when clearly relevant."
+              className="flex cursor-not-allowed items-start justify-between gap-3 opacity-55"
+              title="Media, startup, video and UKRI grant evidence is temporarily disabled."
             >
               <span>
                 <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                   Media, grants and startups
                   <HelpCircle className="h-3 w-3 text-muted-foreground" />
                 </span>
-                <span className="block text-[11px] leading-relaxed text-muted-foreground">Add web search and UKRI evidence.</span>
+                <span className="block text-[11px] leading-relaxed text-muted-foreground">Temporarily unavailable.</span>
               </span>
               <input
                 type="checkbox"
-                checked={includeExternalEvidence}
-                onChange={event => setIncludeExternalEvidence(event.target.checked)}
+                checked={false}
+                disabled
                 className="mt-0.5 h-4 w-4 accent-primary"
               />
             </label>

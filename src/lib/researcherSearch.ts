@@ -260,8 +260,8 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
       mode: payload.mode,
       filters: payload.filters,
       limit: 50,
-      enable_rerank: payload.enableRerank ?? true,
-      include_external_evidence: payload.includeExternalEvidence ?? true,
+      enable_rerank: payload.mode === "semantic" ? true : payload.enableRerank ?? false,
+      include_external_evidence: payload.includeExternalEvidence ?? false,
     },
   });
 

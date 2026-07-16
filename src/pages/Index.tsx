@@ -12,21 +12,10 @@ import scsSwoosh from "@/assets/scs-swoosh.png";
 type SortBy = "relevance" | "name" | "seniority";
 type TabMode = "search" | "deep-search" | "profile" | "graph" | "saved";
 type SearchMode = "semantic" | "keyword";
-type SaveFilePicker = (options?: {
-  suggestedName?: string;
-  types?: Array<{
-    description: string;
-    accept: Record<string, string[]>;
-  }>;
-}) => Promise<{
-  createWritable: () => Promise<{
-    write: (data: Blob) => Promise<void>;
-    close: () => Promise<void>;
-  }>;
-}>;
 
 type SavedSearch = SavedSearchSummary & {
   results: Researcher[];
+  originalQuery?: string;
 };
 
 type PendingRewriteSearch = {
@@ -87,6 +76,15 @@ function normaliseFaculty(value: string) {
   return value.replace(/^Faculty of /, "").toLowerCase();
 }
 
+function normaliseResearcherName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function filterByAny(values: string[], filters: string[]) {
   if (filters.length === 0) return true;
   const haystack = values.join(" ").toLowerCase();
@@ -97,6 +95,10 @@ function matchLabel(score: number) {
   if (score >= 80) return "Strong Match";
   if (score >= 60) return "Moderate";
   return "Weak";
+}
+
+function defaultFinalResultCount(results: Researcher[]) {
+  return results.filter(researcher => matchLabel(researcher.relevanceScore) !== "Weak").length;
 }
 
 function roleGroupForTitle(title: string) {
@@ -116,6 +118,18 @@ function isPersistentFilter(filter: string) {
 function csvCell(value: unknown) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return `"${text.replace(/"/g, '""')}"`;
+}
+
+function slugifyFilePart(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "search";
+}
+
+function researcherResultDomId(researcherId: string) {
+  return `researcher-result-${researcherId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 function keywordCandidates(text: string) {
@@ -307,7 +321,15 @@ function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }
   );
 }
 
-function ResearchPoolSummaryPanel({ summary }: { summary: ResearchPoolSummary }) {
+function ResearchPoolSummaryPanel({
+  summary,
+  onSelectResearcher,
+  canSelectResearcher,
+}: {
+  summary: ResearchPoolSummary;
+  onSelectResearcher: (name: string) => void;
+  canSelectResearcher: (name: string) => boolean;
+}) {
   return (
     <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-4">
       <div className="flex items-start gap-3">
@@ -330,12 +352,23 @@ function ResearchPoolSummaryPanel({ summary }: { summary: ResearchPoolSummary })
           )}
           {summary.notableResearchers.length > 0 && (
             <div className="mt-3 grid gap-2 md:grid-cols-2">
-              {summary.notableResearchers.map(item => (
+              {summary.notableResearchers.map(item => {
+                const canJump = canSelectResearcher(item.name);
+                return (
                 <div key={`${item.name}-${item.reason}`} className="rounded-md border border-border bg-background px-3 py-2">
-                  <p className="text-xs font-semibold text-foreground">{item.name}</p>
+                  <button
+                    type="button"
+                    onClick={() => onSelectResearcher(item.name)}
+                    disabled={!canJump}
+                    className="text-left text-xs font-semibold text-foreground underline-offset-2 transition-colors enabled:hover:text-primary enabled:hover:underline disabled:cursor-default"
+                    title={canJump ? "Jump to this researcher in the results" : "This researcher is not visible in the current filtered results"}
+                  >
+                    {item.name}
+                  </button>
                   <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{item.reason}</p>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
           {summary.gaps.length > 0 && (
@@ -471,6 +504,7 @@ function ResearcherProfileView({
 
 export default function Index() {
   const searchRunIdRef = useRef(0);
+  const highlightTimeoutRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [tabMode, setTabMode] = useState<TabMode>("search");
@@ -479,6 +513,7 @@ export default function Index() {
   const [searchError, setSearchError] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [currentMission, setCurrentMission] = useState("");
+  const [currentOriginalMission, setCurrentOriginalMission] = useState("");
   const [currentSearchMode, setCurrentSearchMode] = useState<SearchMode>("semantic");
   const [searchSeconds, setSearchSeconds] = useState(0);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -490,6 +525,7 @@ export default function Index() {
   const [isGeneratingPoolSummary, setIsGeneratingPoolSummary] = useState(false);
   const [poolSummaryError, setPoolSummaryError] = useState("");
   const [poolSummaryDone, setPoolSummaryDone] = useState(false);
+  const [highlightedResearcherId, setHighlightedResearcherId] = useState<string | null>(null);
   const [pendingRewriteSearch, setPendingRewriteSearch] = useState<PendingRewriteSearch | null>(null);
   const [editableRewrite, setEditableRewrite] = useState("");
   const [isRewritingMission, setIsRewritingMission] = useState(false);
@@ -508,7 +544,13 @@ export default function Index() {
       const raw = window.localStorage.getItem(SAVED_SEARCHES_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
       if (Array.isArray(parsed)) {
-        setSavedSearches(parsed.filter(search => Array.isArray(search.results)).slice(0, 10));
+        setSavedSearches(parsed
+          .filter(search => Array.isArray(search.results))
+          .map(search => ({
+            ...search,
+            resultCount: defaultFinalResultCount(search.results),
+          }))
+          .slice(0, 10));
       }
     } catch {
       setSavedSearches([]);
@@ -523,6 +565,14 @@ export default function Index() {
     } catch {
       setSavedResearchers([]);
     }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimeoutRef.current) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -702,54 +752,32 @@ export default function Index() {
     return [headers, ...rows].map(row => row.map(csvCell).join(",")).join("\n");
   }, [savedResearchers]);
 
-  const savedResearchersCsvHref = useMemo(
-    () => `data:text/csv;charset=utf-8,%EF%BB%BF${encodeURIComponent(savedResearchersCsv)}`,
-    [savedResearchersCsv],
-  );
-
-  const exportSavedResearchersCsv = async () => {
-    const fileName = "itmap-saved-researchers.csv";
-    const csvBlob = new Blob([`\uFEFF${savedResearchersCsv}`], { type: "text/csv;charset=utf-8" });
-    const saveFilePicker = (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
-
-    if (saveFilePicker) {
-      try {
-        const handle = await saveFilePicker({
-          suggestedName: fileName,
-          types: [
-            {
-              description: "CSV file",
-              accept: { "text/csv": [".csv"] },
-            },
-          ],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(csvBlob);
-        await writable.close();
-        return;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-      }
-    }
+  const exportCsv = (fileName: string, csv: string) => {
+    const csvBlob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(csvBlob);
 
     const link = document.createElement("a");
-    link.href = savedResearchersCsvHref;
+    link.href = url;
     link.download = fileName;
     document.body.appendChild(link);
     link.click();
     link.remove();
+    URL.revokeObjectURL(url);
   };
 
-  const saveSearch = (query: string, mode: SearchMode, results: Researcher[]) => {
+  const exportSavedResearchersCsv = () => exportCsv("itmap-saved-researchers.csv", savedResearchersCsv);
+
+  const saveSearch = (query: string, mode: SearchMode, results: Researcher[], originalQuery = query) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery || results.length === 0) return;
 
     const saved: SavedSearch = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       query: trimmedQuery,
+      originalQuery: originalQuery.trim() || trimmedQuery,
       mode,
       createdAt: new Date().toISOString(),
-      resultCount: results.length,
+      resultCount: defaultFinalResultCount(results),
       results,
     };
     const nextSearches = [
@@ -779,6 +807,7 @@ export default function Index() {
     ));
     setSearchResults(saved.results);
     setCurrentMission(saved.query);
+    setCurrentOriginalMission(saved.originalQuery || saved.query);
     setCurrentSearchMode(saved.mode);
     setHasSearched(true);
     setMissionCheckDone(saved.results.some(researcher => researcher.schoolMissionMatch));
@@ -814,8 +843,9 @@ export default function Index() {
     setSearchError("Search stopped.");
   };
 
-  const executeSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
+  const executeSearch = async (query: string, mode: SearchMode, options: SearchOptions, originalQuery = query) => {
     const trimmedQuery = query.trim();
+    const trimmedOriginalQuery = originalQuery.trim() || trimmedQuery;
     if (!trimmedQuery) {
       setSearchError("Type a mission or keyword before searching.");
       setHasSearched(false);
@@ -837,8 +867,8 @@ export default function Index() {
         query: trimmedQuery,
         mode,
         filters: [],
-        enableRerank: options.enableRerank,
-        includeExternalEvidence: options.includeExternalEvidence,
+        enableRerank: mode === "semantic" ? true : options.enableRerank,
+        includeExternalEvidence: false,
       });
       if (searchRunIdRef.current !== searchRunId) return;
       const nextDepartments = new Set(results.map(researcher => researcher.department).filter(Boolean));
@@ -847,9 +877,10 @@ export default function Index() {
       ));
       setSearchResults(results);
       setCurrentMission(trimmedQuery);
+      setCurrentOriginalMission(trimmedOriginalQuery);
       setCurrentSearchMode(mode);
       setHasSearched(true);
-      saveSearch(trimmedQuery, mode, results);
+      saveSearch(trimmedQuery, mode, results, trimmedOriginalQuery);
     } catch (error) {
       if (searchRunIdRef.current !== searchRunId) return;
       setSearchError(error instanceof Error ? error.message : "Search failed");
@@ -905,7 +936,7 @@ export default function Index() {
     const search = pendingRewriteSearch;
     setPendingRewriteSearch(null);
     setEditableRewrite("");
-    await executeSearch(query, search.mode, search.options);
+    await executeSearch(query, search.mode, search.options, search.originalQuery);
   };
 
   const applySchoolMissionMatches = (matches: Awaited<ReturnType<typeof matchSchoolMissions>>) => {
@@ -1061,6 +1092,131 @@ export default function Index() {
       }))
       .filter(group => group.researchers.length > 0);
   }, [sortBy, sortedResearchers]);
+
+  const findVisibleResearcherByName = (name: string) => {
+    const targetName = normaliseResearcherName(name);
+    if (!targetName) return undefined;
+    return sortedResearchers.find(researcher => normaliseResearcherName(researcher.name) === targetName)
+      || sortedResearchers.find(researcher => {
+        const researcherName = normaliseResearcherName(researcher.name);
+        return researcherName.includes(targetName) || targetName.includes(researcherName);
+      });
+  };
+
+  const canJumpToSummaryResearcher = (name: string) => Boolean(findVisibleResearcherByName(name));
+
+  const jumpToSummaryResearcher = (name: string) => {
+    const researcher = findVisibleResearcherByName(name);
+    if (!researcher) return;
+
+    setHighlightedResearcherId(researcher.id);
+    document
+      .getElementById(researcherResultDomId(researcher.id))
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    if (highlightTimeoutRef.current) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedResearcherId(null);
+    }, 2200);
+  };
+
+  const renderResultCard = (researcher: Researcher) => (
+    <div
+      key={researcher.id}
+      id={researcherResultDomId(researcher.id)}
+      className={`scroll-mt-24 rounded-lg transition-shadow duration-300 ${
+        highlightedResearcherId === researcher.id
+          ? "shadow-lg ring-2 ring-primary/40"
+          : ""
+      }`}
+    >
+      <ResearcherCard
+        researcher={researcher}
+        bookmarked={savedResearcherIds.has(researcher.id)}
+        onToggleBookmark={toggleSavedResearcher}
+        showMatchExplanation={currentSearchMode === "semantic"}
+      />
+    </div>
+  );
+
+  const currentSearchCsv = useMemo(() => {
+    const originalQuery = currentOriginalMission || currentMission;
+    const wasExpanded = originalQuery.trim() !== currentMission.trim();
+    const summaryNotableResearchers = poolSummary?.notableResearchers?.length
+      ? poolSummary.notableResearchers.map(item => `${item.name}: ${item.reason}`).join("; ")
+      : "";
+
+    const headers = [
+      "original_query",
+      "expanded_query",
+      "query_used",
+      "query_was_expanded",
+      "search_mode",
+      "exported_results_count",
+      "pool_summary_headline",
+      "pool_summary",
+      "pool_summary_themes",
+      "pool_summary_notable_researchers",
+      "pool_summary_caveats",
+      "rank",
+      "name",
+      "title",
+      "department",
+      "faculty",
+      "match",
+      "why_they_matched",
+      "profile_url",
+      "email",
+      "fields",
+      "publications",
+      "external_evidence",
+      "school_mission_school",
+      "school_mission",
+      "school_mission_reason",
+    ];
+
+    const rows = sortedResearchers.map((researcher, index) => [
+      originalQuery,
+      wasExpanded ? currentMission : "",
+      currentMission,
+      wasExpanded ? "yes" : "no",
+      currentSearchMode,
+      sortedResearchers.length.toString(),
+      index === 0 ? poolSummary?.headline || "" : "",
+      index === 0 ? poolSummary?.summary || "" : "",
+      index === 0 ? poolSummary?.themes?.join("; ") || "" : "",
+      index === 0 ? summaryNotableResearchers : "",
+      index === 0 ? poolSummary?.gaps?.join("; ") || "" : "",
+      (index + 1).toString(),
+      researcher.name,
+      researcher.title,
+      researcher.department,
+      researcher.faculty,
+      matchLabel(researcher.relevanceScore),
+      researcher.semanticExplanation || researcher.summary,
+      researcher.profileUrl || "",
+      researcher.email || "",
+      researcher.keywords.join("; "),
+      researcher.publications
+        .map(pub => `${pub.title}${pub.year ? ` (${pub.year})` : ""}${pub.doi ? ` ${pub.doi}` : ""}`)
+        .join("; "),
+      (researcher.externalEvidence || [])
+        .map(item => `${item.evidenceType}: ${item.title}${item.url ? ` (${item.url})` : ""}`)
+        .join("; "),
+      researcher.schoolMissionMatch?.school || "",
+      researcher.schoolMissionMatch?.mission || "",
+      researcher.schoolMissionMatch?.reason || "",
+    ]);
+
+    return [headers, ...rows].map(row => row.map(csvCell).join(",")).join("\n");
+  }, [currentMission, currentOriginalMission, currentSearchMode, poolSummary, sortedResearchers]);
+
+  const exportCurrentSearchCsv = () => {
+    const filePart = slugifyFilePart(currentMission);
+    return exportCsv(`itmap-search-${filePart}.csv`, currentSearchCsv);
+  };
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -1257,6 +1413,16 @@ export default function Index() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {hasSearched && sortedResearchers.length > 0 && (
+                    <button
+                      onClick={exportCurrentSearchCsv}
+                      className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                      title="Download the current search results, publications, match reasons, and generated summary."
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Export Search
+                    </button>
+                  )}
                   <div className="flex items-center gap-1.5">
                     <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
                     <select
@@ -1291,7 +1457,13 @@ export default function Index() {
               )}
               {!isSearching && hasSearched && sortedResearchers.length > 0 && (
                 <>
-                  {poolSummary && <ResearchPoolSummaryPanel summary={poolSummary} />}
+                  {poolSummary && (
+                    <ResearchPoolSummaryPanel
+                      summary={poolSummary}
+                      onSelectResearcher={jumpToSummaryResearcher}
+                      canSelectResearcher={canJumpToSummaryResearcher}
+                    />
+                  )}
                   <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-start gap-2">
@@ -1360,7 +1532,7 @@ export default function Index() {
               )}
               {!isSearching && hasSearched && sortedResearchers.length === 0 && (
                 <div className="xl:col-span-2 rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-                  No researchers matched this search. Try a broader mission or turn on ITMAP rerank.
+                  No researchers matched this search. Try a broader mission or switch search mode.
                 </div>
               )}
               {sortBy === "seniority" ? (
@@ -1373,27 +1545,11 @@ export default function Index() {
                       </span>
                       <div className="h-px flex-1 bg-border" />
                     </div>
-                    {group.researchers.map(r => (
-                      <ResearcherCard
-                        key={r.id}
-                        researcher={r}
-                        bookmarked={savedResearcherIds.has(r.id)}
-                        onToggleBookmark={toggleSavedResearcher}
-                        showMatchExplanation={currentSearchMode === "semantic"}
-                      />
-                    ))}
+                    {group.researchers.map(renderResultCard)}
                   </div>
                 ))
               ) : (
-                sortedResearchers.map(r => (
-                  <ResearcherCard
-                    key={r.id}
-                    researcher={r}
-                    bookmarked={savedResearcherIds.has(r.id)}
-                    onToggleBookmark={toggleSavedResearcher}
-                    showMatchExplanation={currentSearchMode === "semantic"}
-                  />
-                ))
+                sortedResearchers.map(renderResultCard)
               )}
             </div>
           </main>
