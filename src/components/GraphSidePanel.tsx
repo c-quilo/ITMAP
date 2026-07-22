@@ -16,6 +16,12 @@ interface GraphSidePanelProps {
   onClose: () => void;
 }
 
+function matchStrengthLabel(score: number) {
+  if (score >= 80) return "Strong Match";
+  if (score >= 60) return "Moderate Match";
+  return "Weak Match";
+}
+
 export default function GraphSidePanel({ node, researcher, connections, onClose }: GraphSidePanelProps) {
   return (
     <motion.div
@@ -51,7 +57,7 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
             <span className={`inline-block h-2 w-2 rounded-full ${
               node.relevanceScore >= 80 ? "bg-relevance-high" : node.relevanceScore >= 60 ? "bg-relevance-medium" : "bg-relevance-low"
             }`} />
-            {node.relevanceScore}% Match
+            {matchStrengthLabel(node.relevanceScore)}
           </span>
           {node.networkRole && (
             <span className="text-[11px] font-medium text-primary bg-accent px-2 py-1 rounded-full">
@@ -72,7 +78,7 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
             </span>
           </div>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            Based on relevant co-authored papers, with extra weight for links across departments and faculties.
+            Based mainly on relevant co-authored papers, with extra weight for cross-department and cross-faculty collaborations. Cross-cluster themes add lighter context.
           </p>
           {node.interdisciplinaryReasons && node.interdisciplinaryReasons.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -147,7 +153,7 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
                     <span className={`ml-auto text-[10px] font-bold shrink-0 ${
                       connection.node.relevanceScore >= 80 ? "text-relevance-high" : connection.node.relevanceScore >= 60 ? "text-relevance-medium" : "text-relevance-low"
                     }`}>
-                      {connection.node.relevanceScore}%
+                      {matchStrengthLabel(connection.node.relevanceScore)}
                     </span>
                   </div>
                   {connection.labels.length > 0 && (
@@ -193,7 +199,7 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
                   <p className="text-[10px] text-muted-foreground mt-0.5">
                     {pub.journal} · {pub.year} · {pub.citations} cit.
                     {pub.relevanceScore && (
-                      <span className="ml-1 text-primary font-medium">{pub.relevanceScore}%</span>
+                      <span className="ml-1 text-primary font-medium">{matchStrengthLabel(pub.relevanceScore)}</span>
                     )}
                   </p>
                 </div>

@@ -12,30 +12,38 @@ import type { Researcher } from "@/data/mockData";
 import GraphSidePanel from "./GraphSidePanel";
 
 const NODE_SIZES: Record<string, number> = {
-  mission: 34,
-  pi: 16,
+  mission: 32,
+  pi: 15,
   lecturer: 13,
   postdoc: 11,
-  phd: 9,
+  phd: 10,
 };
 
-const NODE_COLORS: Record<string, string> = {
-  mission: "hsl(268, 58%, 48%)",
-  pi: "hsl(268, 50%, 50%)",
-  lecturer: "hsl(196, 55%, 43%)",
-  postdoc: "hsl(165, 45%, 38%)",
-  phd: "hsl(38, 70%, 46%)",
-};
+const GRAPH_FONT = '"General Sans", "Inter", system-ui, sans-serif';
+const MIN_GRAPH_SCALE = 0.3;
+const MAX_GRAPH_SCALE = 3;
+
+const CLUSTER_PALETTE = [
+  { node: "#2878b5", fill: "rgba(40, 120, 181, 0.11)" },
+  { node: "#a85ea5", fill: "rgba(168, 94, 165, 0.10)" },
+  { node: "#249a79", fill: "rgba(36, 154, 121, 0.10)" },
+  { node: "#d37c35", fill: "rgba(211, 124, 53, 0.10)" },
+  { node: "#4f76a7", fill: "rgba(79, 118, 167, 0.10)" },
+  { node: "#b05f78", fill: "rgba(176, 95, 120, 0.10)" },
+  { node: "#6f8f45", fill: "rgba(111, 143, 69, 0.10)" },
+  { node: "#7a6fb2", fill: "rgba(122, 111, 178, 0.10)" },
+];
 
 const EDGE_COLORS: Record<string, string> = {
-  mission: "hsl(268, 34%, 64%)",
-  supervisor: "hsl(196, 45%, 48%)",
-  coauthor: "hsl(165, 45%, 42%)",
-  thematic: "hsl(38, 62%, 48%)",
-  department: "hsl(260, 12%, 72%)",
+  mission: "hsl(151, 7%, 50%)",
+  supervisor: "hsl(204, 35%, 48%)",
+  coauthor: "hsl(161, 36%, 43%)",
+  thematic: "hsl(28, 51%, 49%)",
+  department: "hsl(151, 7%, 63%)",
 };
 
-const CLUSTER_HUES = [268, 196, 165, 38, 340, 218, 125, 18];
+const MIN_NODE_SPACING = 58;
+const CLUSTER_GAP = 28;
 
 interface GraphVisualizationProps {
   researchers: Researcher[];
@@ -89,10 +97,122 @@ function sharedRelevantPapers(a: Researcher, b: Researcher) {
     .filter(Boolean);
 }
 
+function getMemberLayout(count: number) {
+  if (count <= 1) {
+    return { offsets: [{ x: 0, y: 0 }], rx: 76, ry: 60 };
+  }
+
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const offsets = Array.from({ length: count }, (_, index) => {
+    if (index === 0) return { x: 0, y: 0 };
+    const radius = MIN_NODE_SPACING * Math.sqrt(index);
+    const angle = index * goldenAngle - Math.PI / 2;
+    return {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius * 0.82,
+    };
+  });
+
+  const maxX = Math.max(...offsets.map(offset => Math.abs(offset.x)));
+  const maxY = Math.max(...offsets.map(offset => Math.abs(offset.y)));
+  return {
+    offsets,
+    rx: Math.max(86, maxX + 52),
+    ry: Math.max(68, maxY + 52),
+  };
+}
+
+function getInitialClusterCentre(index: number, count: number, innerRadius: number) {
+  const innerCount = Math.min(8, count);
+  const onOuterRing = index >= innerCount;
+  const ringIndex = onOuterRing ? index - innerCount : index;
+  const ringCount = onOuterRing ? count - innerCount : innerCount;
+  const radius = onOuterRing ? innerRadius + 260 : innerRadius;
+  const angleOffset = onOuterRing ? Math.PI / Math.max(1, ringCount) : 0;
+  const angle = (Math.PI * 2 * ringIndex) / Math.max(1, ringCount) - Math.PI / 2 + angleOffset;
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius * 0.82,
+  };
+}
+
+function separateClusterCentres<T extends { cx: number; cy: number; initialX: number; initialY: number; collisionRadius: number }>(clusters: T[]) {
+  for (let iteration = 0; iteration < 180; iteration += 1) {
+    for (const cluster of clusters) {
+      cluster.cx += (cluster.initialX - cluster.cx) * 0.012;
+      cluster.cy += (cluster.initialY - cluster.cy) * 0.012;
+
+      const missionDistance = Math.hypot(cluster.cx, cluster.cy) || 1;
+      const minimumMissionDistance = cluster.collisionRadius + 92;
+      if (missionDistance < minimumMissionDistance) {
+        const push = minimumMissionDistance - missionDistance;
+        cluster.cx += (cluster.cx / missionDistance) * push;
+        cluster.cy += (cluster.cy / missionDistance) * push;
+      }
+    }
+
+    for (let i = 0; i < clusters.length; i += 1) {
+      for (let j = i + 1; j < clusters.length; j += 1) {
+        const a = clusters[i];
+        const b = clusters[j];
+        let dx = b.cx - a.cx;
+        let dy = b.cy - a.cy;
+        let distance = Math.hypot(dx, dy);
+        if (distance < 0.001) {
+          const angle = (i + 1) * 1.618;
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          distance = 1;
+        }
+        const minimumDistance = a.collisionRadius + b.collisionRadius + CLUSTER_GAP;
+        if (distance >= minimumDistance) continue;
+
+        const push = (minimumDistance - distance) * 0.52;
+        const nx = dx / distance;
+        const ny = dy / distance;
+        a.cx -= nx * push;
+        a.cy -= ny * push;
+        b.cx += nx * push;
+        b.cy += ny * push;
+      }
+    }
+  }
+}
+
+function getGraphViewBox(clusters: GraphCluster[]) {
+  if (clusters.length === 0) return "-450 -320 900 640";
+
+  const padding = 92;
+  let minX = Math.min(-60, ...clusters.map(cluster => cluster.cx - cluster.rx)) - padding;
+  let maxX = Math.max(60, ...clusters.map(cluster => cluster.cx + cluster.rx)) + padding;
+  let minY = Math.min(-60, ...clusters.map(cluster => cluster.cy - cluster.ry)) - padding;
+  let maxY = Math.max(60, ...clusters.map(cluster => cluster.cy + cluster.ry)) + padding;
+
+  const targetRatio = 1.48;
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (width / height < targetRatio) {
+    const extra = (height * targetRatio - width) / 2;
+    minX -= extra;
+    maxX += extra;
+  } else if (width / height > targetRatio) {
+    const extra = (width / targetRatio - height) / 2;
+    minY -= extra;
+    maxY += extra;
+  }
+
+  return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+}
+
 function buildGraph(researchers: Researcher[], missionLabel = "Current Mission") {
   const visibleResearchers = researchers.slice(0, 24);
   const departments = [...new Set(visibleResearchers.map(researcher => researcher.department || "Imperial").filter(Boolean))];
-  const clusterRadius = 210;
+  const memberLayouts = new Map(departments.map(department => {
+    const count = visibleResearchers.filter(researcher => (researcher.department || "Imperial") === department).length;
+    return [department, getMemberLayout(count)] as const;
+  }));
+  const largestClusterRadius = Math.max(110, ...[...memberLayouts.values()].map(layout => Math.max(layout.rx, layout.ry)));
+  const innerRadius = Math.max(245, largestClusterRadius * 1.65);
   const nodes: GraphNode[] = [{
     id: "mission",
     x: 0,
@@ -106,32 +226,39 @@ function buildGraph(researchers: Researcher[], missionLabel = "Current Mission")
     networkRole: "Current Search",
   }];
 
-  const clusters: GraphCluster[] = departments.map((department, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, departments.length) - Math.PI / 2;
-    const members = visibleResearchers.filter(researcher => researcher.department === department);
+  const clusterDrafts = departments.map((department, index) => {
+    const layout = memberLayouts.get(department) ?? getMemberLayout(1);
+    const initial = getInitialClusterCentre(index, departments.length, innerRadius);
+    const palette = CLUSTER_PALETTE[index % CLUSTER_PALETTE.length];
     return {
       id: department,
       label: department.replace(/^Department of /, "").replace(/^School of /, ""),
-      cx: Math.cos(angle) * clusterRadius,
-      cy: Math.sin(angle) * clusterRadius,
-      rx: Math.max(78, Math.min(145, 45 + members.length * 14)),
-      ry: Math.max(55, Math.min(110, 35 + members.length * 10)),
-      color: `hsla(${CLUSTER_HUES[index % CLUSTER_HUES.length]}, 48%, 58%, 0.08)`,
+      cx: initial.x,
+      cy: initial.y,
+      initialX: initial.x,
+      initialY: initial.y,
+      rx: layout.rx,
+      ry: layout.ry,
+      collisionRadius: Math.max(layout.rx, layout.ry) + 20,
+      color: palette.fill,
+      nodeColor: palette.node,
       description: department,
     };
   });
+  separateClusterCentres(clusterDrafts);
+  const clusters: GraphCluster[] = clusterDrafts.map(({ initialX: _initialX, initialY: _initialY, collisionRadius: _collisionRadius, nodeColor: _nodeColor, ...cluster }) => cluster);
+  const clusterNodeColors = new Map(clusterDrafts.map(cluster => [cluster.id, cluster.nodeColor]));
 
   for (const [departmentIndex, department] of departments.entries()) {
     const cluster = clusters[departmentIndex];
-    const members = visibleResearchers.filter(researcher => researcher.department === department);
+    const members = visibleResearchers.filter(researcher => (researcher.department || "Imperial") === department);
+    const layout = memberLayouts.get(department) ?? getMemberLayout(members.length);
     for (const [memberIndex, researcher] of members.entries()) {
-      const angle = (Math.PI * 2 * memberIndex) / Math.max(1, members.length) - Math.PI / 2;
-      const spreadX = members.length === 1 ? 0 : Math.cos(angle) * Math.max(28, cluster.rx * 0.48);
-      const spreadY = members.length === 1 ? 0 : Math.sin(angle) * Math.max(24, cluster.ry * 0.48);
+      const offset = layout.offsets[memberIndex] ?? { x: 0, y: 0 };
       nodes.push({
         id: researcher.id,
-        x: cluster.cx + spreadX,
-        y: cluster.cy + spreadY,
+        x: cluster.cx + offset.x,
+        y: cluster.cy + offset.y,
         label: researcher.name,
         shortTitle: researcher.title,
         department: researcher.department,
@@ -140,7 +267,7 @@ function buildGraph(researchers: Researcher[], missionLabel = "Current Mission")
         relevanceScore: researcher.relevanceScore,
         cluster: department,
         isBridge: false,
-        networkRole: researcher.relevanceScore >= 85 ? "High Match" : researcher.relevanceScore >= 70 ? "Relevant Match" : "Adjacent Match",
+        networkRole: matchStrengthLabel(researcher.relevanceScore),
         keywords: researcher.matchedKeywords.length > 0 ? researcher.matchedKeywords : researcher.keywords,
       });
     }
@@ -231,46 +358,78 @@ function buildGraph(researchers: Researcher[], missionLabel = "Current Mission")
         coauthors > 0 ? `${coauthors} relevant co-authored paper${coauthors === 1 ? "" : "s"}` : "",
         crossDepartments > 0 ? `${crossDepartments} cross-department link${crossDepartments === 1 ? "" : "s"}` : "",
         crossFaculties > 0 ? `${crossFaculties} cross-faculty link${crossFaculties === 1 ? "" : "s"}` : "",
-        thematicCrossings > 0 ? `${thematicCrossings} cross-cluster theme${thematicCrossings === 1 ? "" : "s"}` : "",
+        thematicCrossings > 0 ? `${thematicCrossings} cross-cluster thematic link${thematicCrossings === 1 ? "" : "s"}` : "",
       ].filter(Boolean);
 
-      if ((crossDepartments + crossFaculties + thematicCrossings) >= 2) {
+      if ((crossDepartments + crossFaculties) > 0) {
         node.isBridge = true;
         node.networkRole = "Bridge Match";
       }
     }
   }
 
-  return { nodes, edges, clusters };
+  return { nodes, edges, clusters, clusterNodeColors, viewBox: getGraphViewBox(clusters) };
 }
 
 function edgePath(src: GraphNode, tgt: GraphNode, index: number) {
   const dx = tgt.x - src.x;
   const dy = tgt.y - src.y;
   const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-  const curve = Math.min(34, Math.max(10, distance * 0.08));
+  const curve = Math.min(72, Math.max(12, distance * 0.16));
   const direction = index % 2 === 0 ? 1 : -1;
   const midX = (src.x + tgt.x) / 2 + (-dy / distance) * curve * direction;
   const midY = (src.y + tgt.y) / 2 + (dx / distance) * curve * direction;
   return `M ${src.x} ${src.y} Q ${midX} ${midY} ${tgt.x} ${tgt.y}`;
 }
 
+function getNodeLabelPlacement(node: GraphNode, cluster: GraphCluster | undefined, size: number) {
+  if (!cluster) {
+    return { x: node.x, y: node.y + size + 10, anchor: "middle" as const, roleY: node.y + size + 17 };
+  }
+
+  const dx = node.x - cluster.cx;
+  const dy = node.y - cluster.cy;
+  if (Math.hypot(dx, dy) < 12) {
+    return { x: node.x, y: node.y + size + 11, anchor: "middle" as const, roleY: node.y + size + 18 };
+  }
+
+  if (Math.abs(dx) >= Math.abs(dy) * 0.7) {
+    const direction = dx >= 0 ? 1 : -1;
+    return {
+      x: node.x + direction * (size + 8),
+      y: node.y - 1,
+      anchor: direction > 0 ? "start" as const : "end" as const,
+      roleY: node.y + 7,
+    };
+  }
+
+  const direction = dy >= 0 ? 1 : -1;
+  return {
+    x: node.x,
+    y: node.y + direction * (size + 10),
+    anchor: "middle" as const,
+    roleY: node.y + direction * (size + 17),
+  };
+}
+
+function matchStrengthLabel(score: number) {
+  if (score >= 80) return "Strong Match";
+  if (score >= 60) return "Moderate Match";
+  return "Weak Match";
+}
+
 function getVisibleEdges(mode: GraphMode, edges: GraphEdge[], nodes: GraphNode[]): GraphEdge[] {
   switch (mode) {
-    case "relevance":
-      return edges.filter(e => e.type === "mission");
     case "coauthorship":
       return edges.filter(e => e.type === "coauthor" || e.type === "mission");
-    case "supervision":
-      return edges.filter(e => e.type === "supervisor" || e.type === "mission");
-    case "thematic":
-      return edges.filter(e => e.type === "thematic" || e.type === "mission");
     case "bridges":
       return edges.filter(e => {
         if (e.type === "mission") return true;
         const src = nodes.find(n => n.id === e.source);
         const tgt = nodes.find(n => n.id === e.target);
-        return src && tgt && src.cluster !== tgt.cluster;
+        if (!src || !tgt || src.cluster === tgt.cluster) return false;
+        if (e.type === "coauthor") return true;
+        return e.type === "thematic" && Boolean(src.isBridge || tgt.isBridge);
       });
     default:
       return edges;
@@ -285,16 +444,20 @@ function getHighlightedNodes(mode: GraphMode, nodes: GraphNode[]): Set<string> {
 export default function GraphVisualization({ researchers, missionLabel }: GraphVisualizationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [mode, setMode] = useState<GraphMode>("relevance");
+  const [mode, setMode] = useState<GraphMode>("coauthorship");
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
-  const { nodes, edges, clusters } = useMemo(
+  const { nodes, edges, clusters, clusterNodeColors, viewBox } = useMemo(
     () => buildGraph(researchers, missionLabel),
     [missionLabel, researchers],
+  );
+  const clustersById = useMemo(
+    () => new Map(clusters.map(cluster => [cluster.id, cluster])),
+    [clusters],
   );
   const researchersById = useMemo(
     () => new Map(researchers.map(researcher => [researcher.id, researcher])),
@@ -303,17 +466,36 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
 
   const visibleEdges = getVisibleEdges(mode, edges, nodes);
   const highlightedNodes = getHighlightedNodes(mode, nodes);
+  const focusedNode = selectedNode ?? hoveredNode;
   const bridgeCount = nodes.filter(node => node.isBridge).length;
   const coauthorEdgeCount = edges.filter(edge => edge.type === "coauthor").length;
 
+  const zoomAtPoint = useCallback((factor: number, pointX = 0, pointY = 0) => {
+    setTransform(prev => {
+      const scale = Math.max(MIN_GRAPH_SCALE, Math.min(MAX_GRAPH_SCALE, prev.scale * factor));
+      if (scale === prev.scale) return prev;
+
+      const ratio = scale / prev.scale;
+      return {
+        scale,
+        x: pointX - ratio * (pointX - prev.x),
+        y: pointY - ratio * (pointY - prev.y),
+      };
+    });
+  }, []);
+
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setTransform(prev => ({
-      ...prev,
-      scale: Math.max(0.3, Math.min(3, prev.scale * delta)),
-    }));
-  }, []);
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const deltaMultiplier = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? rect.height : 1;
+    const pixelDelta = Math.max(-120, Math.min(120, e.deltaY * deltaMultiplier));
+    const factor = Math.exp(-pixelDelta * 0.0018);
+    const pointX = e.clientX - rect.left - rect.width / 2;
+    const pointY = e.clientY - rect.top - rect.height / 2;
+    zoomAtPoint(factor, pointX, pointY);
+  }, [zoomAtPoint]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -386,14 +568,12 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
     return 1;
   };
 
-  const viewBox = "-450 -320 900 640";
-
   return (
-    <div className="flex-1 flex flex-col overflow-hidden relative bg-[linear-gradient(135deg,hsl(250,20%,99%),hsl(260,26%,96%))]">
+    <div className="graph-view flex-1 flex flex-col overflow-hidden relative bg-[hsl(150,12%,97%)]">
       {/* Graph Controls */}
-      <div className="z-10 flex items-center justify-between gap-4 border-b border-border/70 bg-card/80 px-6 py-3 backdrop-blur-xl">
+      <div className="z-10 flex items-center justify-between gap-4 border-b border-border/70 bg-card/90 px-6 py-3 backdrop-blur-xl">
         <div className="flex items-center gap-3">
-          <div className="hidden items-center gap-2 rounded-lg border border-border/80 bg-background/80 px-3 py-2 text-xs text-muted-foreground shadow-sm md:flex">
+          <div className="hidden items-center gap-2 rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground md:flex">
             <Network className="h-4 w-4 text-primary" />
             <span>{nodes.length - 1} researchers</span>
             <span className="h-3 w-px bg-border" />
@@ -416,14 +596,29 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-border/80 bg-background/80 p-1 shadow-sm">
-          <button onClick={() => setTransform(p => ({ ...p, scale: Math.min(3, p.scale * 1.2) }))} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Zoom in">
+        <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/70 p-1">
+          <button
+            onClick={() => zoomAtPoint(1.18)}
+            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            title="Zoom in"
+            aria-label="Zoom in"
+          >
             <ZoomIn className="h-4 w-4 text-muted-foreground" />
           </button>
-          <button onClick={() => setTransform(p => ({ ...p, scale: Math.max(0.3, p.scale * 0.8) }))} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Zoom out">
+          <button
+            onClick={() => zoomAtPoint(1 / 1.18)}
+            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            title="Zoom out"
+            aria-label="Zoom out"
+          >
             <ZoomOut className="h-4 w-4 text-muted-foreground" />
           </button>
-          <button onClick={resetView} className="rounded-md p-2 transition-colors hover:bg-secondary" title="Reset view">
+          <button
+            onClick={resetView}
+            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            title="Re-frame graph"
+            aria-label="Re-frame graph"
+          >
             <Maximize2 className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
@@ -447,32 +642,12 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         >
           <defs>
             <filter id="node-soft-shadow" x="-80%" y="-80%" width="260%" height="260%">
-              <feDropShadow dx="0" dy="7" stdDeviation="7" floodColor="hsl(260, 20%, 20%)" floodOpacity="0.16" />
+              <feDropShadow dx="0" dy="3" stdDeviation="4" floodColor="hsl(153, 18%, 18%)" floodOpacity="0.12" />
             </filter>
             <filter id="mission-shadow" x="-90%" y="-90%" width="280%" height="280%">
-              <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="hsl(268, 55%, 35%)" floodOpacity="0.25" />
+              <feDropShadow dx="0" dy="5" stdDeviation="7" floodColor="hsl(235, 45%, 35%)" floodOpacity="0.2" />
             </filter>
-            <linearGradient id="mission-fill" x1="0%" x2="100%" y1="0%" y2="100%">
-              <stop offset="0%" stopColor="hsl(268, 65%, 56%)" />
-              <stop offset="100%" stopColor="hsl(196, 50%, 42%)" />
-            </linearGradient>
-            {/* Mission glow */}
-            <radialGradient id="mission-glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0.22" />
-              <stop offset="70%" stopColor="hsl(196, 50%, 45%)" stopOpacity="0.06" />
-              <stop offset="100%" stopColor="hsl(268, 65%, 50%)" stopOpacity="0" />
-            </radialGradient>
-            {/* Relevance rings */}
-            <radialGradient id="relevance-ring" cx="50%" cy="50%" r="50%">
-              <stop offset="95%" stopColor="hsl(268, 30%, 70%)" stopOpacity="0.06" />
-              <stop offset="100%" stopColor="hsl(268, 30%, 70%)" stopOpacity="0" />
-            </radialGradient>
           </defs>
-
-          {/* Relevance rings */}
-          {[150, 280, 400].map((r, i) => (
-            <circle key={i} cx="0" cy="0" r={r} fill="none" stroke="hsl(260, 18%, 78%)" strokeWidth="0.45" strokeDasharray="2 9" opacity={0.45} />
-          ))}
 
           {/* Cluster hulls */}
           {clusters.map(cluster => (
@@ -483,23 +658,23 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                 rx={cluster.rx}
                 ry={cluster.ry}
                 fill={cluster.color}
-                stroke="hsl(260, 18%, 80%)"
-                strokeWidth="0.35"
-                strokeDasharray="2 7"
-                opacity={0.55}
+                stroke={clusterNodeColors.get(cluster.id)}
+                strokeWidth="0.65"
+                opacity={1}
+                strokeOpacity={0.16}
               />
               <text
                 x={cluster.cx}
-                y={cluster.cy - cluster.ry + 11}
+                y={cluster.cy - cluster.ry - 10}
                 textAnchor="middle"
-                className="fill-muted-foreground"
-                fontSize="5.5"
-                fontFamily="Space Grotesk, sans-serif"
-                fontWeight="600"
+                fill="hsl(151, 8%, 39%)"
+                fontSize="7"
+                fontFamily={GRAPH_FONT}
+                fontWeight="500"
                 letterSpacing="0"
-                opacity="0.44"
+                opacity="0.78"
               >
-                {cluster.label.toUpperCase()}
+                {cluster.label}
               </text>
             </g>
           ))}
@@ -509,18 +684,18 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             const src = nodes.find(n => n.id === edge.source);
             const tgt = nodes.find(n => n.id === edge.target);
             if (!src || !tgt) return null;
-            const color = EDGE_COLORS[edge.type] || "hsl(260, 15%, 80%)";
-            const width = edge.type === "mission" ? 0.65 + edge.weight * 1.1 : 0.55 + edge.weight * 0.8;
-            const opacity = edge.type === "mission" ? 0.1 + edge.weight * 0.18 : 0.14 + edge.weight * 0.28;
-            const isHighlighted = selectedNode && (edge.source === selectedNode.id || edge.target === selectedNode.id);
+            const color = EDGE_COLORS[edge.type] || "hsl(151, 7%, 63%)";
+            const width = edge.type === "mission" ? 0.4 + edge.weight * 0.35 : 0.45 + edge.weight * 0.5;
+            const opacity = edge.type === "mission" ? 0.035 + edge.weight * 0.06 : 0.08 + edge.weight * 0.16;
+            const isHighlighted = Boolean(focusedNode && (edge.source === focusedNode.id || edge.target === focusedNode.id));
             return (
               <path
                 key={`${edge.source}-${edge.target}-${i}`}
                 d={edgePath(src, tgt, i)}
                 fill="none"
                 stroke={color}
-                strokeWidth={isHighlighted ? width * 2.2 : width}
-                opacity={isHighlighted ? 0.72 : selectedNode ? opacity * 0.22 : opacity}
+                strokeWidth={isHighlighted ? width * 1.9 : width}
+                opacity={isHighlighted ? 0.82 : focusedNode ? opacity * 0.2 : opacity}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
@@ -528,9 +703,9 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
           })}
 
           {/* Co-authored paper labels */}
-          {mode === "coauthorship" && visibleEdges
-            .filter(edge => edge.type === "coauthor" && edge.label)
-            .slice(0, 16)
+          {mode === "coauthorship" && focusedNode && visibleEdges
+            .filter(edge => edge.type === "coauthor" && edge.label && (edge.source === focusedNode.id || edge.target === focusedNode.id))
+            .slice(0, 6)
             .map((edge, i) => {
               const src = nodes.find(n => n.id === edge.source);
               const tgt = nodes.find(n => n.id === edge.target);
@@ -543,83 +718,86 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                   y={(src.y + tgt.y) / 2 - 4}
                   textAnchor="middle"
                   className="fill-muted-foreground"
-                  fontSize="4"
-                  fontFamily="Inter, sans-serif"
-                  opacity="0.55"
+                  fontSize="4.5"
+                  fontFamily={GRAPH_FONT}
+                  opacity="0.62"
                 >
                   {label}
                 </text>
               );
             })}
 
-          {/* Mission glow circle */}
-          <circle cx="0" cy="0" r="86" fill="url(#mission-glow)" className="animate-pulse-glow" />
-
           {/* Nodes */}
           {nodes.map(node => {
             const size = NODE_SIZES[node.role] || 12;
-            const color = NODE_COLORS[node.role] || "hsl(260, 30%, 60%)";
+            const color = node.role === "mission" ? "#3844a8" : clusterNodeColors.get(node.cluster) ?? "#647a75";
+            const cluster = clustersById.get(node.cluster);
+            const label = getNodeLabelPlacement(node, cluster, size);
             const isSelected = selectedNode?.id === node.id;
-            const isConnected = selectedNode && visibleEdges.some(
-              e => (e.source === selectedNode.id && e.target === node.id) || (e.target === selectedNode.id && e.source === node.id)
+            const isConnected = focusedNode && visibleEdges.some(
+              e => (e.source === focusedNode.id && e.target === node.id) || (e.target === focusedNode.id && e.source === node.id)
             );
-            const dimmed = selectedNode && !isSelected && !isConnected && node.role !== "mission";
+            const isFocused = focusedNode?.id === node.id;
+            const dimmed = focusedNode && !isFocused && !isConnected && node.role !== "mission";
             const bridgeHighlight = highlightedNodes.size > 0 && highlightedNodes.has(node.id);
 
             return (
               <g
                 key={node.id}
                 className="graph-node"
-                opacity={dimmed ? 0.2 : getNodeOpacity(node)}
+                data-node-id={node.id}
+                data-node-size={size}
+                role={node.role === "mission" ? undefined : "button"}
+                aria-label={node.role === "mission" ? undefined : `${node.label}, ${node.networkRole ?? "researcher"}`}
+                opacity={dimmed ? 0.18 : getNodeOpacity(node)}
                 onMouseEnter={e => handleNodeHover(node, e)}
                 onMouseLeave={() => handleNodeHover(null)}
                 onClick={() => handleNodeClick(node)}
               >
                 {/* Bridge indicator */}
                 {(node.isBridge || bridgeHighlight) && node.role !== "mission" && (
-                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke="hsl(38, 80%, 48%)" strokeWidth="1.2" strokeDasharray="2 3" opacity={0.7} />
+                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke="#d34f57" strokeWidth="1.1" strokeDasharray="2.5 3.5" opacity={0.72} />
                 )}
                 {/* Selection ring */}
                 {isSelected && (
-                  <circle cx={node.x} cy={node.y} r={size + 5} fill="none" stroke={color} strokeWidth="1.8" opacity={0.85} />
+                  <circle cx={node.x} cy={node.y} r={size + 7} fill="none" stroke="#d34f57" strokeWidth="1.8" opacity={0.9} />
                 )}
                 {/* Main circle */}
                 {node.role === "mission" ? (
                   <>
-                    <circle cx={node.x} cy={node.y} r={size} fill="url(#mission-fill)" opacity={0.98} filter="url(#mission-shadow)" />
-                    <circle cx={node.x} cy={node.y} r={size - 4} fill="none" stroke="white" strokeWidth="0.9" opacity={0.55} />
-                    <text x={node.x} y={node.y - 5} textAnchor="middle" fill="white" fontSize="5.2" fontFamily="Space Grotesk, sans-serif" fontWeight="700" letterSpacing="0">
-                      SEARCH
+                    <circle cx={node.x} cy={node.y} r={size + 14} fill="none" stroke={color} strokeWidth="0.8" opacity={0.16} />
+                    <circle cx={node.x} cy={node.y} r={size} fill={color} opacity={0.98} filter="url(#mission-shadow)" />
+                    <text x={node.x} y={node.y - 5} textAnchor="middle" fill="white" fontSize="5.2" fontFamily={GRAPH_FONT} fontWeight="500" letterSpacing="0">
+                      MISSION
                     </text>
-                    <text x={node.x} y={node.y + 3} textAnchor="middle" fill="white" fontSize="3.6" fontFamily="Inter, sans-serif" opacity={0.86}>
+                    <text x={node.x} y={node.y + 3} textAnchor="middle" fill="white" fontSize="3.6" fontFamily={GRAPH_FONT} opacity={0.86}>
                       {node.label.slice(0, 24)}
                     </text>
-                    <text x={node.x} y={node.y + 9} textAnchor="middle" fill="white" fontSize="3.4" fontFamily="Inter, sans-serif" opacity={0.78}>
+                    <text x={node.x} y={node.y + 9} textAnchor="middle" fill="white" fontSize="3.4" fontFamily={GRAPH_FONT} opacity={0.78}>
                       {node.label.length > 24 ? node.label.slice(24, 48) : "Search Results"}
                     </text>
                   </>
                 ) : (
                   <>
-                    <circle cx={node.x} cy={node.y} r={size + 3} fill={color} opacity="0.08" />
-                    <circle cx={node.x} cy={node.y} r={size} fill={color} opacity={0.95} filter="url(#node-soft-shadow)" />
-                    <circle cx={node.x - size * 0.28} cy={node.y - size * 0.35} r={Math.max(1.8, size * 0.24)} fill="white" opacity={0.28} />
+                    <circle cx={node.x} cy={node.y} r={size + 4} fill={color} opacity="0.09" />
+                    <circle cx={node.x} cy={node.y} r={size} fill={color} opacity={0.94} filter="url(#node-soft-shadow)" />
                     {/* Initials */}
-                    <text x={node.x} y={node.y + 1.2} textAnchor="middle" fill="white" fontSize={size > 14 ? "6.5" : "5.2"} fontFamily="Space Grotesk, sans-serif" fontWeight="700">
+                    <text x={node.x} y={node.y + 1.4} textAnchor="middle" fill="white" fontSize={size > 14 ? "6.5" : "5.2"} fontFamily={GRAPH_FONT} fontWeight="500">
                       {node.label.split(" ").map(w => w[0]).filter(Boolean).slice(-2).join("")}
                     </text>
                     {/* Name label */}
-                    {(isSelected || isConnected || !selectedNode) && (
+                    {(isFocused || isConnected || !focusedNode) && (
                       <>
-                        <text x={node.x} y={node.y + size + 9} textAnchor="middle" fill="hsl(260, 25%, 22%)" fontSize="4.8" fontFamily="Space Grotesk, sans-serif" fontWeight="600">
+                        <text x={label.x} y={label.y} textAnchor={label.anchor} fill="hsl(153, 18%, 18%)" fontSize="5" fontFamily={GRAPH_FONT} fontWeight="500">
                           {shortNameLabel(node.label)}
                         </text>
-                        <text x={node.x} y={node.y + size + 15} textAnchor="middle" fill="hsl(260, 10%, 48%)" fontSize="3.5" fontFamily="Inter, sans-serif">
-                          {node.networkRole}
-                        </text>
+                        {(isSelected || hoveredNode?.id === node.id) && (
+                          <text x={label.x} y={label.roleY} textAnchor={label.anchor} fill="hsl(151, 7%, 45%)" fontSize="3.8" fontFamily={GRAPH_FONT}>
+                            {node.networkRole}
+                          </text>
+                        )}
                       </>
                     )}
-                    {/* Relevance score */}
-                    <circle cx={node.x + size * 0.78} cy={node.y - size * 0.78} r="3.1" fill={node.relevanceScore >= 80 ? "hsl(142, 64%, 40%)" : node.relevanceScore >= 60 ? "hsl(38, 92%, 50%)" : "hsl(0, 72%, 55%)"} stroke="white" strokeWidth="0.9" />
                   </>
                 )}
               </g>
@@ -641,7 +819,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
               <div className="flex items-center justify-between gap-3 mb-1">
                 <p className="font-brand font-semibold text-foreground text-sm">{hoveredNode.label}</p>
                 <span className={`text-xs font-bold ${hoveredNode.relevanceScore >= 80 ? "text-relevance-high" : hoveredNode.relevanceScore >= 60 ? "text-relevance-medium" : "text-relevance-low"}`}>
-                  {hoveredNode.relevanceScore}%
+                  {matchStrengthLabel(hoveredNode.relevanceScore)}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">{hoveredNode.shortTitle}</p>
@@ -664,21 +842,21 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </AnimatePresence>
 
         {/* Legend */}
-        <div className="absolute bottom-4 left-4 z-10 space-y-1.5 rounded-xl border border-border/80 bg-card/80 p-3 text-xs shadow-lg backdrop-blur-xl">
+        <div className="absolute bottom-4 left-4 z-10 space-y-1.5 rounded-lg border border-border/70 bg-card/88 p-3 text-xs shadow-sm backdrop-blur-xl">
           <p className="font-brand text-[10px] font-semibold tracking-wider text-muted-foreground uppercase mb-2">Legend</p>
-          {[
-            { color: NODE_COLORS.pi, label: "Professor / PI", size: 8 },
-            { color: NODE_COLORS.lecturer, label: "Lecturer / Reader", size: 7 },
-            { color: NODE_COLORS.postdoc, label: "Postdoc / Fellow", size: 6 },
-            { color: NODE_COLORS.phd, label: "PhD Student", size: 5 },
-          ].map(item => (
-            <div key={item.label} className="flex items-center gap-2">
-              <span className="inline-block rounded-full" style={{ width: item.size * 2, height: item.size * 2, backgroundColor: item.color }} />
-              <span className="text-muted-foreground">{item.label}</span>
-            </div>
-          ))}
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-3 w-3 rounded-full bg-[#2878b5]" />
+            <span className="text-muted-foreground">Colour shows department</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex w-5 items-center justify-center gap-0.5">
+              <span className="inline-block h-2 w-2 rounded-full bg-[#647a75]" />
+              <span className="inline-block h-3.5 w-3.5 rounded-full bg-[#647a75]" />
+            </span>
+            <span className="text-muted-foreground">Size shows role / seniority</span>
+          </div>
           <div className="flex items-center gap-2 mt-1 pt-1 border-t border-border">
-            <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-dashed border-primary/50" />
+            <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-dashed border-[#d34f57]" />
             <span className="text-muted-foreground">Bridge researcher</span>
           </div>
           <div className="flex items-center gap-2">
@@ -688,7 +866,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </div>
 
         {/* Info overlay */}
-        <div className="absolute top-4 left-4 z-10 max-w-xs rounded-xl border border-border/80 bg-card/80 px-4 py-3 shadow-lg backdrop-blur-xl">
+        <div className="absolute top-4 left-4 z-10 max-w-xs rounded-lg border border-border/70 bg-card/88 px-4 py-3 shadow-sm backdrop-blur-xl">
           <p className="font-brand text-xs font-semibold text-foreground">
             {GRAPH_MODES.find(m => m.id === mode)?.label}
           </p>
@@ -696,7 +874,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             {GRAPH_MODES.find(m => m.id === mode)?.description}
           </p>
           <div className="mt-2 space-y-1 border-t border-border pt-2 text-[10px] leading-relaxed text-muted-foreground">
-            <p><span className="font-semibold text-foreground">Bridge Match</span>: connects the mission to people in other departments or faculties through relevant co-authored papers or shared themes.</p>
+            <p><span className="font-semibold text-foreground">Bridge Match</span>: connects the mission to people in other departments or faculties through relevant co-authored papers. Shared themes add context, but do not create a bridge on their own.</p>
             <p><span className="font-semibold text-foreground">Adjacent Match</span>: relevant to the mission, but with weaker direct evidence or fewer interdisciplinary links.</p>
           </div>
         </div>

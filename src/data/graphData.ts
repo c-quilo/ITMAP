@@ -174,11 +174,8 @@ export const GRAPH_EDGES: GraphEdge[] = [
 ];
 
 export const GRAPH_MODES = [
-  { id: "relevance", label: "Mission Relevance", description: "How each person relates to the semantic mission" },
   { id: "coauthorship", label: "Co-authorship", description: "Co-authorship links from the relevant papers shown for this search" },
-  { id: "supervision", label: "Teams & Supervision", description: "PI, postdoc and PhD team structures" },
-  { id: "thematic", label: "Semantic Similarity", description: "Shared research themes and topics" },
-  { id: "bridges", label: "Cross-faculty Bridges", description: "People connecting departments or faculties through relevant papers and shared themes" },
+  { id: "bridges", label: "Cross-faculty Bridges", description: "People connecting departments or faculties through relevant co-authored papers" },
 ] as const;
 
 export type GraphMode = typeof GRAPH_MODES[number]["id"];
