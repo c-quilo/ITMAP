@@ -25,6 +25,14 @@ type PendingRewriteSearch = {
   options: SearchOptions;
 };
 
+type PendingProfileLookup = {
+  originalQuery: string;
+  lookupQuery: string;
+  mode: SearchMode;
+  options: SearchOptions;
+  suggestion: ResearcherSuggestion;
+};
+
 const SAVED_SEARCHES_KEY = "itmap.savedSearches.v1";
 const SAVED_RESEARCHERS_KEY = "itmap.savedResearchers.v1";
 const SCHOOL_MISSION_CACHE_KEY = "itmap.schoolMissionMatches.v1";
@@ -130,6 +138,48 @@ function slugifyFilePart(value: string) {
 
 function researcherResultDomId(researcherId: string) {
   return `researcher-result-${researcherId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function researcherLookupText(query: string) {
+  const normalized = query
+    .replace(/[“”]/g, "\"")
+    .replace(/[’']/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const lookupPatterns = [
+    /^(?:can you\s+)?(?:tell me about|show me|open|load|find|look up|lookup|who is|who's|what about|profile for|researcher profile for)\s+(.+?)\??$/i,
+    /^(.+?)\s+(?:profile|researcher profile)$/i,
+  ];
+
+  for (const pattern of lookupPatterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) return match[1].replace(/[?.!,;:]+$/g, "").trim();
+  }
+
+  return normalized.replace(/[?.!,;:]+$/g, "").trim();
+}
+
+function looksLikeResearcherLookup(query: string, lookupText: string) {
+  const normalizedQuery = normaliseResearcherName(query);
+  const normalizedLookup = normaliseResearcherName(lookupText);
+  if (!normalizedLookup) return false;
+
+  const explicitLookup = normalizedLookup !== normalizedQuery
+    || /\b(tell me about|show me|open|load|find|look up|lookup|who is|who's|what about|profile for|researcher profile)\b/i.test(query);
+  if (explicitLookup) return true;
+
+  const nameParts = lookupText
+    .replace(/[^\p{L}\p{M}\s'-]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const lower = normalizedLookup;
+  const topicWords = /\b(ai|health|climate|weather|pollution|textile|model|models|foundation|robotics|energy|materials|cancer|sustainability|exposure|data|machine|learning|for|and|with|using)\b/;
+
+  return nameParts.length >= 2
+    && nameParts.length <= 4
+    && !topicWords.test(lower)
+    && nameParts.every(part => part.length >= 2);
 }
 
 function keywordCandidates(text: string) {
@@ -527,6 +577,7 @@ export default function Index() {
   const [poolSummaryDone, setPoolSummaryDone] = useState(false);
   const [highlightedResearcherId, setHighlightedResearcherId] = useState<string | null>(null);
   const [pendingRewriteSearch, setPendingRewriteSearch] = useState<PendingRewriteSearch | null>(null);
+  const [pendingProfileLookup, setPendingProfileLookup] = useState<PendingProfileLookup | null>(null);
   const [editableRewrite, setEditableRewrite] = useState("");
   const [isRewritingMission, setIsRewritingMission] = useState(false);
   const [profileQuery, setProfileQuery] = useState("");
@@ -822,6 +873,7 @@ export default function Index() {
   const loadResearcherProfile = async (suggestion: ResearcherSuggestion) => {
     setProfileQuery(suggestion.name);
     setProfileSuggestions([]);
+    setTabMode("profile");
     setIsLoadingResearcherProfile(true);
     setResearcherProfileError("");
     setProfilePaperPage(0);
@@ -902,6 +954,27 @@ export default function Index() {
       return;
     }
 
+    const lookupQuery = researcherLookupText(trimmedQuery);
+    if (looksLikeResearcherLookup(trimmedQuery, lookupQuery)) {
+      try {
+        const suggestions = await suggestResearchers(lookupQuery);
+        const bestSuggestion = suggestions[0];
+        if (bestSuggestion && bestSuggestion.score >= 0.72) {
+          setSearchError("");
+          setPendingProfileLookup({
+            originalQuery: trimmedQuery,
+            lookupQuery,
+            mode,
+            options,
+            suggestion: bestSuggestion,
+          });
+          return;
+        }
+      } catch {
+        // If the name lookup fails, continue with the normal search path.
+      }
+    }
+
     if (mode === "semantic" && options.rewriteMission) {
       const searchRunId = searchRunIdRef.current + 1;
       searchRunIdRef.current = searchRunId;
@@ -930,6 +1003,20 @@ export default function Index() {
     }
 
     await executeSearch(trimmedQuery, mode, options);
+  };
+
+  const openPendingProfileLookup = async () => {
+    const lookup = pendingProfileLookup;
+    if (!lookup) return;
+    setPendingProfileLookup(null);
+    await loadResearcherProfile(lookup.suggestion);
+  };
+
+  const searchPendingProfileLookupAsMission = async () => {
+    const lookup = pendingProfileLookup;
+    if (!lookup) return;
+    setPendingProfileLookup(null);
+    await executeSearch(lookup.originalQuery, lookup.mode, lookup.options);
   };
 
   const continueRewriteSearch = async (query: string) => {
@@ -1273,6 +1360,57 @@ export default function Index() {
                   className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                 >
                   Continue with rewritten
+                </button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(pendingProfileLookup)}
+        onOpenChange={open => {
+          if (!open) setPendingProfileLookup(null);
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>This looks like a researcher lookup</DialogTitle>
+            <DialogDescription>
+              ITMAP can open the researcher profile instead of running this as a mission search.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingProfileLookup && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-secondary/50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">You typed</p>
+                <p className="mt-1 text-sm text-foreground">{pendingProfileLookup.originalQuery}</p>
+              </div>
+              <div className="rounded-lg border border-primary/15 bg-card px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {pendingProfileLookup.suggestion.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-foreground">{pendingProfileLookup.suggestion.name}</p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{pendingProfileLookup.suggestion.title}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">{pendingProfileLookup.suggestion.department}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={searchPendingProfileLookupAsMission}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+                >
+                  Search as mission
+                </button>
+                <button
+                  type="button"
+                  onClick={openPendingProfileLookup}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Open profile
                 </button>
               </div>
             </div>

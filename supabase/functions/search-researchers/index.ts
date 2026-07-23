@@ -253,8 +253,14 @@ const METHOD_TERMS = new Set([
   "learning",
   "machine",
   "ml",
+  "model",
+  "modeling",
+  "modelling",
+  "models",
   "neural",
   "surrogate",
+  "transformer",
+  "transformers",
   "vision",
 ]);
 
@@ -268,6 +274,11 @@ const METHOD_PHRASES = [
   "data driven",
   "data-driven",
   "digital twin",
+  "foundation model",
+  "foundation models",
+  "generative ai",
+  "large language model",
+  "large language models",
   "surrogate model",
   "surrogate modelling",
   "surrogate modeling",
@@ -319,6 +330,59 @@ function queryTerms(query: string) {
     .split(/[^a-z0-9]+/)
     .map(term => term.trim())
     .filter(term => (term.length > 2 || term === "ai" || term === "ml") && !STOP_WORDS.has(term));
+}
+
+const ADMIN_FORM_HINTS = [
+  /\bpermission\s+slip\b/i,
+  /\bparent\s*\/?\s*carer\b/i,
+  /\bname\s+of\s+child\b/i,
+  /\bdo\s+not\s+give\s+permission\b/i,
+  /\bgive\s+permission\b/i,
+  /\bschool\s+office\b/i,
+  /\bregistered\s+office\b/i,
+  /\bcompany\s+number\b/i,
+  /\btelephone\b/i,
+  /\btrip\s+to\b/i,
+  /\bprint\s+name\b/i,
+  /\bsignature\b/i,
+];
+
+const RESEARCH_INTENT_HINTS = [
+  /\bresearch(?:er|ers)?\b/i,
+  /\bexpert(?:s|ise)?\b/i,
+  /\bmission\b/i,
+  /\bpublication(?:s)?\b/i,
+  /\bpaper(?:s)?\b/i,
+  /\bgrant(?:s)?\b/i,
+  /\bprofessor(?:s)?\b/i,
+  /\bscientist(?:s)?\b/i,
+  /\bclinical\s+trial(?:s)?\b/i,
+  /\btechnology\b/i,
+  /\binnovation\b/i,
+  /\bengineering\b/i,
+];
+
+function countPatternMatches(value: string, patterns: RegExp[]) {
+  return patterns.reduce((count, pattern) => count + (pattern.test(value) ? 1 : 0), 0);
+}
+
+function redactSensitiveSearchText(value: string) {
+  return value
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[email]")
+    .replace(/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, "[phone]")
+    .replace(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/gi, "[postcode]")
+    .replace(/\bcompany\s+number\s+\d+\b/gi, "company number [redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyAdministrativeForm(value: string) {
+  const text = value.trim();
+  if (!text) return false;
+  const adminHits = countPatternMatches(text, ADMIN_FORM_HINTS);
+  const researchHits = countPatternMatches(text, RESEARCH_INTENT_HINTS);
+  const hasContactDetails = /(?:@|\btelephone\b|\bemail\b|\bregistered\s+office\b|\bcompany\s+number\b)/i.test(text);
+  return adminHits >= 4 && hasContactDetails && researchHits === 0;
 }
 
 function singularise(term: string) {
@@ -408,6 +472,17 @@ function expandedTermVariants(term: string) {
     variants.add("particulate matter");
     variants.add("environmental exposure");
     variants.add("environmental exposures");
+  }
+  if (singular === "health") {
+    variants.add("healthcare");
+    variants.add("health care");
+    variants.add("clinical");
+    variants.add("medical");
+    variants.add("medicine");
+    variants.add("patient");
+    variants.add("patients");
+    variants.add("digital health");
+    variants.add("public health");
   }
   return [...variants];
 }
@@ -2408,7 +2483,7 @@ async function fetchProfileKeywordCandidates(
       )
     `)
     .or(variants.map(variant => `document_text.ilike.%${escapeIlike(variant)}%`).join(","))
-    .limit(200);
+    .limit(1000);
 
   if (error) throw error;
 
@@ -2457,7 +2532,7 @@ async function fetchProfileKeywordCandidates(
       const aScore = Math.max(profileConceptScore(query, terms, a), Number(a.exact_profile_evidence_score || 0));
       return bScore - aScore;
     })
-    .slice(0, 80);
+    .slice(0, 200);
 }
 
 Deno.serve(async req => {
@@ -2474,6 +2549,9 @@ Deno.serve(async req => {
     auditBody = body;
     const query = (body.query || "").trim();
     const originalQuery = (body.original_query || query).trim();
+    const redactedQueryForAudit = redactSensitiveSearchText(query);
+    const redactedOriginalQueryForAudit = redactSensitiveSearchText(originalQuery || query);
+    const administrativeFormInput = isLikelyAdministrativeForm(query);
     const limit = Math.max(1, Math.min(body.limit || 30, 50));
 
     const openAiKey = Deno.env.get("OPENAI_API_KEY");
@@ -2498,9 +2576,24 @@ Deno.serve(async req => {
       if (!query) {
         return Response.json({ rewritten_query: "" }, { headers: corsHeaders });
       }
-      const rewritten = await expandMission(openAiKey, rankingModel, query);
+      if (administrativeFormInput) {
+        return Response.json({
+          rewritten_query: redactedQueryForAudit,
+          must_have: [],
+          nice_to_have: [],
+          method_terms: [],
+          domain_terms: [],
+        }, { headers: corsHeaders });
+      }
+      let rewritten: MissionExpansion;
+      try {
+        rewritten = await expandMission(openAiKey, rankingModel, redactSensitiveSearchText(query));
+      } catch (error) {
+        console.warn("Mission rewrite failed; returning original query", error);
+        rewritten = { expanded_query: redactedQueryForAudit };
+      }
       return Response.json({
-        rewritten_query: rewritten.expanded_query || query,
+        rewritten_query: rewritten.expanded_query || redactedQueryForAudit || query,
         must_have: rewritten.must_have || [],
         nice_to_have: rewritten.nice_to_have || [],
         method_terms: rewritten.method_terms || [],
@@ -2555,6 +2648,31 @@ Deno.serve(async req => {
     const includeExternalEvidence = body.include_external_evidence !== false;
     const searchUsage = createUsageMetrics();
     auditUsage = searchUsage;
+
+    if (mode === "semantic" && administrativeFormInput) {
+      const usageJson = usageMetricsJson(searchUsage);
+      await insertSearchAuditLog(supabase, {
+        action: "search",
+        status: "success",
+        query: redactedQueryForAudit,
+        original_query: redactedOriginalQueryForAudit || redactedQueryForAudit,
+        mode,
+        enable_rerank: enableRerank,
+        include_external_evidence: includeExternalEvidence,
+        rewrite_used: Boolean(originalQuery && originalQuery !== query),
+        duration_ms: Date.now() - requestStartedAt,
+        result_count: 0,
+        candidate_count: 0,
+        llm_pool_size: 0,
+        models: {},
+        usage: usageJson,
+        estimated_cost_usd: Number(usageJson.estimated_cost_usd || 0),
+        metadata: {
+          skipped_reason: "administrative_form_without_research_intent",
+        },
+      });
+      return Response.json({ results: [] }, { headers: corsHeaders });
+    }
 
     const rawKeywordTerms = queryTerms(query);
     const mission = {
@@ -2620,9 +2738,9 @@ Deno.serve(async req => {
       await insertSearchAuditLog(supabase, {
         action: "search",
         status: "success",
-        query: searchQuery,
-        original_query: originalQuery || searchQuery,
-        expanded_query: originalQuery && originalQuery !== searchQuery ? searchQuery : undefined,
+        query: redactSensitiveSearchText(searchQuery),
+        original_query: redactedOriginalQueryForAudit || redactSensitiveSearchText(searchQuery),
+        expanded_query: originalQuery && originalQuery !== searchQuery ? redactSensitiveSearchText(searchQuery) : undefined,
         mode,
         enable_rerank: false,
         include_external_evidence: false,
@@ -2675,7 +2793,7 @@ Deno.serve(async req => {
       throw researcherError;
     }
 
-    const profileKeywordMatches = (mode !== "keyword" && (groups.hasMethodIntent || isLongMission))
+    const profileKeywordMatches = (mode !== "keyword" && isLongMission)
       ? []
       : await fetchProfileKeywordCandidates(
         supabase,
@@ -3068,9 +3186,9 @@ Deno.serve(async req => {
     await insertSearchAuditLog(supabase, {
       action: "search",
       status: "success",
-      query: searchQuery,
-      original_query: originalQuery || searchQuery,
-      expanded_query: originalQuery && originalQuery !== searchQuery ? searchQuery : undefined,
+      query: redactSensitiveSearchText(searchQuery),
+      original_query: redactedOriginalQueryForAudit || redactSensitiveSearchText(searchQuery),
+      expanded_query: originalQuery && originalQuery !== searchQuery ? redactSensitiveSearchText(searchQuery) : undefined,
       mode,
       enable_rerank: enableRerank,
       include_external_evidence: includeExternalEvidence,
@@ -3106,9 +3224,9 @@ Deno.serve(async req => {
       await insertSearchAuditLog(auditSupabase, {
         action: "search",
         status: "error",
-        query: auditQuery,
-        original_query: auditOriginalQuery,
-        expanded_query: auditOriginalQuery && auditOriginalQuery !== auditQuery ? auditQuery : undefined,
+        query: redactSensitiveSearchText(auditQuery),
+        original_query: redactSensitiveSearchText(auditOriginalQuery),
+        expanded_query: auditOriginalQuery && auditOriginalQuery !== auditQuery ? redactSensitiveSearchText(auditQuery) : undefined,
         mode: auditBody.mode || "semantic",
         enable_rerank: auditBody.enable_rerank !== false,
         include_external_evidence: auditBody.include_external_evidence !== false,
