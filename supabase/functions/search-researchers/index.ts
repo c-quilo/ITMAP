@@ -6,7 +6,7 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_profile_question" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
   original_query?: string;
   researcher_id?: string;
@@ -2451,6 +2451,93 @@ async function researcherProfileById(
   };
 }
 
+async function answerResearcherProfileQuestion(
+  supabase: ReturnType<typeof createClient>,
+  openAiKey: string,
+  model: string,
+  researcherId: string,
+  question: string,
+) {
+  const trimmedQuestion = truncateText(question, 1200);
+  if (!trimmedQuestion) throw new Error("Missing question");
+
+  const { data: researcher, error } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,profile_url,full_name,email,bio_about,research,position_name,position,affiliation,faculty,fields_of_research")
+    .eq("id", researcherId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!researcher) throw new Error("Researcher not found");
+
+  const allPapers = await fetchAllPapersForResearcher(supabase, researcherId);
+  const questionTerms = queryTerms(trimmedQuestion);
+  const relevantPapers = allPapers
+    .map(paper => ({
+      paper,
+      score: scorePaper(trimmedQuestion, questionTerms, paper),
+    }))
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => {
+      const scoreDiff = b.score - a.score;
+      if (scoreDiff !== 0) return scoreDiff;
+      return Number(b.paper.cited_by_count || 0) - Number(a.paper.cited_by_count || 0);
+    })
+    .slice(0, 30)
+    .map(entry => entry.paper);
+  const representativePapers = relevantPapers.length > 0
+    ? relevantPapers
+    : allPapers.slice(0, 30);
+
+  const result = await openAiJson(
+    openAiKey,
+    model,
+    [
+      {
+        role: "system",
+        content: [
+          "You answer questions about one Imperial College London researcher for ITMAP.",
+          "Use only the supplied profile, position, fields, and paper metadata.",
+          "Do not invent papers, grants, affiliations, startups, or claims.",
+          "If the supplied evidence is insufficient, say what can and cannot be inferred.",
+          "Write a direct answer in 120-220 words.",
+          "Return JSON only: {\"answer\":\"...\",\"evidence_titles\":[\"...\"],\"caveat\":\"...\"}",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          question: trimmedQuestion,
+          researcher: {
+            name: researcher.full_name,
+            position: researcher.position_name || researcher.position,
+            department: researcher.affiliation || researcher.research,
+            faculty: researcher.faculty,
+            fields_of_research: researcher.fields_of_research,
+            profile: truncateText(researcher.bio_about, 2600),
+            research: truncateText(researcher.research, 900),
+            paper_count: allPapers.length,
+          },
+          papers: representativePapers.map(paper => ({
+            title: truncateText(paper.title, 240),
+            abstract: truncateText(paper.abstract, 700),
+            year: paper.publication_year || null,
+            journal: truncateText(paper.source_display_name, 120),
+            citations: paper.cited_by_count || 0,
+          })),
+        }),
+      },
+    ],
+    1800,
+  ) as { answer?: string; evidence_titles?: string[]; caveat?: string };
+
+  return {
+    answer: truncateText(result.answer || "I could not answer this from the stored profile and papers.", 2200),
+    evidence_titles: Array.isArray(result.evidence_titles) ? result.evidence_titles.slice(0, 6).map(String) : [],
+    caveat: truncateText(result.caveat || "", 600),
+  };
+}
+
 async function fetchProfileKeywordCandidates(
   supabase: ReturnType<typeof createClient>,
   query: string,
@@ -2618,6 +2705,24 @@ Deno.serve(async req => {
       }
       const profile = await researcherProfileById(supabase, openAiKey, rankingModel, researcherId);
       return Response.json(profile, { headers: corsHeaders });
+    }
+
+    if (body.action === "researcher_profile_question") {
+      const researcherId = String(body.researcher_id || "");
+      if (!researcherId) {
+        return Response.json(
+          { error: "Missing researcher_id" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const answer = await answerResearcherProfileQuestion(
+        supabase,
+        openAiKey,
+        rankingModel,
+        researcherId,
+        query,
+      );
+      return Response.json(answer, { headers: corsHeaders });
     }
 
     if (body.action === "keyword_suggestions") {

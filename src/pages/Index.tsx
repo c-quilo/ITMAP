@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type ResearcherProfile, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -436,10 +436,22 @@ function ResearcherProfileView({
   profile,
   paperPage,
   onPageChange,
+  question,
+  onQuestionChange,
+  onAskQuestion,
+  isAnsweringQuestion,
+  questionAnswer,
+  questionError,
 }: {
   profile: ResearcherProfile;
   paperPage: number;
   onPageChange: (page: number) => void;
+  question: string;
+  onQuestionChange: (question: string) => void;
+  onAskQuestion: () => void;
+  isAnsweringQuestion: boolean;
+  questionAnswer: ResearcherProfileQuestionAnswer | null;
+  questionError: string;
 }) {
   const pageSize = 25;
   const pageCount = Math.max(1, Math.ceil(profile.papers.length / pageSize));
@@ -448,6 +460,71 @@ function ResearcherProfileView({
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
+      <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+            <MessageSquareText className="h-4 w-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-foreground">Ask about {profile.name}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Ask ITMAP to answer from this researcher&apos;s profile, position, fields, and stored paper titles/abstracts.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={question}
+                onChange={event => onQuestionChange(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    onAskQuestion();
+                  }
+                }}
+                placeholder="e.g. What does their work say about AI for healthcare?"
+                className="h-10 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+              />
+              <button
+                type="button"
+                onClick={onAskQuestion}
+                disabled={isAnsweringQuestion || !question.trim()}
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isAnsweringQuestion ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <SendHorizontal className="h-4 w-4" />
+                )}
+                {isAnsweringQuestion ? "Answering..." : "Ask"}
+              </button>
+            </div>
+            {questionError && (
+              <p className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {questionError}
+              </p>
+            )}
+            {questionAnswer && (
+              <div className="mt-3 rounded-lg border border-border bg-background px-4 py-3">
+                <p className="text-sm leading-relaxed text-foreground/85">{questionAnswer.answer}</p>
+                {questionAnswer.evidenceTitles.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Evidence used</p>
+                    <ul className="mt-1 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                      {questionAnswer.evidenceTitles.map(title => (
+                        <li key={title}>- {title}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {questionAnswer.caveat && (
+                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                    Caveat: {questionAnswer.caveat}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
       <aside className="space-y-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="flex items-start gap-3">
@@ -588,6 +665,10 @@ export default function Index() {
   const [isLoadingResearcherProfile, setIsLoadingResearcherProfile] = useState(false);
   const [researcherProfileError, setResearcherProfileError] = useState("");
   const [profilePaperPage, setProfilePaperPage] = useState(0);
+  const [profileQuestion, setProfileQuestion] = useState("");
+  const [profileQuestionAnswer, setProfileQuestionAnswer] = useState<ResearcherProfileQuestionAnswer | null>(null);
+  const [isAnsweringProfileQuestion, setIsAnsweringProfileQuestion] = useState(false);
+  const [profileQuestionError, setProfileQuestionError] = useState("");
   const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
 
   useEffect(() => {
@@ -665,6 +746,16 @@ export default function Index() {
       return;
     }
 
+    if (
+      selectedResearcherProfile
+      && normaliseResearcherName(trimmedQuery) === normaliseResearcherName(selectedResearcherProfile.name)
+    ) {
+      setProfileSuggestions([]);
+      setProfileSuggestionError("");
+      setIsLoadingProfileSuggestions(false);
+      return;
+    }
+
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setIsLoadingProfileSuggestions(true);
@@ -686,7 +777,7 @@ export default function Index() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [profileQuery, tabMode]);
+  }, [profileQuery, selectedResearcherProfile, tabMode]);
 
   const availableDepartments = useMemo(() => {
     if (!hasSearched) return [];
@@ -877,6 +968,9 @@ export default function Index() {
     setIsLoadingResearcherProfile(true);
     setResearcherProfileError("");
     setProfilePaperPage(0);
+    setProfileQuestion("");
+    setProfileQuestionAnswer(null);
+    setProfileQuestionError("");
     try {
       const profile = await getResearcherProfile(suggestion.researcherId);
       setSelectedResearcherProfile(profile);
@@ -885,6 +979,23 @@ export default function Index() {
       setResearcherProfileError(error instanceof Error ? error.message : "Could not load researcher profile.");
     } finally {
       setIsLoadingResearcherProfile(false);
+    }
+  };
+
+  const askSelectedResearcherQuestion = async () => {
+    const question = profileQuestion.trim();
+    if (!selectedResearcherProfile || !question || isAnsweringProfileQuestion) return;
+
+    setIsAnsweringProfileQuestion(true);
+    setProfileQuestionError("");
+    try {
+      const answer = await askResearcherProfileQuestion(selectedResearcherProfile.researcherId, question);
+      setProfileQuestionAnswer(answer);
+    } catch (error) {
+      setProfileQuestionAnswer(null);
+      setProfileQuestionError(error instanceof Error ? error.message : "Could not answer that question.");
+    } finally {
+      setIsAnsweringProfileQuestion(false);
     }
   };
 
@@ -1771,6 +1882,12 @@ export default function Index() {
                 profile={selectedResearcherProfile}
                 paperPage={profilePaperPage}
                 onPageChange={setProfilePaperPage}
+                question={profileQuestion}
+                onQuestionChange={setProfileQuestion}
+                onAskQuestion={askSelectedResearcherQuestion}
+                isAnsweringQuestion={isAnsweringProfileQuestion}
+                questionAnswer={profileQuestionAnswer}
+                questionError={profileQuestionError}
               />
             ) : (
               <div className="flex flex-1 items-center justify-center p-6">

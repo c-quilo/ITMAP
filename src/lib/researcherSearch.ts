@@ -83,6 +83,12 @@ export interface ResearcherProfile {
   papers: Publication[];
 }
 
+export interface ResearcherProfileQuestionAnswer {
+  answer: string;
+  evidenceTitles: string[];
+  caveat: string;
+}
+
 export interface SearchAuditLog {
   id: string;
   createdAt: string;
@@ -462,6 +468,37 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
     fieldsOfResearch: String(row.fields_of_research || ""),
     paperCount: Number(row.paper_count || papers.length || 0),
     papers: papers.map(toPublication),
+  };
+}
+
+export async function askResearcherProfileQuestion(
+  researcherId: string,
+  question: string,
+): Promise<ResearcherProfileQuestionAnswer> {
+  if (!hasSupabaseConfig || !supabase) {
+    return {
+      answer: "Profile questions need the live ITMAP database connection.",
+      evidenceTitles: [],
+      caveat: "",
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "researcher_profile_question",
+      researcher_id: researcherId,
+      query: question,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    answer: String(data?.answer || ""),
+    evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
+    caveat: String(data?.caveat || ""),
   };
 }
 
