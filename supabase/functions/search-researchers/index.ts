@@ -2223,12 +2223,20 @@ function researcherNameScore(query: string, fullName: string) {
   const candidateParts = nameTokens(fullName);
   if (queryParts.length === 0 || candidateParts.length === 0) return 0;
 
+  const normalizedQuery = normalizeName(query);
+  const normalizedCandidate = normalizeName(fullName);
+  if (normalizedCandidate === normalizedQuery) return 1;
+
   const matched = queryParts.map(queryPart =>
     Math.max(...candidateParts.map(candidatePart => tokenSimilarity(queryPart, candidatePart)))
   );
   const averageScore = matched.reduce((sum, score) => sum + score, 0) / matched.length;
-  const exactPhraseBoost = normalizeName(fullName).includes(normalizeName(query)) ? 0.15 : 0;
-  return Math.min(1, averageScore + exactPhraseBoost);
+  const exactTokenMatches = queryParts.filter(queryPart => candidateParts.includes(queryPart)).length;
+  const exactTokenRatio = exactTokenMatches / queryParts.length;
+  const candidateCoveragePenalty = Math.max(0, candidateParts.length - queryParts.length) * 0.04;
+  const exactPhraseBoost = normalizedCandidate.includes(normalizedQuery) ? 0.15 : 0;
+  const allQueryTokensPresentBoost = queryParts.every(queryPart => candidateParts.includes(queryPart)) ? 0.18 : 0;
+  return Math.min(1, Math.max(0, averageScore + exactPhraseBoost + allQueryTokensPresentBoost + exactTokenRatio * 0.08 - candidateCoveragePenalty));
 }
 
 async function fetchPapersForResearchers(

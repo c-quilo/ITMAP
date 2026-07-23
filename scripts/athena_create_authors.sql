@@ -1,6 +1,7 @@
 CREATE EXTERNAL TABLE IF NOT EXISTS authors_json (
   id string,
   display_name string,
+  raw_author_names array<string>,
   display_name_alternatives array<string>,
   orcid string,
   works_count int,
