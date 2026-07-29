@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
@@ -371,6 +371,98 @@ function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }
   );
 }
 
+function MissionRewriteOverlay({ seconds, onCancel }: { seconds: number; onCancel: () => void }) {
+  const steps = [
+    {
+      label: "Reading your mission",
+      detail: "ITMAP is identifying the topic, context, and expertise you are asking for.",
+      Icon: FileText,
+    },
+    {
+      label: "Clarifying the intent",
+      detail: "It is turning the wording into a sharper search brief without starting the search yet.",
+      Icon: Sparkles,
+    },
+    {
+      label: "Preparing your review",
+      detail: "You will be able to edit the rewritten version or use your original wording.",
+      Icon: Brain,
+    },
+  ];
+  const activeIndex = Math.min(steps.length - 1, Math.floor(seconds / 3));
+  const progress = Math.min(94, 18 + seconds * 10);
+  const ActiveIcon = steps[activeIndex].Icon;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 px-4 backdrop-blur-md">
+      <div className="relative w-full max-w-xl overflow-hidden rounded-lg border border-primary/15 bg-card p-6 shadow-2xl">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-primary/15">
+          <div
+            className="h-full rounded-r-full bg-primary transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <div className="flex items-start gap-4">
+          <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-primary/10">
+            <Loader2 className="h-7 w-7 animate-spin text-primary" />
+            <ActiveIcon className="absolute h-4 w-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+              Rewriting mission
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-foreground">
+              ITMAP is improving the search brief
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              This usually takes a few seconds. The search will not run until you review the rewritten mission and choose how to continue.
+            </p>
+            <div className="mt-5 space-y-2">
+              {steps.map((step, index) => {
+                const StepIcon = step.Icon;
+                const isActive = index === activeIndex;
+                const isDone = index < activeIndex;
+                return (
+                  <div
+                    key={step.label}
+                    className={`flex gap-3 rounded-lg border px-3 py-2 transition-colors ${
+                      isActive
+                        ? "border-primary/25 bg-primary/5"
+                        : isDone
+                          ? "border-border bg-secondary/45"
+                          : "border-transparent bg-transparent"
+                    }`}
+                  >
+                    <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+                      isActive ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
+                    }`}>
+                      {isDone ? <CheckCircle2 className="h-4 w-4" /> : <StepIcon className="h-4 w-4" />}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{step.label}</p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">{step.detail}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
+              <span className="text-xs text-muted-foreground">{seconds}s elapsed</span>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+              >
+                Stop
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ResearchPoolSummaryPanel({
   summary,
   onSelectResearcher,
@@ -468,7 +560,7 @@ function ResearcherProfileView({
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-foreground">Ask about {profile.name}</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Ask ITMAP to answer from this researcher&apos;s profile, position, fields, and stored paper titles/abstracts.
+              Ask ITMAP to answer from this researcher&apos;s profile, position, fields, stored paper titles/abstracts, and co-author patterns.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
@@ -559,6 +651,40 @@ function ResearcherProfileView({
             <p className="mt-2 text-sm leading-relaxed text-foreground/75">{profile.fieldsOfResearch}</p>
           </div>
         )}
+
+        {profile.coauthors.length > 0 && (
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <UsersRound className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Main Co-authors</p>
+            </div>
+            <div className="space-y-3">
+              {profile.coauthors.slice(0, 8).map(coauthor => (
+                <div key={coauthor.openalexId} className="rounded-md border border-border/70 bg-background px-3 py-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium leading-tight text-foreground">{coauthor.name}</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                        {coauthor.sharedPapers.toLocaleString()} shared paper{coauthor.sharedPapers === 1 ? "" : "s"}
+                        {coauthor.latestYear ? `, latest ${coauthor.latestYear}` : ""}
+                      </p>
+                    </div>
+                    {coauthor.isImperialProfile && (
+                      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        Imperial
+                      </span>
+                    )}
+                  </div>
+                  {coauthor.institutions.length > 0 && (
+                    <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                      {coauthor.institutions.slice(0, 2).join("; ")}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </aside>
 
       <section className="min-w-0 space-y-4">
@@ -643,6 +769,7 @@ export default function Index() {
   const [currentOriginalMission, setCurrentOriginalMission] = useState("");
   const [currentSearchMode, setCurrentSearchMode] = useState<SearchMode>("semantic");
   const [searchSeconds, setSearchSeconds] = useState(0);
+  const [rewriteSeconds, setRewriteSeconds] = useState(0);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [savedResearchers, setSavedResearchers] = useState<Researcher[]>([]);
   const [isCheckingMissions, setIsCheckingMissions] = useState(false);
@@ -720,6 +847,20 @@ export default function Index() {
 
     return () => window.clearInterval(timer);
   }, [isSearching]);
+
+  useEffect(() => {
+    if (!isRewritingMission) {
+      setRewriteSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setRewriteSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 500);
+
+    return () => window.clearInterval(timer);
+  }, [isRewritingMission]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1419,6 +1560,9 @@ export default function Index() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
+      {isRewritingMission && (
+        <MissionRewriteOverlay seconds={rewriteSeconds} onCancel={cancelSearch} />
+      )}
       <Dialog
         open={Boolean(pendingRewriteSearch)}
         onOpenChange={open => {

@@ -385,6 +385,78 @@ function isLikelyAdministrativeForm(value: string) {
   return adminHits >= 4 && hasContactDetails && researchHits === 0;
 }
 
+const PROFILE_CHAT_OFF_TOPIC_HINTS = [
+  /\bpoem\b/i,
+  /\bpoetry\b/i,
+  /\brecipe\b/i,
+  /\bcook(?:ing)?\b/i,
+  /\bjoke\b/i,
+  /\bfunny\b/i,
+  /\bmeme\b/i,
+  /\bsong\b/i,
+  /\blyric(?:s)?\b/i,
+  /\bstory\b/i,
+  /\brole\s*play\b/i,
+  /\bpretend\b/i,
+  /\bhoroscope\b/i,
+  /\bdating\b/i,
+  /\btravel itinerary\b/i,
+  /\bholiday plan\b/i,
+];
+
+const PROFILE_CHAT_RESEARCH_HINTS = [
+  /\bresearch\b/i,
+  /\bprofile\b/i,
+  /\bpublication(?:s)?\b/i,
+  /\bpaper(?:s)?\b/i,
+  /\bco-?author(?:s)?\b/i,
+  /\bcollaborat(?:e|ion|or|ors)\b/i,
+  /\bexpert(?:s|ise)?\b/i,
+  /\bfield(?:s)?\b/i,
+  /\btopic(?:s)?\b/i,
+  /\babstract(?:s)?\b/i,
+  /\btitle(?:s)?\b/i,
+  /\bjournal(?:s)?\b/i,
+  /\bcitation(?:s)?\b/i,
+  /\bposition\b/i,
+  /\brole\b/i,
+  /\bdepartment\b/i,
+  /\bfaculty\b/i,
+  /\bwork(?:s|ed|ing)?\b/i,
+  /\bgrant(?:s)?\b/i,
+  /\bstartup(?:s)?\b/i,
+  /\bmedia\b/i,
+  /\bproject(?:s)?\b/i,
+];
+
+function isOffTopicProfileQuestion(value: string) {
+  const text = value.trim();
+  if (!text) return false;
+  const offTopicHits = countPatternMatches(text, PROFILE_CHAT_OFF_TOPIC_HINTS);
+  if (offTopicHits === 0) return false;
+  const researchHits = countPatternMatches(text, PROFILE_CHAT_RESEARCH_HINTS);
+  return researchHits === 0 || offTopicHits >= 2;
+}
+
+function profileChatRefusal(researcherName: string) {
+  return {
+    answer: `I can only answer serious questions about ${researcherName}'s research profile, publications, co-authors, collaborations, expertise, and Imperial role. Try asking something like "What are their main research areas?", "Who do they collaborate with most?", or "Which papers best represent their work?"`,
+    evidence_titles: [],
+    caveat: "",
+  };
+}
+
+function naturaliseProfileAnswer(value: string) {
+  return value
+    .replace(/\bbased on (?:the )?(?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\s*,?\s*/gi, "")
+    .replace(/\bthe (?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\b/gi, "the profile evidence")
+    .replace(/\bthis (?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\b/gi, "this profile evidence")
+    .replace(/\bprovided explicitly\b/gi, "available here")
+    .replace(/\bsupplied explicitly\b/gi, "available here")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function singularise(term: string) {
   if (term.endsWith("ies") && term.length > 4) return `${term.slice(0, -3)}y`;
   if (term.endsWith("s") && term.length > 4) return term.slice(0, -1);
@@ -2354,6 +2426,69 @@ async function fetchAllPapersForResearcher(
   return allPapers;
 }
 
+async function fetchTopCoauthorsForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+  limit = 20,
+) {
+  const { data, error } = await supabase
+    .from("researcher_coauthors")
+    .select("coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles")
+    .eq("researcher_id", researcherId)
+    .order("shared_papers", { ascending: false })
+    .order("total_citations", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.warn("Could not load researcher co-authors", error);
+    return [];
+  }
+
+  const ranked = (data || [])
+    .map(row => ({
+      openalex_id: String(row.coauthor_openalex_id || "").trim(),
+      name: String(row.coauthor_name || "").trim(),
+      shared_papers: Number(row.shared_papers || 0),
+      institutions: Array.isArray(row.institution_names) ? row.institution_names.map(String).filter(Boolean) : [],
+      latest_year: Number(row.latest_year || 0) || null,
+      paper_titles: Array.isArray(row.paper_titles) ? row.paper_titles : [],
+    }))
+    .filter(coauthor => coauthor.openalex_id && coauthor.name);
+
+  const imperialIds = ranked.map(coauthor => coauthor.openalex_id);
+  const imperialMatches = new Map<string, Record<string, unknown>>();
+  if (imperialIds.length > 0) {
+    const { data: imperialRows, error: imperialError } = await supabase
+      .from("researchers")
+      .select("id,openalex_id,full_name,position_name,position,affiliation,faculty")
+      .in("openalex_id", imperialIds);
+    if (!imperialError) {
+      for (const row of imperialRows || []) {
+        if (row.openalex_id && !imperialMatches.has(String(row.openalex_id))) {
+          imperialMatches.set(String(row.openalex_id), row);
+        }
+      }
+    }
+  }
+
+  return ranked.map(coauthor => {
+    const imperialProfile = imperialMatches.get(coauthor.openalex_id);
+    return {
+      openalex_id: coauthor.openalex_id,
+      name: coauthor.name,
+      shared_papers: coauthor.shared_papers,
+      institutions: coauthor.institutions.slice(0, 4),
+      latest_year: coauthor.latest_year,
+      is_imperial_profile: Boolean(imperialProfile),
+      imperial_researcher_id: imperialProfile?.id || null,
+      imperial_title: imperialProfile ? (imperialProfile.position_name || imperialProfile.position || "") : "",
+      imperial_department: imperialProfile ? (imperialProfile.affiliation || "") : "",
+      imperial_faculty: imperialProfile ? (imperialProfile.faculty || "") : "",
+      paper_titles: coauthor.paper_titles.slice(0, 5),
+    };
+  });
+}
+
 async function summarizeResearcherProfileWithLlm(
   openAiKey: string,
   model: string,
@@ -2428,6 +2563,7 @@ async function researcherProfileById(
   if (!researcher) throw new Error("Researcher not found");
 
   const papers = await fetchAllPapersForResearcher(supabase, researcherId);
+  const coauthors = await fetchTopCoauthorsForResearcher(supabase, researcherId, 12);
   const profileSummary = await summarizeResearcherProfileWithLlm(openAiKey, model, researcher, papers);
 
   return {
@@ -2456,6 +2592,7 @@ async function researcherProfileById(
       openalex_work_id: paper.openalex_work_id,
       doi: paper.doi,
     })),
+    coauthors,
   };
 }
 
@@ -2478,7 +2615,12 @@ async function answerResearcherProfileQuestion(
   if (error) throw error;
   if (!researcher) throw new Error("Researcher not found");
 
+  if (isOffTopicProfileQuestion(trimmedQuestion)) {
+    return profileChatRefusal(String(researcher.full_name || "this researcher"));
+  }
+
   const allPapers = await fetchAllPapersForResearcher(supabase, researcherId);
+  const coauthors = await fetchTopCoauthorsForResearcher(supabase, researcherId, 20);
   const questionTerms = queryTerms(trimmedQuestion);
   const relevantPapers = allPapers
     .map(paper => ({
@@ -2504,10 +2646,15 @@ async function answerResearcherProfileQuestion(
       {
         role: "system",
         content: [
-          "You answer questions about one Imperial College London researcher for ITMAP.",
-          "Use only the supplied profile, position, fields, and paper metadata.",
+          "You answer serious questions about one Imperial College London researcher for ITMAP.",
+          "Only answer questions about the researcher's research profile, expertise, position, publications, co-authors, collaborations, grants, media evidence, or related academic and professional context.",
+          "Politely refuse poems, recipes, jokes, roleplay, entertainment, personal advice, or other off-topic requests.",
+          "Use only the profile, position, fields, paper metadata, and co-author evidence in the JSON payload.",
+          "Write naturally for a user. Do not mention databases, datasets, JSON, supplied evidence, provided evidence, co-author summaries, metadata dumps, or internal system details.",
+          "Do not start with phrases like 'Based on the provided...' or 'Based on the supplied...'.",
+          "For co-author questions, describe recurring collaborators directly and mention shared-paper counts when useful.",
           "Do not invent papers, grants, affiliations, startups, or claims.",
-          "If the supplied evidence is insufficient, say what can and cannot be inferred.",
+          "If there is not enough evidence, say that naturally without naming the database.",
           "Write a direct answer in 120-220 words.",
           "Return JSON only: {\"answer\":\"...\",\"evidence_titles\":[\"...\"],\"caveat\":\"...\"}",
         ].join(" "),
@@ -2533,6 +2680,17 @@ async function answerResearcherProfileQuestion(
             journal: truncateText(paper.source_display_name, 120),
             citations: paper.cited_by_count || 0,
           })),
+          coauthors: coauthors.map(coauthor => ({
+            name: coauthor.name,
+            openalex_id: coauthor.openalex_id,
+            shared_papers: coauthor.shared_papers,
+            latest_year: coauthor.latest_year,
+            institutions: coauthor.institutions,
+            is_imperial_profile: coauthor.is_imperial_profile,
+            imperial_title: coauthor.imperial_title,
+            imperial_department: coauthor.imperial_department,
+            representative_shared_papers: coauthor.paper_titles,
+          })),
         }),
       },
     ],
@@ -2540,9 +2698,9 @@ async function answerResearcherProfileQuestion(
   ) as { answer?: string; evidence_titles?: string[]; caveat?: string };
 
   return {
-    answer: truncateText(result.answer || "I could not answer this from the stored profile and papers.", 2200),
+    answer: truncateText(naturaliseProfileAnswer(result.answer || "I could not answer this from the available profile and papers."), 2200),
     evidence_titles: Array.isArray(result.evidence_titles) ? result.evidence_titles.slice(0, 6).map(String) : [],
-    caveat: truncateText(result.caveat || "", 600),
+    caveat: truncateText(naturaliseProfileAnswer(result.caveat || ""), 600),
   };
 }
 

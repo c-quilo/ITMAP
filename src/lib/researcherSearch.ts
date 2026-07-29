@@ -81,6 +81,26 @@ export interface ResearcherProfile {
   fieldsOfResearch: string;
   paperCount: number;
   papers: Publication[];
+  coauthors: ResearcherCoauthor[];
+}
+
+export interface ResearcherCoauthor {
+  openalexId: string;
+  name: string;
+  sharedPapers: number;
+  institutions: string[];
+  latestYear?: number | null;
+  isImperialProfile: boolean;
+  imperialResearcherId?: string | null;
+  imperialTitle?: string;
+  imperialDepartment?: string;
+  imperialFaculty?: string;
+  paperTitles: Array<{
+    title: string;
+    year?: number | null;
+    citations?: number;
+    openalexWorkId?: string;
+  }>;
 }
 
 export interface ResearcherProfileQuestionAnswer {
@@ -434,6 +454,7 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
       fieldsOfResearch: fallback.keywords.join("; "),
       paperCount: fallback.publications.length,
       papers: fallback.publications,
+      coauthors: [],
     };
   }
 
@@ -450,6 +471,7 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
 
   const row = data?.researcher || {};
   const papers = Array.isArray(data?.papers) ? data.papers : [];
+  const coauthors = Array.isArray(data?.coauthors) ? data.coauthors : [];
   const profile = String(row.bio_about || "");
   const research = String(row.research || "");
 
@@ -468,6 +490,28 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
     fieldsOfResearch: String(row.fields_of_research || ""),
     paperCount: Number(row.paper_count || papers.length || 0),
     papers: papers.map(toPublication),
+    coauthors: coauthors
+      .map((coauthor: Record<string, unknown>) => ({
+        openalexId: String(coauthor.openalex_id || ""),
+        name: String(coauthor.name || ""),
+        sharedPapers: Number(coauthor.shared_papers || 0),
+        institutions: Array.isArray(coauthor.institutions) ? coauthor.institutions.map(String).filter(Boolean).slice(0, 4) : [],
+        latestYear: coauthor.latest_year === null || coauthor.latest_year === undefined ? null : Number(coauthor.latest_year),
+        isImperialProfile: Boolean(coauthor.is_imperial_profile),
+        imperialResearcherId: coauthor.imperial_researcher_id ? String(coauthor.imperial_researcher_id) : null,
+        imperialTitle: String(coauthor.imperial_title || ""),
+        imperialDepartment: normaliseDepartment(String(coauthor.imperial_department || "")),
+        imperialFaculty: String(coauthor.imperial_faculty || ""),
+        paperTitles: Array.isArray(coauthor.paper_titles)
+          ? coauthor.paper_titles.map((paper: Record<string, unknown>) => ({
+            title: String(paper.title || ""),
+            year: paper.year === null || paper.year === undefined ? null : Number(paper.year),
+            citations: Number(paper.citations || 0),
+            openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+          })).filter((paper: { title: string }) => paper.title).slice(0, 5)
+          : [],
+      }))
+      .filter((coauthor: { openalexId: string; name: string }) => coauthor.openalexId && coauthor.name),
   };
 }
 
