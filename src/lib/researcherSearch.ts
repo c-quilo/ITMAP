@@ -59,6 +59,7 @@ export interface MissionRewrite {
 export interface ResearcherSuggestion {
   researcherId: string;
   openalexId?: string;
+  profileUrl?: string;
   name: string;
   title: string;
   department: string;
@@ -105,6 +106,19 @@ export interface ResearcherCoauthor {
 
 export interface ResearcherProfileQuestionAnswer {
   answer: string;
+  evidenceTitles: string[];
+  caveat: string;
+}
+
+export interface QuickSearchSuggestion extends ResearcherSuggestion {
+  reason: string;
+}
+
+export interface QuickSearchResult {
+  kind: "person" | "topic" | "redirect" | "empty";
+  answer: string;
+  researcher?: ResearcherSuggestion;
+  suggestions: QuickSearchSuggestion[];
   evidenceTitles: string[];
   caveat: string;
 }
@@ -541,6 +555,79 @@ export async function askResearcherProfileQuestion(
 
   return {
     answer: String(data?.answer || ""),
+    evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
+    caveat: String(data?.caveat || ""),
+  };
+}
+
+export async function quickSearch(query: string): Promise<QuickSearchResult> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) {
+    return {
+      kind: "empty",
+      answer: "Type a researcher name or a short topic to use Quick Search.",
+      suggestions: [],
+      evidenceTitles: [],
+      caveat: "",
+    };
+  }
+
+  if (!hasSupabaseConfig || !supabase) {
+    return {
+      kind: "empty",
+      answer: "Quick Search needs the live ITMAP database connection.",
+      suggestions: [],
+      evidenceTitles: [],
+      caveat: "",
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "quick_search",
+      query: trimmedQuery,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  const researcher = data?.researcher && typeof data.researcher === "object"
+    ? data.researcher as Record<string, unknown>
+    : null;
+
+  return {
+    kind: ["person", "topic", "redirect", "empty"].includes(String(data?.kind))
+      ? String(data?.kind) as QuickSearchResult["kind"]
+      : "empty",
+    answer: String(data?.answer || ""),
+    researcher: researcher
+      ? {
+        researcherId: String(researcher.researcher_id || ""),
+        openalexId: researcher.openalex_id ? String(researcher.openalex_id) : undefined,
+        profileUrl: researcher.profile_url ? String(researcher.profile_url) : undefined,
+        name: String(researcher.full_name || ""),
+        title: String(researcher.title || "Imperial researcher"),
+        department: normaliseDepartment(String(researcher.department || "")),
+        faculty: String(researcher.faculty || "Imperial College London"),
+        score: Number(researcher.score || 0),
+      }
+      : undefined,
+    suggestions: suggestions
+      .map((row: Record<string, unknown>) => ({
+        researcherId: String(row.researcher_id || ""),
+        openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
+        profileUrl: row.profile_url ? String(row.profile_url) : undefined,
+        name: String(row.full_name || ""),
+        title: String(row.title || "Imperial researcher"),
+        department: normaliseDepartment(String(row.department || "")),
+        faculty: String(row.faculty || "Imperial College London"),
+        score: Number(row.score || 0),
+        reason: String(row.reason || ""),
+      }))
+      .filter((row: QuickSearchSuggestion) => row.researcherId && row.name),
     evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
     caveat: String(data?.caveat || ""),
   };

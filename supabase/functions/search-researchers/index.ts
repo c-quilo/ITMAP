@@ -6,7 +6,7 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_profile_question" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
   original_query?: string;
   researcher_id?: string;
@@ -183,6 +183,39 @@ const SCHOOL_MISSIONS = [
     ],
   },
 ];
+
+const SCHOOL_OF_CONVERGENCE_SCIENCE_INFO = {
+  name: "Imperial College London's School of Convergence Science",
+  director: "Professor Anthony Bull",
+  purpose: "a mission-led initiative within Imperial's Science for Humanity strategy that brings together researchers, partners, industry, governments, funders and communities to tackle complex global challenges through integrated, transdisciplinary work.",
+  themes: [
+    {
+      name: "Health and Technology",
+      co_directors: ["Anthony Bull", "Iain McNeish", "Marisa Miraldo", "Faith Osier"],
+      missions: ["AITHḖR", "UBUNTU"],
+    },
+    {
+      name: "Human and Artificial Intelligence",
+      co_directors: ["Payam Barnaghi", "Will Branford", "Aldo Faisal", "Alessandra Russo"],
+      missions: ["SYMBIOSIS", "EMPOWER"],
+    },
+    {
+      name: "Space, Security and Telecoms",
+      co_directors: ["Jonathan Eastwood", "Kin Leung", "Julie McCann", "Matthew Santer"],
+      missions: ["LACE", "Space 2099", "Thunderbird"],
+    },
+    {
+      name: "Sustainability",
+      co_directors: ["Benjamin Barratt", "Alyssa Gilbert", "Mirabelle Muûls", "Nilay Shah"],
+      missions: ["Nurturing", "Powering", "Re-Engineering", "Thriving"],
+    },
+  ],
+  operations: [
+    "Daniela Manca, Operations Director",
+    "Melanie Bradnam, Schools Manager for Human and Artificial Intelligence and Health and Technology",
+    "Victoria Ebo, Schools Manager for Sustainability and Space, Security and Telecoms",
+  ],
+};
 
 const GRADE_FILTERS = new Set([
   "Professor",
@@ -2378,7 +2411,7 @@ async function suggestResearchersByName(
 
   const { data, error } = await supabase
     .from("researchers")
-    .select("id,openalex_id,full_name,position_name,position,affiliation,faculty")
+    .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
     .or(orFilter)
     .limit(80);
 
@@ -2388,6 +2421,7 @@ async function suggestResearchersByName(
     .map((row: Record<string, unknown>) => ({
       researcher_id: row.id,
       openalex_id: row.openalex_id,
+      profile_url: row.profile_url,
       full_name: row.full_name,
       title: row.position_name || row.position,
       department: row.affiliation,
@@ -2397,6 +2431,406 @@ async function suggestResearchersByName(
     .filter(row => Number(row.score || 0) >= 0.45)
     .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
     .slice(0, 10);
+}
+
+function quickPersonQueryVariants(query: string) {
+  const variants = new Set<string>();
+  const cleaned = query
+    .replace(/[?!.,;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const promptRemoved = cleaned
+    .replace(/^(?:please\s+)?(?:tell me about|what can you tell me about|who is|who's|profile of|summari[sz]e|describe|explain)\s+/i, "")
+    .trim();
+  const beforeQualifier = promptRemoved
+    .split(/\b(?:and|with|relationship|connection|role|links?|papers?|publications?|profile|research|at|in|to)\b/i)[0]
+    .trim();
+
+  for (const value of [beforeQualifier, promptRemoved, cleaned, query]) {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (normalized.length >= 3) variants.add(normalized);
+  }
+
+  const capitalizedNames = cleaned.match(/\b[A-Z][A-Za-zÀ-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’-]+){1,3}\b/g) || [];
+  for (const name of capitalizedNames) {
+    if (!/Imperial College|Quick Search|Researcher Profile/i.test(name)) {
+      variants.add(name.trim());
+    }
+  }
+
+  return [...variants].slice(0, 6);
+}
+
+async function quickNameSuggestions(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+) {
+  const byResearcher = new Map<string, Record<string, unknown>>();
+  for (const variant of quickPersonQueryVariants(query)) {
+    const suggestions = await suggestResearchersByName(supabase, variant);
+    for (const suggestion of suggestions) {
+      const id = String(suggestion.researcher_id || "");
+      if (!id) continue;
+      const existing = byResearcher.get(id);
+      if (!existing || Number(suggestion.score || 0) > Number(existing.score || 0)) {
+        byResearcher.set(id, suggestion);
+      }
+    }
+  }
+
+  return [...byResearcher.values()]
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    .slice(0, 8);
+}
+
+function quickTopicReason(query: string, terms: string[], row: Record<string, unknown>) {
+  const evidence = matchedProfileEvidence(query, terms, row);
+  if (evidence.length > 0) {
+    return `Likely match through ${evidence.join("; ")}.`;
+  }
+
+  const fields = String(row.fields_of_research || "").replace(/\s+/g, " ").trim();
+  if (fields) {
+    return `Likely match through their fields of research: ${truncateText(fields, 180)}.`;
+  }
+
+  const department = String(row.affiliation || row.research || "").replace(/\s+/g, " ").trim();
+  if (department) {
+    return `Likely match through their Imperial role or department: ${truncateText(department, 180)}.`;
+  }
+
+  return "Likely match from profile and publication text in the quick keyword index.";
+}
+
+function quickTopicSearchQuery(query: string) {
+  return query
+    .replace(/\b(?:people|person|researchers?|experts?)\b/gi, " ")
+    .replace(/\b(?:connected|connection|connections|linked|links?|affiliated|affiliation)\b/gi, " ")
+    .replace(/\b(?:to|with|at|in|from|who|work|works|working|on)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function quickAffiliationTerms(query: string) {
+  const cleaned = quickTopicSearchQuery(query);
+  const terms = new Set<string>();
+  if (/\bgrantham\b/i.test(query)) {
+    terms.add("Grantham");
+    terms.add("Institute for Climate Change");
+    terms.add("Climate Change");
+  }
+  if (cleaned.length >= 4) terms.add(cleaned);
+
+  for (const term of queryTerms(cleaned)) {
+    if (term.length >= 4 && !["people", "connected", "institute"].includes(term)) {
+      terms.add(term);
+    }
+  }
+
+  return [...terms].slice(0, 8);
+}
+
+function quickAffiliationScore(query: string, row: Record<string, unknown>) {
+  const lowerQuery = query.toLowerCase();
+  const affiliation = String(row.affiliation || "").toLowerCase();
+  const research = String(row.research || "").toLowerCase();
+  const bio = String(row.bio_about || "").toLowerCase();
+  const fields = String(row.fields_of_research || "").toLowerCase();
+  let score = 0.45;
+
+  if (lowerQuery.includes("grantham")) {
+    if (affiliation.includes("grantham") || affiliation.includes("institute for climate change")) score += 0.42;
+    if (research.includes("grantham") || research.includes("institute for climate change")) score += 0.26;
+    if (bio.includes("grantham")) score += 0.16;
+  }
+
+  const terms = queryTerms(quickTopicSearchQuery(query));
+  const text = `${affiliation} ${research} ${bio} ${fields}`;
+  const hits = terms.filter(term => textHasAny(text, expandedTermVariants(term))).length;
+  score += Math.min(0.28, hits * 0.07);
+
+  return Math.max(0.35, Math.min(0.98, score));
+}
+
+function quickAffiliationReason(query: string, row: Record<string, unknown>) {
+  const affiliation = String(row.affiliation || "").replace(/\s+/g, " ").trim();
+  const research = String(row.research || "").replace(/\s+/g, " ").trim();
+  const bio = String(row.bio_about || "").replace(/\s+/g, " ").trim();
+
+  if (/\bgrantham\b/i.test(query)) {
+    if (/grantham|institute for climate change/i.test(affiliation)) {
+      return `Connected through their Imperial affiliation: ${truncateText(affiliation, 180)}.`;
+    }
+    if (/grantham|institute for climate change/i.test(research)) {
+      return `Connected through their Imperial department or research listing: ${truncateText(research, 180)}.`;
+    }
+    if (/grantham/i.test(bio)) {
+      return `Connected through their profile, which mentions Grantham Institute activity.`;
+    }
+  }
+
+  return quickTopicReason(query, queryTerms(query), row);
+}
+
+async function quickAffiliationSuggestions(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+  limit = 8,
+) {
+  const terms = quickAffiliationTerms(query);
+  if (terms.length === 0) return [];
+
+  const filters = terms.flatMap(term => {
+    const escaped = escapeIlike(term);
+    return [
+      `affiliation.ilike.%${escaped}%`,
+      `research.ilike.%${escaped}%`,
+      `bio_about.ilike.%${escaped}%`,
+      `fields_of_research.ilike.%${escaped}%`,
+    ];
+  });
+
+  const { data, error } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,full_name,position_name,position,affiliation,faculty,research,bio_about,fields_of_research")
+    .or(filters.join(","))
+    .limit(80);
+
+  if (error) throw error;
+
+  return (data || [])
+    .filter((row: Record<string, unknown>) => !isVisitingResearcher(row))
+    .map((row: Record<string, unknown>) => ({
+      researcher_id: row.id,
+      openalex_id: row.openalex_id,
+      full_name: row.full_name,
+      title: row.position_name || row.position,
+      department: row.affiliation || row.research,
+      faculty: row.faculty,
+      score: quickAffiliationScore(query, row),
+      reason: quickAffiliationReason(query, row),
+    }))
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    .slice(0, limit);
+}
+
+function isSchoolOfConvergenceScienceQuery(query: string) {
+  const text = query.toLowerCase();
+  return /\bschool\s+of\s+convergence\s+science\b/.test(text)
+    || /\bconvergence\s+science\s+school\b/.test(text)
+    || /\bconvergence\s+science\b/.test(text)
+    || /\bthe\s+school\b/.test(text)
+    || /\bsocs\b/.test(text)
+    || /\bscs\b/.test(text);
+}
+
+async function schoolCoDirectorSuggestions(
+  supabase: ReturnType<typeof createClient>,
+) {
+  const names = SCHOOL_OF_CONVERGENCE_SCIENCE_INFO.themes.flatMap(theme => theme.co_directors);
+  const suggestions: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+
+  for (const name of names) {
+    const matches = await suggestResearchersByName(supabase, name);
+    const best = matches.find(match => Number(match.score || 0) >= 0.78);
+    const id = String(best?.researcher_id || "");
+    if (!best || !id || seen.has(id)) continue;
+    seen.add(id);
+    const theme = SCHOOL_OF_CONVERGENCE_SCIENCE_INFO.themes.find(item => item.co_directors.includes(name));
+    suggestions.push({
+      ...best,
+      score: 1,
+      reason: theme ? `${theme.name} Co-Director` : "School of Convergence Science Co-Director",
+    });
+  }
+
+  return suggestions;
+}
+
+async function schoolOfConvergenceScienceAnswer(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+) {
+  const info = SCHOOL_OF_CONVERGENCE_SCIENCE_INFO;
+  const lowerQuery = query.toLowerCase();
+  const wantsCoDirectors = /\bco-?directors?\b/.test(lowerQuery);
+  const wantsDirectors = /\bdirector|co-?director|leadership|leads?|who runs\b/.test(lowerQuery);
+  const wantsMissions = /\bmission|theme|themes\b/.test(lowerQuery);
+  const wantsOperations = /\boperation|operations|manager|staff|team\b/.test(lowerQuery);
+
+  const themeSummary = info.themes
+    .map(theme => `${theme.name}: ${theme.missions.join(", ")}`)
+    .join("; ");
+  const directorSummary = [
+    `Director: ${info.director}`,
+    ...info.themes.map(theme => `${theme.name} Co-Directors: ${theme.co_directors.join(", ")}`),
+  ].join("; ");
+  const coDirectorSummary = info.themes
+    .map(theme => `${theme.name}: ${theme.co_directors.join(", ")}`)
+    .join("; ");
+
+  let answer = wantsCoDirectors
+    ? `The School of Convergence Science Co-Directors are: ${coDirectorSummary}.`
+    : `${info.name} is ${info.purpose} It is organised around four themes: ${themeSummary}.`;
+
+  if (!wantsCoDirectors && (wantsDirectors || !wantsMissions)) {
+    answer += ` ${directorSummary}.`;
+  }
+
+  if (wantsOperations) {
+    answer += ` Its operations leadership includes ${info.operations.join("; ")}.`;
+  }
+
+  if (!wantsCoDirectors) {
+    answer += " In ITMAP, questions about the School can be connected back to researchers, themes and missions, but deeper expert ranking should still use the full Search workflow.";
+  }
+
+  return {
+    kind: "topic",
+    answer,
+    suggestions: wantsCoDirectors || wantsDirectors
+      ? await schoolCoDirectorSuggestions(supabase)
+      : [],
+    evidence_titles: [
+      "Imperial School of Convergence Science leadership and inaugural Co-Directors",
+      ...(wantsCoDirectors ? [] : [
+        "Imperial School of Convergence Science overview",
+        "Imperial School of Convergence Science missions",
+      ]),
+    ],
+    caveat: "This is a built-in institutional summary for quick orientation; use the School pages for the latest public announcements.",
+  };
+}
+
+async function quickTopicSuggestions(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+  limit = 8,
+) {
+  const searchQuery = quickTopicSearchQuery(query) || query;
+  const terms = queryTerms(searchQuery);
+  if (terms.length === 0) return [];
+
+  const directMatches = await quickAffiliationSuggestions(supabase, query, limit);
+
+  const { data, error } = await supabase.rpc("match_keyword_researchers", {
+    search_query: searchQuery,
+    match_count: Math.max(20, limit * 4),
+    faculty_filters: [],
+    role_filters: [],
+  });
+
+  if (error) throw error;
+
+  const keywordMatches = (data || [])
+    .filter((row: Record<string, unknown>) => !isVisitingResearcher(row))
+    .sort((a: Record<string, unknown>, b: Record<string, unknown>) => Number(b.similarity || 0) - Number(a.similarity || 0))
+    .map((row: Record<string, unknown>) => ({
+      researcher_id: row.researcher_id,
+      openalex_id: row.openalex_id,
+      full_name: row.full_name,
+      title: row.position_name || row.position,
+      department: row.affiliation,
+      faculty: row.faculty,
+      score: Number(row.similarity || 0),
+      reason: quickTopicReason(searchQuery, terms, row),
+    }));
+
+  const byResearcher = new Map<string, Record<string, unknown>>();
+  for (const row of [...directMatches, ...keywordMatches]) {
+    const id = String(row.researcher_id || "");
+    if (!id) continue;
+    const existing = byResearcher.get(id);
+    if (!existing || Number(row.score || 0) > Number(existing.score || 0)) {
+      byResearcher.set(id, row);
+    }
+  }
+
+  return [...byResearcher.values()]
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    .slice(0, limit);
+}
+
+function quickPersonQuestion(query: string, researcher: Record<string, unknown>) {
+  const name = String(researcher.full_name || "this researcher");
+  const terms = queryTerms(query);
+  if (terms.length <= 2 || researcherNameScore(query, name) >= 0.9) {
+    return `Tell me about ${name}'s research profile, Imperial role, and relationship to Imperial College London.`;
+  }
+  return query;
+}
+
+async function quickSearch(
+  supabase: ReturnType<typeof createClient>,
+  openAiKey: string,
+  model: string,
+  query: string,
+) {
+  const trimmedQuery = truncateText(query.trim(), 1200);
+  if (!trimmedQuery) {
+    return {
+      kind: "empty",
+      answer: "Type a researcher name or short topic to use Quick Search.",
+      suggestions: [],
+      evidence_titles: [],
+      caveat: "",
+    };
+  }
+
+  if (isOffTopicProfileQuestion(trimmedQuery)) {
+    return {
+      kind: "redirect",
+      answer: "Quick Search is for serious questions about Imperial researchers, expertise, publications, co-authors, departments, and research topics. Try a researcher name or a short topic such as \"Rossella Arcucci\" or \"experts on photonics\".",
+      suggestions: [],
+      evidence_titles: [],
+      caveat: "",
+    };
+  }
+
+  if (isSchoolOfConvergenceScienceQuery(trimmedQuery)) {
+    return await schoolOfConvergenceScienceAnswer(supabase, trimmedQuery);
+  }
+
+  const nameSuggestions = await quickNameSuggestions(supabase, trimmedQuery);
+  const bestPerson = nameSuggestions[0];
+  if (bestPerson && Number(bestPerson.score || 0) >= 0.68) {
+    const answer = await answerResearcherProfileQuestion(
+      supabase,
+      openAiKey,
+      model,
+      String(bestPerson.researcher_id || ""),
+      quickPersonQuestion(trimmedQuery, bestPerson),
+    );
+    return {
+      kind: "person",
+      answer: answer.answer,
+      researcher: bestPerson,
+      suggestions: nameSuggestions.slice(0, 4),
+      evidence_titles: answer.evidence_titles,
+      caveat: answer.caveat,
+    };
+  }
+
+  const topicSuggestions = await quickTopicSuggestions(supabase, trimmedQuery, 8);
+  if (topicSuggestions.length > 0) {
+    return {
+      kind: "topic",
+      answer: `Here are quick, non-reranked matches for "${trimmedQuery}". This is useful for a first pointer; use the full Search tab when you need a ranked mission search with paper evidence and deeper comparison.`,
+      suggestions: topicSuggestions,
+      evidence_titles: [],
+      caveat: "Quick Search does not run ITMAP reranking, mission expansion, media/grant checks, or the graph workflow.",
+    };
+  }
+
+  return {
+    kind: "empty",
+    answer: "I could not find a clear researcher or quick topic match. Try a name, a department, or a shorter research topic.",
+    suggestions: [],
+    evidence_titles: [],
+    caveat: "",
+  };
 }
 
 async function fetchAllPapersForResearcher(
@@ -2889,6 +3323,11 @@ Deno.serve(async req => {
         query,
       );
       return Response.json(answer, { headers: corsHeaders });
+    }
+
+    if (body.action === "quick_search") {
+      const result = await quickSearch(supabase, openAiKey, rankingModel, query);
+      return Response.json(result, { headers: corsHeaders });
     }
 
     if (body.action === "keyword_suggestions") {

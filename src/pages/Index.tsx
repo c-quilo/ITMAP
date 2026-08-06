@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "deep-search" | "profile" | "graph" | "saved";
+type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "saved";
 type SearchMode = "semantic" | "keyword";
 
 type SavedSearch = SavedSearchSummary & {
@@ -524,6 +524,178 @@ function ResearchPoolSummaryPanel({
   );
 }
 
+function QuickSearchPanel({
+  query,
+  onQueryChange,
+  onSubmit,
+  isLoading,
+  result,
+  error,
+  onOpenProfile,
+  onRunFullSearch,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  onSubmit: () => void;
+  isLoading: boolean;
+  result: QuickSearchResult | null;
+  error: string;
+  onOpenProfile: (suggestion: ResearcherSuggestion) => void;
+  onRunFullSearch: (query: string) => void;
+}) {
+  const examples = [
+    "Who is working on photonics?",
+    "Who's affiliated to the Grantham Institute",
+    "What's the school of convergence science?",
+  ];
+
+  const renderSuggestion = (suggestion: QuickSearchSuggestion) => (
+    <div key={suggestion.researcherId} className="rounded-lg border border-border bg-background px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-foreground">{suggestion.name}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{suggestion.title}</p>
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">{suggestion.department}</p>
+        </div>
+        <div className="flex shrink-0 flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => onOpenProfile(suggestion)}
+            className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
+          >
+            Open profile
+          </button>
+          {suggestion.profileUrl && (
+            <a
+              href={suggestion.profileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              Imperial page
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      </div>
+      {suggestion.reason && (
+        <p className="mt-2 text-xs leading-relaxed text-foreground/70">{suggestion.reason}</p>
+      )}
+    </div>
+  );
+
+  return (
+    <section className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-5 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
+          <MessageSquareText className="h-5 w-5 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-base font-semibold text-foreground">Quick Search</p>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                Ask about a known researcher or get a fast first pointer on a topic. Full mission ranking still lives in Search.
+              </p>
+            </div>
+            {result?.kind === "topic" && (
+              <button
+                type="button"
+                onClick={() => onRunFullSearch(query)}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                <SearchIcon className="h-3.5 w-3.5" />
+                Run full search
+              </button>
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={query}
+              onChange={event => onQueryChange(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  onSubmit();
+                }
+              }}
+              placeholder="Ask a quick question or type a topic..."
+              className="h-11 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={isLoading || !query.trim()}
+              className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+              {isLoading ? "Checking..." : "Ask"}
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {examples.map(example => (
+              <button
+                key={example}
+                type="button"
+                onClick={() => onQueryChange(example)}
+                className="rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+
+          {error && (
+            <p className="mt-3 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {error}
+            </p>
+          )}
+
+          {result && (
+            <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-4">
+              <p className="text-sm leading-relaxed text-foreground/85">{result.answer}</p>
+              {result.researcher && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => onOpenProfile(result.researcher!)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                  >
+                    <UserRound className="h-3.5 w-3.5" />
+                    Open {result.researcher.name}
+                  </button>
+                </div>
+              )}
+              {result.suggestions.length > 0 && (
+                <div className="mt-4 grid gap-2 md:grid-cols-2">
+                  {result.suggestions.map(renderSuggestion)}
+                </div>
+              )}
+              {result.evidenceTitles.length > 0 && (
+                <div className="mt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Evidence used</p>
+                  <ul className="mt-1 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                    {result.evidenceTitles.map(title => (
+                      <li key={title}>- {title}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {result.caveat && (
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                  Note: {result.caveat}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ResearcherProfileView({
   profile,
   paperPage,
@@ -796,6 +968,10 @@ export default function Index() {
   const [profileQuestionAnswer, setProfileQuestionAnswer] = useState<ResearcherProfileQuestionAnswer | null>(null);
   const [isAnsweringProfileQuestion, setIsAnsweringProfileQuestion] = useState(false);
   const [profileQuestionError, setProfileQuestionError] = useState("");
+  const [quickSearchQuery, setQuickSearchQuery] = useState("");
+  const [quickSearchResult, setQuickSearchResult] = useState<QuickSearchResult | null>(null);
+  const [isQuickSearching, setIsQuickSearching] = useState(false);
+  const [quickSearchError, setQuickSearchError] = useState("");
   const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
 
   useEffect(() => {
@@ -1138,6 +1314,34 @@ export default function Index() {
     } finally {
       setIsAnsweringProfileQuestion(false);
     }
+  };
+
+  const submitQuickSearch = async () => {
+    const query = quickSearchQuery.trim();
+    if (!query || isQuickSearching) return;
+
+    setIsQuickSearching(true);
+    setQuickSearchError("");
+    try {
+      const result = await quickSearch(query);
+      setQuickSearchResult(result);
+    } catch (error) {
+      setQuickSearchResult(null);
+      setQuickSearchError(error instanceof Error ? error.message : "Quick Search failed.");
+    } finally {
+      setIsQuickSearching(false);
+    }
+  };
+
+  const runQuickSearchAsFullSearch = async (query: string) => {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) return;
+    setTabMode("search");
+    await handleSearch(trimmedQuery, "semantic", {
+      enableRerank: true,
+      includeExternalEvidence: false,
+      rewriteMission: false,
+    });
   };
 
   const cancelSearch = () => {
@@ -1702,6 +1906,17 @@ export default function Index() {
             Search
           </button>
           <button
+            onClick={() => setTabMode("quick")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+              tabMode === "quick"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <MessageSquareText className="h-3.5 w-3.5" />
+            Quick Search
+          </button>
+          <button
             type="button"
             disabled
             title="Deep Search is coming soon"
@@ -1948,6 +2163,30 @@ export default function Index() {
             </div>
           </main>
         </div>
+      ) : tabMode === "quick" ? (
+        <main className="min-h-0 flex-1 overflow-y-auto bg-background">
+          <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-4 p-6">
+            <QuickSearchPanel
+              query={quickSearchQuery}
+              onQueryChange={setQuickSearchQuery}
+              onSubmit={submitQuickSearch}
+              isLoading={isQuickSearching}
+              result={quickSearchResult}
+              error={quickSearchError}
+              onOpenProfile={loadResearcherProfile}
+              onRunFullSearch={runQuickSearchAsFullSearch}
+            />
+            {!quickSearchResult && !quickSearchError && (
+              <div className="flex min-h-[42vh] items-center justify-center">
+                <img
+                  src={scsSwoosh}
+                  alt=""
+                  className="h-auto w-full max-w-3xl opacity-20"
+                />
+              </div>
+            )}
+          </div>
+        </main>
       ) : tabMode === "profile" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row">
           <aside className="w-full shrink-0 border-b border-border bg-card lg:w-[380px] lg:border-b-0 lg:border-r">
