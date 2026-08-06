@@ -173,7 +173,7 @@ export default function SearchSidebar({
       <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6">
         {/* Search Mode Tabs */}
         <div>
-          <p className="section-label mb-2.5" title="Semantic search understands a mission in natural language. Keyword search is stricter and better for exact terms.">Search Mode</p>
+          <p className="section-label mb-2.5" title="Semantic search understands a query in natural language. Keyword search is stricter and better for exact terms.">Search Mode</p>
           <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-secondary p-1">
             {[
               { mode: "semantic" as const, icon: Sparkles, label: "Semantic" },
@@ -220,14 +220,14 @@ export default function SearchSidebar({
           {searchMode === "semantic" && (
             <label
               className="flex cursor-pointer items-start justify-between gap-3"
-              title="Ask ITMAP to rewrite the mission first. You will review the original and rewritten text before any search runs."
+              title="Ask ITMAP to rewrite the query first. You will review the original and rewritten text before any search runs."
             >
               <span>
                 <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  Rewrite mission first
+                  Rewrite query first
                   <HelpCircle className="h-3 w-3 text-muted-foreground" />
                 </span>
-                <span className="block text-[11px] leading-relaxed text-muted-foreground">Review and edit the rewritten mission before searching.</span>
+                <span className="block text-[11px] leading-relaxed text-muted-foreground">Review and edit the rewritten query before searching.</span>
               </span>
               <input
                 type="checkbox"

@@ -1133,7 +1133,7 @@ function buildMatchReason(row: Record<string, unknown>, profileEvidence: string[
     : `${name} matches through their ${title.toLowerCase()} profile and research description.`;
 
   if (papers.length > 0) {
-    return `${profileSentence} Relevant publication evidence includes ${papers.join("; ")}, which supports the mission topic.`;
+    return `${profileSentence} Relevant publication evidence includes ${papers.join("; ")}, which supports the query topic.`;
   }
 
   return `${profileSentence} No highly ranked paper evidence was needed for this match, so the score is driven mainly by profile, title, and field alignment.`;
@@ -1604,15 +1604,15 @@ async function expandMission(openAiKey: string, model: string, query: string, me
         {
           role: "system",
           content: [
-            "You rewrite search missions for an expert-finding system.",
-            "Expand the user's mission into a concise, evidence-oriented search query.",
+            "You rewrite search queries for an expert-finding system.",
+            "Expand the user's query into a concise, evidence-oriented search query.",
             "Preserve the user's intent. Do not add unrelated topics. Do not name researchers.",
             "Return JSON only with keys: expanded_query, must_have, nice_to_have, method_terms, domain_terms.",
           ].join(" "),
         },
         {
           role: "user",
-          content: `Mission:\n${query}`,
+          content: `Query:\n${query}`,
         },
       ],
       900,
@@ -1658,7 +1658,7 @@ async function fetchOpenAiWebEvidence(
       Deno.env.get("OPENAI_WEB_SEARCH_MODEL") || model,
       [
         "Search the public web for concise external evidence about this Imperial College London researcher.",
-        "Focus on mission-relevant media appearances, interviews, news coverage, videos, recorded talks, webinars, startups, spinouts, companies, founder roles, patents, policy or public-impact activity.",
+        "Focus on query-relevant media appearances, interviews, news coverage, videos, recorded talks, webinars, startups, spinouts, companies, founder roles, patents, policy or public-impact activity.",
         "Do not include ordinary academic profile pages unless they mention translational/public impact.",
         "Return JSON only with shape: {\"evidence\":[{\"title\":\"...\",\"snippet\":\"...\",\"url\":\"...\",\"evidence_type\":\"media|startup|grant|video|general\"}]}",
         "Use evidence_type video for YouTube, Vimeo, webinars, recorded seminars, conference talks, or public lecture recordings.",
@@ -1666,7 +1666,7 @@ async function fetchOpenAiWebEvidence(
         `Researcher: ${name}`,
         `Imperial role: ${row.position_name || row.position || ""}`,
         `Department: ${row.affiliation || row.research || ""}`,
-        `Mission: ${query}`,
+        `Query: ${query}`,
       ].join("\n"),
       900,
       metrics,
@@ -2027,17 +2027,17 @@ async function rerankCandidateChunkWithLlm(
         {
           role: "system",
           content: [
-            "You are reranking Imperial College London researchers for a mission.",
+            "You are reranking Imperial College London researchers for a search query.",
             "Use only the supplied position, profile, fields, shortlisted papers, and all_paper_evidence. Do not invent papers, affiliations, or expertise.",
             "Candidate researcher_id values are already deduplicated by the system. Do not mark anyone as a duplicate, do not suppress anyone because they seem represented elsewhere, and never give score 0 for duplicate reasons.",
-            "The all_paper_evidence list was selected after scanning every fetched paper title and abstract for that candidate. Use these title+abstract snippets to detect whether the person has a substantial publication pattern relevant to the mission.",
-            "When selecting best papers, prefer items from all_paper_evidence and return their paper_id values in best_paper_ids. The best papers should be specifically relevant to the mission, not merely famous or highly cited.",
+            "The all_paper_evidence list was selected after scanning every fetched paper title and abstract for that candidate. Use these title+abstract snippets to detect whether the person has a substantial publication pattern relevant to the query.",
+            "When selecting best papers, prefer items from all_paper_evidence and return their paper_id values in best_paper_ids. The best papers should be specifically relevant to the query, not merely famous or highly cited.",
             "External evidence may include media appearances, startup/spinout signals, company activity, and UKRI grant/project records. Treat it as a small supporting signal only.",
-            "Only give a small boost for external evidence when it is clearly relevant to the mission or shows translational impact. Do not let generic publicity override weak research/profile evidence.",
-            "UKRI grants and mission-relevant startups/spinouts are stronger external signals than generic media mentions.",
-            "Reward candidates who satisfy all central mission requirements, especially method+domain combinations such as AI applied to weather.",
+            "Only give a small boost for external evidence when it is clearly relevant to the query or shows translational impact. Do not let generic publicity override weak research/profile evidence.",
+            "UKRI grants and query-relevant startups/spinouts are stronger external signals than generic media mentions.",
+            "Reward candidates who satisfy all central query requirements, especially method+domain combinations such as AI applied to weather.",
             "Demote adjacent candidates who match only the domain or only the method.",
-            "Score each candidate absolutely against the mission, not relative to only the candidates in this request chunk.",
+            "Score each candidate absolutely against the query, not relative to only the candidates in this request chunk.",
             "Do not penalize candidates because stronger candidates may exist outside this chunk.",
             "You must return one ranked item for every supplied candidate in this chunk. If evidence is weak, give a low score and match_type weak.",
             "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[\"...\"],\"best_paper_titles\":[\"...\"]}]}",
@@ -2444,7 +2444,7 @@ function quickPersonQueryVariants(query: string) {
     .replace(/^(?:please\s+)?(?:tell me about|what can you tell me about|who is|who's|profile of|summari[sz]e|describe|explain)\s+/i, "")
     .trim();
   const beforeQualifier = promptRemoved
-    .split(/\b(?:and|with|relationship|connection|role|links?|papers?|publications?|profile|research|at|in|to)\b/i)[0]
+    .split(/\b(?:and|with|relationship|connection|role|links?|papers?|publications?|profile|research|at|in)\b/i)[0]
     .trim();
 
   for (const value of [beforeQualifier, promptRemoved, cleaned, query]) {
@@ -2704,6 +2704,55 @@ async function schoolOfConvergenceScienceAnswer(
   };
 }
 
+function normalizePersonName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\bprof(?:essor)?\.?\b/gi, "")
+    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function schoolRoleForResearcher(name: string) {
+  const normalized = normalizePersonName(name);
+  const info = SCHOOL_OF_CONVERGENCE_SCIENCE_INFO;
+  if (normalized === normalizePersonName(info.director)) {
+    return "Director of the School of Convergence Science";
+  }
+
+  for (const theme of info.themes) {
+    const match = theme.co_directors.find(coDirector => normalizePersonName(coDirector) === normalized);
+    if (match) {
+      return `${theme.name} Co-Director for the School of Convergence Science`;
+    }
+  }
+
+  return "";
+}
+
+function schoolPersonRelationAnswer(researcher: Record<string, unknown>) {
+  const name = String(researcher.full_name || "This researcher");
+  const role = schoolRoleForResearcher(name);
+  const answer = role
+    ? `${name} is connected to the School of Convergence Science as ${role}.`
+    : `${name} has an Imperial researcher profile in ITMAP, but I do not have a specific built-in School of Convergence Science leadership role recorded for them. Open their profile to check their department, publications, and research areas.`;
+
+  return {
+    kind: "person",
+    answer,
+    researcher,
+    suggestions: [researcher],
+    evidence_titles: role
+      ? ["Imperial School of Convergence Science leadership and inaugural Co-Directors"]
+      : [],
+    caveat: role
+      ? "This is a built-in institutional role lookup for the School of Convergence Science."
+      : "This only checks the built-in School leadership list; it does not run a full Search query.",
+  };
+}
+
 async function quickTopicSuggestions(
   supabase: ReturnType<typeof createClient>,
   query: string,
@@ -2782,19 +2831,24 @@ async function quickSearch(
   if (isOffTopicProfileQuestion(trimmedQuery)) {
     return {
       kind: "redirect",
-      answer: "Quick Search is for serious questions about Imperial researchers, expertise, publications, co-authors, departments, and research topics. Try a researcher name or a short topic such as \"Rossella Arcucci\" or \"experts on photonics\".",
+      answer: "Ask ITMAP is for serious questions about Imperial researchers, expertise, publications, co-authors, departments, and research topics. Try a researcher name or a short topic such as \"Benjamin Barratt\" or \"experts on photonics\".",
       suggestions: [],
       evidence_titles: [],
       caveat: "",
     };
   }
 
-  if (isSchoolOfConvergenceScienceQuery(trimmedQuery)) {
+  const isSchoolQuery = isSchoolOfConvergenceScienceQuery(trimmedQuery);
+  const nameSuggestions = await quickNameSuggestions(supabase, trimmedQuery);
+  const bestPerson = nameSuggestions[0];
+  if (isSchoolQuery && bestPerson && Number(bestPerson.score || 0) >= 0.68) {
+    return schoolPersonRelationAnswer(bestPerson);
+  }
+
+  if (isSchoolQuery) {
     return await schoolOfConvergenceScienceAnswer(supabase, trimmedQuery);
   }
 
-  const nameSuggestions = await quickNameSuggestions(supabase, trimmedQuery);
-  const bestPerson = nameSuggestions[0];
   if (bestPerson && Number(bestPerson.score || 0) >= 0.68) {
     const answer = await answerResearcherProfileQuestion(
       supabase,
@@ -2807,7 +2861,7 @@ async function quickSearch(
       kind: "person",
       answer: answer.answer,
       researcher: bestPerson,
-      suggestions: nameSuggestions.slice(0, 4),
+      suggestions: Number(bestPerson.score || 0) >= 0.9 ? [bestPerson] : nameSuggestions.slice(0, 4),
       evidence_titles: answer.evidence_titles,
       caveat: answer.caveat,
     };
@@ -2817,10 +2871,10 @@ async function quickSearch(
   if (topicSuggestions.length > 0) {
     return {
       kind: "topic",
-      answer: `Here are quick, non-reranked matches for "${trimmedQuery}". This is useful for a first pointer; use the full Search tab when you need a ranked mission search with paper evidence and deeper comparison.`,
+      answer: `Here are quick, non-reranked matches for "${trimmedQuery}". This is useful for a first pointer; use the full Search tab when you need ranked results with paper evidence and deeper comparison.`,
       suggestions: topicSuggestions,
       evidence_titles: [],
-      caveat: "Quick Search does not run ITMAP reranking, mission expansion, media/grant checks, or the graph workflow.",
+      caveat: "Ask ITMAP does not run ITMAP reranking, query rewriting, media/grant checks, or the graph workflow.",
     };
   }
 
@@ -3607,7 +3661,7 @@ Deno.serve(async req => {
           profile_evidence: profileEvidence,
           paper_similarity: 0,
           papers: [],
-          match_reason: "Matched from this researcher's profile and domain-specific mission terms.",
+          match_reason: "Matched from this researcher's profile and domain-specific query terms.",
         });
       }
     }
@@ -3688,7 +3742,7 @@ Deno.serve(async req => {
           const existingPapers = (row.papers as Record<string, unknown>[]) || [];
           row.papers = mergePaperSummaries(existingPapers, rankedPapers);
           if (existingPapers.length === 0) {
-            row.match_reason = "Matched from this researcher profile; publications shown are ranked against the mission text.";
+            row.match_reason = "Matched from this researcher profile; publications shown are ranked against the query text.";
           }
         }
       }

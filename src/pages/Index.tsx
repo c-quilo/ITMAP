@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
@@ -10,7 +10,7 @@ import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "saved";
+type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "saved" | "help";
 type SearchMode = "semantic" | "keyword";
 
 type SavedSearch = SavedSearchSummary & {
@@ -40,6 +40,7 @@ const POOL_SUMMARY_CACHE_KEY = "itmap.researchPoolSummaries.v1";
 const MATCH_FILTERS = new Set(["Strong Match", "Moderate", "Weak"]);
 const SCHOOL_MISSION_THEME_PREFIX = "Theme: ";
 const SCHOOL_MISSION_PREFIX = "Mission: ";
+const DEFAULT_EMPTY_SEARCH_MESSAGE = "We couldn't find any results. Try a different search, use fewer words, or make the topic a bit broader.";
 const KEYWORD_STOP_WORDS = new Set([
   "about", "after", "also", "analysis", "based", "being", "between", "college", "data", "from",
   "department", "faculty", "imperial", "including", "into", "london", "metadata", "model", "models",
@@ -236,14 +237,14 @@ function poolSummaryCacheKey(query: string, researchers: Researcher[]) {
 const SEARCH_STEPS = [
   {
     at: 0,
-    label: "Reading the mission",
-    detail: "ITMAP is using the mission exactly as written to start the semantic search.",
+    label: "Reading the query",
+    detail: "ITMAP is using the query exactly as written to start the semantic search.",
     Icon: Sparkles,
   },
   {
     at: 7,
     label: "Searching profiles and papers",
-    detail: "Matching the mission against researcher profiles, fields, positions, and paper evidence.",
+    detail: "Matching the query against researcher profiles, fields, positions, and paper evidence.",
     Icon: Database,
   },
   {
@@ -374,7 +375,7 @@ function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }
 function MissionRewriteOverlay({ seconds, onCancel }: { seconds: number; onCancel: () => void }) {
   const steps = [
     {
-      label: "Reading your mission",
+      label: "Reading your query",
       detail: "ITMAP is identifying the topic, context, and expertise you are asking for.",
       Icon: FileText,
     },
@@ -409,13 +410,13 @@ function MissionRewriteOverlay({ seconds, onCancel }: { seconds: number; onCance
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-              Rewriting mission
+              Rewriting query
             </p>
             <h2 className="mt-1 text-lg font-semibold text-foreground">
               ITMAP is improving the search brief
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              This usually takes a few seconds. The search will not run until you review the rewritten mission and choose how to continue.
+              This usually takes a few seconds. The search will not run until you review the rewritten query and choose how to continue.
             </p>
             <div className="mt-5 space-y-2">
               {steps.map((step, index) => {
@@ -593,9 +594,9 @@ function QuickSearchPanel({
         <div className="min-w-0 flex-1">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="text-base font-semibold text-foreground">Quick Search</p>
+              <p className="text-base font-semibold text-foreground">Ask ITMAP</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                Ask about a known researcher or get a fast first pointer on a topic. Full mission ranking still lives in Search.
+                Ask about a known researcher or get a fast first pointer on a topic. If ITMAP shows a name, click it to explore more in Researcher Profile. Deeper ranking still lives in Search.
               </p>
             </div>
             {result?.kind === "topic" && (
@@ -693,6 +694,93 @@ function QuickSearchPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function HelpAboutPanel() {
+  const sections = [
+    {
+      title: "Ask ITMAP",
+      text: "Use this for quick questions. It is good when you already know a name, a place, or a simple topic. If ITMAP gives you a name, click it to open Researcher Profile and explore more.",
+      examples: ["Tell me about Benjamin Barratt", "Who is working on photonics?", "Co-directors of the school"],
+    },
+    {
+      title: "Search",
+      text: "Use this when you have a bigger query or research need. Search has two modes inside it: Semantic and Keyword.",
+      examples: ["AI for weather forecasting", "Environmental exposure and air pollution", "Sustainable textiles"],
+    },
+    {
+      title: "Search: Semantic mode",
+      text: "Use this when the idea matters more than the exact words. ITMAP looks for meaning in profiles and papers, then reranks the best people.",
+      examples: ["Good for long query text", "Good for broad or mixed topics"],
+    },
+    {
+      title: "Search: Keyword mode",
+      text: "Use this when you know the words that must appear. It is more literal. It can be faster, but it can miss people who use different words.",
+      examples: ["air pollution AND AI", "photonics", "Grantham Institute"],
+    },
+    {
+      title: "Researcher Profile",
+      text: "Use this when you want one person. Start typing the name, choose the researcher, then ask questions about their profile, papers, and co-authors.",
+      examples: ["Benjamin Barratt", "Cesar Quilodran", "Jonathan Eastwood"],
+    },
+    {
+      title: "Graph",
+      text: "Use this after a Search. It shows links between the researchers in the results, such as co-authorship and cross-faculty bridges.",
+      examples: ["See who connects groups", "Find collaboration patterns"],
+    },
+    {
+      title: "Saved",
+      text: "Use this like a small basket. Save researchers from results, then export the list when you are ready.",
+      examples: ["Save a shortlist", "Export CSV"],
+    },
+  ];
+
+  return (
+    <main className="min-h-0 flex-1 overflow-y-auto bg-background">
+      <div className="mx-auto max-w-5xl space-y-5 p-6">
+        <section className="rounded-lg border border-primary/15 bg-card p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
+              <CircleHelp className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-lg font-semibold text-foreground">Help / About</p>
+              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+                ITMAP helps you find Imperial researchers. You can ask a quick question, run a deeper search,
+                open one researcher profile, see links in a graph, and save people for later. Simple English is fine.
+                You do not need to write perfect search text.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2">
+          {sections.map(section => (
+            <article key={section.title} className="rounded-lg border border-border bg-card p-4">
+              <p className="text-sm font-semibold text-foreground">{section.title}</p>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{section.text}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {section.examples.map(example => (
+                  <span key={example} className="rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                    {example}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </section>
+
+        <section className="rounded-lg border border-border bg-card p-4">
+          <p className="text-sm font-semibold text-foreground">When to use what</p>
+          <div className="mt-3 grid gap-3 text-sm leading-relaxed text-muted-foreground md:grid-cols-3">
+            <p><span className="font-medium text-foreground">Fast answer:</span> use Ask ITMAP.</p>
+            <p><span className="font-medium text-foreground">Best expert ranking:</span> use Search with Semantic mode.</p>
+            <p><span className="font-medium text-foreground">Exact words:</span> use Search with Keyword mode.</p>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }
 
@@ -932,10 +1020,11 @@ export default function Index() {
   const highlightTimeoutRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
-  const [tabMode, setTabMode] = useState<TabMode>("search");
+  const [tabMode, setTabMode] = useState<TabMode>("quick");
   const [searchResults, setSearchResults] = useState<Researcher[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [emptySearchMessage, setEmptySearchMessage] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [currentMission, setCurrentMission] = useState("");
   const [currentOriginalMission, setCurrentOriginalMission] = useState("");
@@ -1275,6 +1364,7 @@ export default function Index() {
     setPoolSummaryDone(false);
     setPoolSummaryError("");
     setSearchError("");
+    setEmptySearchMessage("");
     setTabMode("search");
   };
 
@@ -1348,6 +1438,7 @@ export default function Index() {
     searchRunIdRef.current += 1;
     setIsSearching(false);
     setIsRewritingMission(false);
+    setEmptySearchMessage("");
     setSearchError("Search stopped.");
   };
 
@@ -1355,7 +1446,8 @@ export default function Index() {
     const trimmedQuery = query.trim();
     const trimmedOriginalQuery = originalQuery.trim() || trimmedQuery;
     if (!trimmedQuery) {
-      setSearchError("Type a mission or keyword before searching.");
+      setSearchError("Type a query or keyword before searching.");
+      setEmptySearchMessage("");
       setHasSearched(false);
       setSearchResults([]);
       return;
@@ -1365,6 +1457,7 @@ export default function Index() {
     setCurrentSearchMode(mode);
     setIsSearching(true);
     setSearchError("");
+    setEmptySearchMessage("");
     setSchoolMissionError("");
     setMissionCheckDone(false);
     setPoolSummary(null);
@@ -1389,10 +1482,17 @@ export default function Index() {
       setCurrentOriginalMission(trimmedOriginalQuery);
       setCurrentSearchMode(mode);
       setHasSearched(true);
+      setEmptySearchMessage(results.length === 0 ? DEFAULT_EMPTY_SEARCH_MESSAGE : "");
       saveSearch(trimmedQuery, mode, results, trimmedOriginalQuery);
     } catch (error) {
       if (searchRunIdRef.current !== searchRunId) return;
-      setSearchError(error instanceof Error ? error.message : "Search failed");
+      const message = error instanceof Error ? error.message : "";
+      setSearchResults([]);
+      setCurrentMission(trimmedQuery);
+      setCurrentOriginalMission(trimmedOriginalQuery);
+      setCurrentSearchMode(mode);
+      setSearchError(/edge function|non-2xx|no result|not found/i.test(message) ? "" : "Search could not run. Please try again.");
+      setEmptySearchMessage(DEFAULT_EMPTY_SEARCH_MESSAGE);
       setHasSearched(true);
     } finally {
       if (searchRunIdRef.current === searchRunId) {
@@ -1404,7 +1504,8 @@ export default function Index() {
   const handleSearch = async (query: string, mode: SearchMode, options: SearchOptions) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
-      setSearchError("Type a mission or keyword before searching.");
+      setSearchError("Type a query or keyword before searching.");
+      setEmptySearchMessage("");
       setHasSearched(false);
       setSearchResults([]);
       return;
@@ -1417,6 +1518,7 @@ export default function Index() {
         const bestSuggestion = suggestions[0];
         if (bestSuggestion && bestSuggestion.score >= 0.72) {
           setSearchError("");
+          setEmptySearchMessage("");
           setPendingProfileLookup({
             originalQuery: trimmedQuery,
             lookupQuery,
@@ -1436,6 +1538,7 @@ export default function Index() {
       searchRunIdRef.current = searchRunId;
       setIsRewritingMission(true);
       setSearchError("");
+      setEmptySearchMessage("");
       try {
         const rewrite = await rewriteMission(trimmedQuery);
         if (searchRunIdRef.current !== searchRunId) return;
@@ -1449,7 +1552,7 @@ export default function Index() {
         setEditableRewrite(rewrittenQuery);
       } catch (error) {
         if (searchRunIdRef.current !== searchRunId) return;
-        setSearchError(error instanceof Error ? error.message : "Could not rewrite the mission.");
+        setSearchError(error instanceof Error ? error.message : "Could not rewrite the query.");
       } finally {
         if (searchRunIdRef.current === searchRunId) {
           setIsRewritingMission(false);
@@ -1778,16 +1881,16 @@ export default function Index() {
       >
         <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Review rewritten mission</DialogTitle>
+            <DialogTitle>Review rewritten query</DialogTitle>
             <DialogDescription>
-              ITMAP can search with the original mission, the rewritten mission, or your edited version.
+              ITMAP can search with the original query, the rewritten query, or your edited version.
             </DialogDescription>
           </DialogHeader>
           {pendingRewriteSearch && (
             <div className="space-y-4">
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Original mission
+                  Original query
                 </label>
                 <textarea
                   value={pendingRewriteSearch.originalQuery}
@@ -1797,7 +1900,7 @@ export default function Index() {
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Rewritten mission
+                  Rewritten query
                 </label>
                 <textarea
                   value={editableRewrite}
@@ -1835,7 +1938,7 @@ export default function Index() {
           <DialogHeader>
             <DialogTitle>This looks like a researcher lookup</DialogTitle>
             <DialogDescription>
-              ITMAP can open the researcher profile instead of running this as a mission search.
+              ITMAP can open the researcher profile instead of running this as a search query.
             </DialogDescription>
           </DialogHeader>
           {pendingProfileLookup && (
@@ -1862,7 +1965,7 @@ export default function Index() {
                   onClick={searchPendingProfileLookupAsMission}
                   className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
                 >
-                  Search as mission
+                  Search as query
                 </button>
                 <button
                   type="button"
@@ -1895,6 +1998,17 @@ export default function Index() {
         {/* Tab Navigation */}
         <div className="flex items-center gap-1 bg-secondary rounded-lg p-0.5 relative z-10">
           <button
+            onClick={() => setTabMode("quick")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+              tabMode === "quick"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <MessageSquareText className="h-3.5 w-3.5" />
+            Ask ITMAP
+          </button>
+          <button
             onClick={() => setTabMode("search")}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
               tabMode === "search"
@@ -1904,17 +2018,6 @@ export default function Index() {
           >
             <SearchIcon className="h-3.5 w-3.5" />
             Search
-          </button>
-          <button
-            onClick={() => setTabMode("quick")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
-              tabMode === "quick"
-                ? "bg-card shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <MessageSquareText className="h-3.5 w-3.5" />
-            Quick Search
           </button>
           <button
             type="button"
@@ -1965,6 +2068,17 @@ export default function Index() {
                 {savedResearchers.length}
               </span>
             )}
+          </button>
+          <button
+            onClick={() => setTabMode("help")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+              tabMode === "help"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <CircleHelp className="h-3.5 w-3.5" />
+            Help / About
           </button>
         </div>
 
@@ -2140,8 +2254,16 @@ export default function Index() {
                 </div>
               )}
               {!isSearching && hasSearched && sortedResearchers.length === 0 && (
-                <div className="xl:col-span-2 rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-                  No researchers matched this search. Try a broader mission or switch search mode.
+                <div className="xl:col-span-2 flex min-h-[50vh] items-center justify-center rounded-lg border border-border bg-card p-6 text-center">
+                  <div className="max-w-md">
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-secondary text-3xl font-semibold text-muted-foreground">
+                      :(
+                    </div>
+                    <p className="mt-4 text-base font-semibold text-foreground">We couldn't find any results</p>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {emptySearchMessage || DEFAULT_EMPTY_SEARCH_MESSAGE}
+                    </p>
+                  </div>
                 </div>
               )}
               {sortBy === "seniority" ? (
@@ -2286,13 +2408,15 @@ export default function Index() {
         </div>
       ) : tabMode === "graph" ? (
         <GraphVisualization researchers={sortedResearchers} missionLabel={currentMission} />
+      ) : tabMode === "help" ? (
+        <HelpAboutPanel />
       ) : (
         <main className="min-h-0 flex-1 overflow-y-auto bg-background">
           <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-3 backdrop-blur-sm">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium text-foreground">{savedResearchers.length} saved researchers</p>
-                <p className="text-xs text-muted-foreground">Each saved researcher keeps the search/mission that produced it.</p>
+                <p className="text-xs text-muted-foreground">Each saved researcher keeps the search query that produced it.</p>
               </div>
               {savedResearchers.length > 0 ? (
                 <button
