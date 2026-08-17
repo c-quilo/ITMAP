@@ -486,6 +486,9 @@ function naturaliseProfileAnswer(value: string) {
     .replace(/\bthis (?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\b/gi, "this profile evidence")
     .replace(/\bprovided explicitly\b/gi, "available here")
     .replace(/\bsupplied explicitly\b/gi, "available here")
+    .replace(/\bthe information provided\b/gi, "the available profile information")
+    .replace(/\bshared_paper_count\b/gi, "shared publication count")
+    .replace(/\b(?:provided|supplied)\s+(?=roles?|profiles?|fields?|publication|information|records?)/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -2732,6 +2735,13 @@ function schoolRoleForResearcher(name: string) {
   return "";
 }
 
+function schoolThemeForCoDirector(name: string) {
+  const normalized = normalizePersonName(name);
+  return SCHOOL_OF_CONVERGENCE_SCIENCE_INFO.themes.find(theme =>
+    theme.co_directors.some(coDirector => normalizePersonName(coDirector) === normalized)
+  ) || null;
+}
+
 function schoolPersonRelationAnswer(researcher: Record<string, unknown>) {
   const name = String(researcher.full_name || "This researcher");
   const role = schoolRoleForResearcher(name);
@@ -2811,6 +2821,297 @@ function quickPersonQuestion(query: string, researcher: Record<string, unknown>)
   return query;
 }
 
+function quickRelationshipNames(query: string) {
+  const cleaned = query
+    .replace(/[?!.,;:]+$/g, "")
+    .replace(/\s*&\s*/g, " and ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(?:please\s+)?(?:tell me about|what is|what's|describe|explain)\s+(?:the\s+)?/i, "");
+  const patterns = [
+    /\b(?:relationship|connection|collaboration|link)\s+between\s+(.+?)\s+and\s+(.+)$/i,
+    /\b(?:relationship|connection|collaboration|link)\s+(?:of|for)\s+(.+?)\s+(?:and|with)\s+(.+)$/i,
+    /\bhow\s+(?:are|is)\s+(.+?)\s+(?:and|with)\s+(.+?)\s+(?:connected|related|linked)(?:\s+to\s+each\s+other)?$/i,
+    /^(.+?)\s+(?:and|with)\s+(.+?)\s+(?:relationship|connection|collaboration|link)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (!match?.[1] || !match?.[2]) continue;
+    const names = [match[1], match[2]]
+      .map(name => name.replace(/^(?:dr|prof|professor)\.?\s+/i, "").trim())
+      .filter(name => name.length >= 3);
+    if (names.length === 2 && normalizeName(names[0]) !== normalizeName(names[1])) return names;
+  }
+
+  return null;
+}
+
+async function resolveQuickRelationshipResearcher(
+  supabase: ReturnType<typeof createClient>,
+  name: string,
+) {
+  const suggestions = await suggestResearchersByName(supabase, name);
+  const best = suggestions[0];
+  return best && Number(best.score || 0) >= 0.62 ? best : null;
+}
+
+function openAlexAuthorKey(value: unknown) {
+  const normalized = String(value || "").trim().split("/").filter(Boolean).pop() || "";
+  return normalized.toUpperCase();
+}
+
+function relationshipPaperKey(paper: Record<string, unknown>) {
+  const workId = String(paper.openalex_work_id || "").trim().toLowerCase();
+  if (workId) return `work:${workId.split("/").filter(Boolean).pop()}`;
+  const doi = String(paper.doi || "").trim().toLowerCase().replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "");
+  if (doi) return `doi:${doi}`;
+  return `title:${String(paper.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`;
+}
+
+function canonicalRelationshipAffiliation(value: unknown) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (/grantham|institute for climate change/i.test(text)) return "Grantham Institute for Climate Change";
+  return text;
+}
+
+function hasGranthamConnection(researcher: Record<string, unknown>) {
+  const profileText = [
+    researcher.affiliation,
+    researcher.research,
+    researcher.bio_about,
+    researcher.position_name,
+    researcher.position,
+    researcher.fields_of_research,
+  ].map(String).join(" ");
+  return /grantham|institute for climate change/i.test(profileText);
+}
+
+function relationshipSuggestion(row: Record<string, unknown>, reason: string) {
+  return {
+    researcher_id: row.id,
+    openalex_id: row.openalex_id,
+    profile_url: row.profile_url,
+    full_name: row.full_name,
+    title: row.position_name || row.position,
+    department: row.affiliation || row.research,
+    faculty: row.faculty,
+    score: 1,
+    reason,
+  };
+}
+
+async function fetchDirectRelationshipCoauthorship(
+  supabase: ReturnType<typeof createClient>,
+  first: Record<string, unknown>,
+  second: Record<string, unknown>,
+) {
+  const lookups = [
+    { researcherId: String(first.id || ""), coauthorId: openAlexAuthorKey(second.openalex_id) },
+    { researcherId: String(second.id || ""), coauthorId: openAlexAuthorKey(first.openalex_id) },
+  ].filter(lookup => lookup.researcherId && lookup.coauthorId);
+
+  for (const lookup of lookups) {
+    const variants = [lookup.coauthorId, `https://openalex.org/${lookup.coauthorId}`];
+    const { data, error } = await supabase
+      .from("researcher_coauthors")
+      .select("shared_papers,latest_year,paper_titles")
+      .eq("researcher_id", lookup.researcherId)
+      .in("coauthor_openalex_id", variants)
+      .order("shared_papers", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!error && data) return data as Record<string, unknown>;
+  }
+
+  return null;
+}
+
+async function answerQuickRelationship(
+  supabase: ReturnType<typeof createClient>,
+  openAiKey: string,
+  model: string,
+  query: string,
+  requestedNames: string[],
+) {
+  const resolved = await Promise.all(requestedNames.map(name => resolveQuickRelationshipResearcher(supabase, name)));
+  const unresolved = requestedNames.filter((_, index) => !resolved[index]);
+  const found = resolved.filter((researcher): researcher is Record<string, unknown> => Boolean(researcher));
+
+  if (unresolved.length > 0 || found.length !== 2) {
+    return {
+      kind: "empty",
+      answer: unresolved.length > 0
+        ? `I could not confidently identify ${unresolved.join(" and ")} in the Imperial researcher directory. Try their full name or check the spelling.`
+        : "I could not confidently identify both researchers. Try their full names.",
+      suggestions: found.map(researcher => relationshipSuggestion(researcher, "Researcher identified for this comparison.")),
+      evidence_titles: [],
+      caveat: "",
+    };
+  }
+
+  const researcherIds = found.map(researcher => String(researcher.researcher_id || ""));
+  const { data: profiles, error: profileError } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty,research,bio_about,fields_of_research")
+    .in("id", researcherIds);
+  if (profileError) throw profileError;
+
+  const profileById = new Map<string, Record<string, unknown>>();
+  for (const profile of (profiles || []) as Record<string, unknown>[]) {
+    profileById.set(String(profile.id || ""), profile);
+  }
+  const first = profileById.get(researcherIds[0]);
+  const second = profileById.get(researcherIds[1]);
+  if (!first || !second) throw new Error("Could not load both researcher profiles");
+
+  const representativePaperRows = await fetchPapersForResearchers(supabase, researcherIds);
+  const papersByResearcher = new Map<string, Record<string, unknown>[]>();
+  for (const paper of representativePaperRows as Record<string, unknown>[]) {
+    const researcherId = String(paper.researcher_id || "");
+    if (!researcherId) continue;
+    const bucket = papersByResearcher.get(researcherId) || [];
+    bucket.push(paper);
+    papersByResearcher.set(researcherId, bucket);
+  }
+  const firstPapers = papersByResearcher.get(researcherIds[0]) || [];
+  const secondPapers = papersByResearcher.get(researcherIds[1]) || [];
+  const firstPaperMap = new Map(firstPapers.map(paper => [relationshipPaperKey(paper), paper]));
+  const sharedPapers = secondPapers
+    .filter(paper => firstPaperMap.has(relationshipPaperKey(paper)))
+    .map(paper => firstPaperMap.get(relationshipPaperKey(paper)) || paper)
+    .filter((paper, index, papers) => papers.findIndex(candidate => relationshipPaperKey(candidate) === relationshipPaperKey(paper)) === index)
+    .sort((a, b) => Number(b.publication_year || 0) - Number(a.publication_year || 0));
+
+  const directCoauthorship = await fetchDirectRelationshipCoauthorship(supabase, first, second);
+  const directPaperTitles = Array.isArray(directCoauthorship?.paper_titles)
+    ? (directCoauthorship?.paper_titles as Record<string, unknown>[])
+      .map(paper => String(paper.title || "").trim())
+      .filter(Boolean)
+    : [];
+  const sharedTitles = [...new Set([
+    ...sharedPapers.map(paper => String(paper.title || "").trim()).filter(Boolean),
+    ...directPaperTitles,
+  ])];
+  const sharedPaperCount = Math.max(sharedPapers.length, Number(directCoauthorship?.shared_papers || 0));
+
+  const firstAffiliation = canonicalRelationshipAffiliation(first.affiliation || first.research);
+  const secondAffiliation = canonicalRelationshipAffiliation(second.affiliation || second.research);
+  const sharedAffiliations: string[] = [];
+  const addSharedAffiliation = (affiliation: string) => {
+    if (!affiliation) return;
+    if (!sharedAffiliations.some(existing => normalizeName(existing) === normalizeName(affiliation))) {
+      sharedAffiliations.push(affiliation);
+    }
+  };
+  if (hasGranthamConnection(first) && hasGranthamConnection(second)) {
+    addSharedAffiliation("Grantham Institute for Climate Change");
+  }
+  if (firstAffiliation && normalizeName(firstAffiliation) === normalizeName(secondAffiliation)) {
+    addSharedAffiliation(firstAffiliation);
+  }
+  const firstFaculty = String(first.faculty || "").trim();
+  const secondFaculty = String(second.faculty || "").trim();
+  if (firstFaculty && normalizeName(firstFaculty) === normalizeName(secondFaculty)) {
+    addSharedAffiliation(firstFaculty);
+  }
+  const firstSchoolTheme = schoolThemeForCoDirector(String(first.full_name || ""));
+  const secondSchoolTheme = schoolThemeForCoDirector(String(second.full_name || ""));
+  const sharedSchoolTheme = firstSchoolTheme && secondSchoolTheme && firstSchoolTheme.name === secondSchoolTheme.name
+    ? firstSchoolTheme
+    : null;
+  const sharedSchoolRoles = sharedSchoolTheme
+    ? [`${sharedSchoolTheme.name} Co-Directors of the School of Convergence Science`]
+    : [];
+
+  const fallbackParts = [
+    ...(sharedSchoolTheme
+      ? [`${first.full_name} and ${second.full_name} are both ${sharedSchoolTheme.name} Co-Directors of Imperial's School of Convergence Science.`]
+      : []),
+    sharedAffiliations.length > 0
+      ? `${first.full_name} and ${second.full_name} share an Imperial connection through ${sharedAffiliations.join(" and ")}.`
+      : `${first.full_name} and ${second.full_name} have different listed Imperial affiliations.`,
+    sharedPaperCount > 0
+      ? `They have ${sharedPaperCount} shared publication${sharedPaperCount === 1 ? "" : "s"}${sharedTitles.length > 0 ? `, including “${sharedTitles.slice(0, 3).join("”, “")}”` : ""}.`
+      : "I did not find a publication co-authored by both researchers.",
+  ];
+
+  let answer = fallbackParts.join(" ");
+  try {
+    const result = await openAiJson(
+      openAiKey,
+      model,
+      [
+        {
+          role: "system",
+          content: [
+            "You answer serious two-researcher relationship questions for ITMAP at Imperial College London.",
+            "Explain verified School of Convergence Science leadership roles first, then other institutional connections, direct publication co-authorship, and meaningful thematic overlap or complementarity.",
+            "Distinguish clearly between verified direct collaboration and inferred thematic connection.",
+            "If shared_school_roles is non-empty, state that shared leadership relationship prominently and do not reduce the relationship to publication co-authorship.",
+            "If shared_paper_count is zero, explicitly say no co-authored publication was found; do not imply publication collaboration, but preserve any verified shared leadership relationship.",
+            "If shared affiliations are listed, state them clearly.",
+            "Use only the profile, affiliation, field and publication-title content in the payload.",
+            "Do not mention databases, JSON, supplied or provided evidence, retrieval, payloads, or internal systems.",
+            "Never repeat payload field names such as shared_paper_count; express them in natural English.",
+            "Write a direct, natural answer in 130-220 words.",
+            "Return JSON only: {\"answer\":\"...\"}",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            question: query,
+            shared_affiliations: sharedAffiliations,
+            shared_school_roles: sharedSchoolRoles,
+            shared_school_theme: sharedSchoolTheme ? {
+              name: sharedSchoolTheme.name,
+              co_directors: sharedSchoolTheme.co_directors,
+              missions: sharedSchoolTheme.missions,
+            } : null,
+            shared_paper_count: sharedPaperCount,
+            shared_paper_titles: sharedTitles.slice(0, 12),
+            researchers: [first, second].map((researcher, index) => ({
+              name: researcher.full_name,
+              position: researcher.position_name || researcher.position,
+              department: researcher.affiliation || researcher.research,
+              faculty: researcher.faculty,
+              fields_of_research: truncateText(researcher.fields_of_research, 900),
+              profile: truncateText(researcher.bio_about, 1800),
+              research: truncateText(researcher.research, 700),
+              representative_paper_titles: (index === 0 ? firstPapers : secondPapers)
+                .slice(0, 30)
+                .map(paper => truncateText(paper.title, 220)),
+            })),
+          }),
+        },
+      ],
+      700,
+    ) as { answer?: string };
+    if (result.answer) answer = truncateText(naturaliseProfileAnswer(result.answer), 2400);
+  } catch (error) {
+    console.warn("Could not generate two-researcher relationship answer", error);
+  }
+
+  return {
+    kind: "person",
+    answer,
+    suggestions: [
+      relationshipSuggestion(first, schoolRoleForResearcher(String(first.full_name || "")) || firstAffiliation || "Researcher included in this comparison."),
+      relationshipSuggestion(second, schoolRoleForResearcher(String(second.full_name || "")) || secondAffiliation || "Researcher included in this comparison."),
+    ],
+    evidence_titles: [
+      ...(sharedSchoolTheme ? [`Imperial School of Convergence Science: ${sharedSchoolTheme.name} Co-Directors`] : []),
+      ...sharedTitles,
+    ].slice(0, 6),
+    caveat: sharedSchoolTheme
+      ? `Their shared ${sharedSchoolTheme.name} leadership role is verified independently of publication co-authorship${sharedPaperCount === 0 ? "; no joint publication was found" : ""}.`
+      : sharedPaperCount === 0
+        ? "No direct co-authored publication was found, so any research connection described is thematic or institutional."
+        : "Shared publications indicate direct co-authorship; broader thematic connections are based on their profiles and publication titles.",
+  };
+}
+
 async function quickSearch(
   supabase: ReturnType<typeof createClient>,
   openAiKey: string,
@@ -2836,6 +3137,11 @@ async function quickSearch(
       evidence_titles: [],
       caveat: "",
     };
+  }
+
+  const relationshipNames = quickRelationshipNames(trimmedQuery);
+  if (relationshipNames) {
+    return await answerQuickRelationship(supabase, openAiKey, model, trimmedQuery, relationshipNames);
   }
 
   const isSchoolQuery = isSchoolOfConvergenceScienceQuery(trimmedQuery);
@@ -2977,6 +3283,193 @@ async function fetchTopCoauthorsForResearcher(
   });
 }
 
+function collaborationGroupKey(value: unknown) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/^institute for climate change$/, "grantham institute for climate change");
+}
+
+async function fetchStoredCollaborationTimeline(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+) {
+  const { data, error } = await supabase
+    .from("researcher_collaboration_years")
+    .select("year,active_coauthors,new_coauthors,imperial_coauthors,cross_department,cross_faculty,other_institutions,shared_papers,total_coauthors,matched_imperial_coauthors,top_cross_department")
+    .eq("researcher_id", researcherId)
+    .order("year", { ascending: true });
+
+  if (error) {
+    console.warn("Could not load stored collaboration timeline", error);
+    return null;
+  }
+  if (!data || data.length === 0) return null;
+
+  return {
+    years: data.map(row => ({
+      year: Number(row.year || 0),
+      active_coauthors: Number(row.active_coauthors || 0),
+      new_coauthors: Number(row.new_coauthors || 0),
+      imperial_coauthors: Number(row.imperial_coauthors || 0),
+      cross_department: Number(row.cross_department || 0),
+      cross_faculty: Number(row.cross_faculty || 0),
+      other_institutions: Number(row.other_institutions || 0),
+      shared_papers: Number(row.shared_papers || 0),
+      top_cross_department: Array.isArray(row.top_cross_department) ? row.top_cross_department : [],
+    })),
+    total_coauthors: Number(data[0].total_coauthors || 0),
+    matched_imperial_coauthors: Number(data[0].matched_imperial_coauthors || 0),
+  };
+}
+
+async function fetchCollaborationTimelineForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcher: Record<string, unknown>,
+) {
+  const researcherId = String(researcher.id || "");
+  const focalOpenAlexId = openAlexAuthorKey(researcher.openalex_id);
+  if (!researcherId || !focalOpenAlexId) {
+    return { years: [], matched_imperial_coauthors: 0, total_coauthors: 0 };
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (from < 50000) {
+    const { data, error } = await supabase
+      .from("researcher_paper_authors")
+      .select("coauthor_openalex_id,coauthor_name,institution_names,publication_year,openalex_work_id")
+      .eq("researcher_id", researcherId)
+      .order("publication_year", { ascending: true, nullsFirst: false })
+      .range(from, from + pageSize - 1);
+    if (error) {
+      console.warn("Could not load researcher collaboration timeline", error);
+      return { years: [], matched_imperial_coauthors: 0, total_coauthors: 0 };
+    }
+    const page = (data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const usableRows = rows.filter(row => {
+    const coauthorId = openAlexAuthorKey(row.coauthor_openalex_id);
+    const year = Number(row.publication_year || 0);
+    return coauthorId && coauthorId !== focalOpenAlexId && year >= 1970 && year <= new Date().getFullYear() + 1;
+  });
+  const coauthorIds = [...new Set(usableRows.map(row => openAlexAuthorKey(row.coauthor_openalex_id)))];
+  const profileByOpenAlexId = new Map<string, Record<string, unknown>>();
+  const chunkSize = 120;
+  const coauthorChunks: string[][] = [];
+  for (let offset = 0; offset < coauthorIds.length; offset += chunkSize) {
+    coauthorChunks.push(coauthorIds.slice(offset, offset + chunkSize));
+  }
+
+  for (let offset = 0; offset < coauthorChunks.length; offset += 5) {
+    const results = await Promise.all(coauthorChunks.slice(offset, offset + 5).map(async chunk => {
+      const variants = [...chunk, ...chunk.map(id => `https://openalex.org/${id}`)];
+      return supabase
+        .from("researchers")
+        .select("id,openalex_id,full_name,position_name,position,affiliation,faculty")
+        .in("openalex_id", variants);
+    }));
+    for (const { data, error } of results) {
+      if (error) {
+        console.warn("Could not match collaboration timeline co-authors", error);
+        continue;
+      }
+      for (const profile of (data || []) as Record<string, unknown>[]) {
+        const key = openAlexAuthorKey(profile.openalex_id);
+        if (key && !profileByOpenAlexId.has(key)) profileByOpenAlexId.set(key, profile);
+      }
+    }
+  }
+
+  const focalDepartment = collaborationGroupKey(researcher.affiliation || researcher.research);
+  const focalFaculty = collaborationGroupKey(researcher.faculty);
+  const rowsByYear = new Map<number, Record<string, unknown>[]>();
+  for (const row of usableRows) {
+    const year = Number(row.publication_year);
+    const bucket = rowsByYear.get(year) || [];
+    bucket.push(row);
+    rowsByYear.set(year, bucket);
+  }
+
+  const seenCoauthors = new Set<string>();
+  const years = [...rowsByYear.entries()]
+    .sort(([firstYear], [secondYear]) => firstYear - secondYear)
+    .map(([year, yearRows]) => {
+      const activeCoauthors = new Set<string>();
+      const imperialCoauthors = new Set<string>();
+      const crossDepartment = new Set<string>();
+      const crossFaculty = new Set<string>();
+      const otherInstitutions = new Set<string>();
+      const sharedPapers = new Set<string>();
+      const collaboratorCounts = new Map<string, number>();
+
+      for (const row of yearRows) {
+        const coauthorId = openAlexAuthorKey(row.coauthor_openalex_id);
+        if (!coauthorId) continue;
+        activeCoauthors.add(coauthorId);
+        sharedPapers.add(String(row.openalex_work_id || `${coauthorId}:${year}`));
+        collaboratorCounts.set(coauthorId, (collaboratorCounts.get(coauthorId) || 0) + 1);
+
+        const profile = profileByOpenAlexId.get(coauthorId);
+        if (profile) {
+          imperialCoauthors.add(coauthorId);
+          const department = collaborationGroupKey(profile.affiliation);
+          const faculty = collaborationGroupKey(profile.faculty);
+          if (focalDepartment && department && department !== focalDepartment) crossDepartment.add(coauthorId);
+          if (focalFaculty && faculty && faculty !== focalFaculty) crossFaculty.add(coauthorId);
+        } else {
+          const institutions = Array.isArray(row.institution_names) ? row.institution_names.map(String) : [];
+          const hasImperialAffiliation = institutions.some(name => /imperial college/i.test(name));
+          if (!hasImperialAffiliation) otherInstitutions.add(coauthorId);
+        }
+      }
+
+      const newCoauthors = [...activeCoauthors].filter(id => !seenCoauthors.has(id));
+      activeCoauthors.forEach(id => seenCoauthors.add(id));
+
+      const topCrossDepartment = [...crossDepartment]
+        .map(openalexId => {
+          const profile = profileByOpenAlexId.get(openalexId) || {};
+          return {
+            researcher_id: profile.id || null,
+            openalex_id: openalexId,
+            name: profile.full_name || yearRows.find(row => openAlexAuthorKey(row.coauthor_openalex_id) === openalexId)?.coauthor_name || "Imperial researcher",
+            department: profile.affiliation || "",
+            faculty: profile.faculty || "",
+            shared_papers: collaboratorCounts.get(openalexId) || 0,
+          };
+        })
+        .sort((first, second) => second.shared_papers - first.shared_papers)
+        .slice(0, 6);
+
+      return {
+        year,
+        active_coauthors: activeCoauthors.size,
+        new_coauthors: newCoauthors.length,
+        imperial_coauthors: imperialCoauthors.size,
+        cross_department: crossDepartment.size,
+        cross_faculty: crossFaculty.size,
+        other_institutions: otherInstitutions.size,
+        shared_papers: sharedPapers.size,
+        top_cross_department: topCrossDepartment,
+      };
+    });
+
+  return {
+    years,
+    matched_imperial_coauthors: profileByOpenAlexId.size,
+    total_coauthors: coauthorIds.length,
+  };
+}
+
 async function summarizeResearcherProfileWithLlm(
   openAiKey: string,
   model: string,
@@ -3052,6 +3545,8 @@ async function researcherProfileById(
 
   const papers = await fetchAllPapersForResearcher(supabase, researcherId);
   const coauthors = await fetchTopCoauthorsForResearcher(supabase, researcherId, 12);
+  const collaborationTimeline = await fetchStoredCollaborationTimeline(supabase, researcherId)
+    || await fetchCollaborationTimelineForResearcher(supabase, researcher);
   const profileSummary = await summarizeResearcherProfileWithLlm(openAiKey, model, researcher, papers);
 
   return {
@@ -3081,6 +3576,7 @@ async function researcherProfileById(
       doi: paper.doi,
     })),
     coauthors,
+    collaboration_timeline: collaborationTimeline,
   };
 }
 

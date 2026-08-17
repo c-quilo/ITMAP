@@ -1,5 +1,6 @@
 export interface Publication {
   title: string;
+  abstract?: string;
   journal: string;
   year: number;
   citations: number;

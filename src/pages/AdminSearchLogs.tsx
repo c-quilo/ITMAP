@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertCircle, Download, KeyRound, Loader2, RefreshCw, Search } from "lucide-react";
 import { getSearchAuditLogs, type SearchAuditLog } from "@/lib/researcherSearch";
+import ThemeToggle from "@/components/ThemeToggle";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
 const ADMIN_PASSWORD_STORAGE_KEY = "itmap.adminSearchLogsPassword.v1";
@@ -169,20 +170,23 @@ export default function AdminSearchLogs() {
               <p className="text-xs text-muted-foreground">Search activity admin</p>
             </div>
           </div>
-          {authenticated && (
-            <button
-              onClick={() => {
-                setAuthenticated(false);
-                setPassword("");
-                setLogs([]);
-                setCount(0);
-                window.sessionStorage.removeItem(ADMIN_PASSWORD_STORAGE_KEY);
-              }}
-              className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted"
-            >
-              Lock
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            {authenticated && (
+              <button
+                onClick={() => {
+                  setAuthenticated(false);
+                  setPassword("");
+                  setLogs([]);
+                  setCount(0);
+                  window.sessionStorage.removeItem(ADMIN_PASSWORD_STORAGE_KEY);
+                }}
+                className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted"
+              >
+                Lock
+              </button>
+            )}
+          </div>
         </div>
       </header>
 

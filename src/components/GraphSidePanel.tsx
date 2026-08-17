@@ -49,10 +49,10 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
 
         {/* Relevance + Role */}
         <div className="flex items-center gap-3 mb-4">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
-            node.relevanceScore >= 80 ? "bg-green-50 text-green-700 border border-green-200" :
-            node.relevanceScore >= 60 ? "bg-amber-50 text-amber-700 border border-amber-200" :
-            "bg-red-50 text-red-700 border border-red-200"
+          <span className={`relevance-badge ${
+            node.relevanceScore >= 80 ? "relevance-high" :
+            node.relevanceScore >= 60 ? "relevance-medium" :
+            "relevance-low"
           }`}>
             <span className={`inline-block h-2 w-2 rounded-full ${
               node.relevanceScore >= 80 ? "bg-relevance-high" : node.relevanceScore >= 60 ? "bg-relevance-medium" : "bg-relevance-low"

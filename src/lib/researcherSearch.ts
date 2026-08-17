@@ -83,6 +83,34 @@ export interface ResearcherProfile {
   paperCount: number;
   papers: Publication[];
   coauthors: ResearcherCoauthor[];
+  collaborationTimeline: CollaborationTimeline;
+}
+
+export interface CollaborationTimelineCollaborator {
+  researcherId?: string | null;
+  openalexId: string;
+  name: string;
+  department: string;
+  faculty: string;
+  sharedPapers: number;
+}
+
+export interface CollaborationTimelinePoint {
+  year: number;
+  activeCoauthors: number;
+  newCoauthors: number;
+  imperialCoauthors: number;
+  crossDepartment: number;
+  crossFaculty: number;
+  otherInstitutions: number;
+  sharedPapers: number;
+  topCrossDepartment: CollaborationTimelineCollaborator[];
+}
+
+export interface CollaborationTimeline {
+  years: CollaborationTimelinePoint[];
+  matchedImperialCoauthors: number;
+  totalCoauthors: number;
 }
 
 export interface ResearcherCoauthor {
@@ -229,6 +257,7 @@ function toPublication(pub: SupabasePublication): Publication {
 
   return {
     title: pub.title,
+    abstract: pub.abstract || undefined,
     journal: pub.journal || "OpenAlex",
     year: pub.year || 0,
     citations: pub.citations || 0,
@@ -469,6 +498,7 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
       paperCount: fallback.publications.length,
       papers: fallback.publications,
       coauthors: [],
+      collaborationTimeline: { years: [], matchedImperialCoauthors: 0, totalCoauthors: 0 },
     };
   }
 
@@ -486,6 +516,8 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
   const row = data?.researcher || {};
   const papers = Array.isArray(data?.papers) ? data.papers : [];
   const coauthors = Array.isArray(data?.coauthors) ? data.coauthors : [];
+  const collaborationTimeline = data?.collaboration_timeline || {};
+  const collaborationYears = Array.isArray(collaborationTimeline?.years) ? collaborationTimeline.years : [];
   const profile = String(row.bio_about || "");
   const research = String(row.research || "");
 
@@ -526,6 +558,33 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
           : [],
       }))
       .filter((coauthor: { openalexId: string; name: string }) => coauthor.openalexId && coauthor.name),
+    collaborationTimeline: {
+      years: collaborationYears
+        .map((point: Record<string, unknown>) => ({
+          year: Number(point.year || 0),
+          activeCoauthors: Number(point.active_coauthors || 0),
+          newCoauthors: Number(point.new_coauthors || 0),
+          imperialCoauthors: Number(point.imperial_coauthors || 0),
+          crossDepartment: Number(point.cross_department || 0),
+          crossFaculty: Number(point.cross_faculty || 0),
+          otherInstitutions: Number(point.other_institutions || 0),
+          sharedPapers: Number(point.shared_papers || 0),
+          topCrossDepartment: Array.isArray(point.top_cross_department)
+            ? point.top_cross_department.map((collaborator: Record<string, unknown>) => ({
+              researcherId: collaborator.researcher_id ? String(collaborator.researcher_id) : null,
+              openalexId: String(collaborator.openalex_id || ""),
+              name: String(collaborator.name || "Imperial researcher"),
+              department: normaliseDepartment(String(collaborator.department || "")),
+              faculty: String(collaborator.faculty || ""),
+              sharedPapers: Number(collaborator.shared_papers || 0),
+            }))
+            : [],
+        }))
+        .filter((point: { year: number }) => point.year >= 1900)
+        .sort((first: { year: number }, second: { year: number }) => first.year - second.year),
+      matchedImperialCoauthors: Number(collaborationTimeline?.matched_imperial_coauthors || 0),
+      totalCoauthors: Number(collaborationTimeline?.total_coauthors || 0),
+    },
   };
 }
 

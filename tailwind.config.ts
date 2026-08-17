@@ -14,8 +14,8 @@ export default {
     },
     extend: {
       fontFamily: {
-        brand: ['"Space Grotesk"', 'system-ui', 'sans-serif'],
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        brand: ['"Imperial Sans Display"', 'system-ui', 'sans-serif'],
+        sans: ['"Imperial Sans Display"', 'system-ui', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

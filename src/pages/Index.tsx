@@ -3,6 +3,9 @@ import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Databa
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import GraphVisualization from "@/components/GraphVisualization";
+import ThemeToggle from "@/components/ThemeToggle";
+import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
+import CollaborationTimeline from "@/components/CollaborationTimeline";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
 import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -37,6 +40,7 @@ const SAVED_SEARCHES_KEY = "itmap.savedSearches.v1";
 const SAVED_RESEARCHERS_KEY = "itmap.savedResearchers.v1";
 const SCHOOL_MISSION_CACHE_KEY = "itmap.schoolMissionMatches.v1";
 const POOL_SUMMARY_CACHE_KEY = "itmap.researchPoolSummaries.v1";
+const INTRO_SEEN_KEY = "itmap.introSeen.v1";
 const MATCH_FILTERS = new Set(["Strong Match", "Moderate", "Weak"]);
 const SCHOOL_MISSION_THEME_PREFIX = "Theme: ";
 const SCHOOL_MISSION_PREFIX = "Mission: ";
@@ -811,7 +815,7 @@ function ResearcherProfileView({
   const papers = profile.papers.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
+    <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 items-start gap-5 overflow-y-auto p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
       <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
@@ -877,6 +881,8 @@ function ResearcherProfileView({
           </div>
         </div>
       </div>
+      <PublicationThemeTimeline papers={profile.papers} />
+      <CollaborationTimeline timeline={profile.collaborationTimeline} />
       <aside className="space-y-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="flex items-start gap-3">
@@ -1062,6 +1068,29 @@ export default function Index() {
   const [isQuickSearching, setIsQuickSearching] = useState(false);
   const [quickSearchError, setQuickSearchError] = useState("");
   const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
+  const [showIntro, setShowIntro] = useState(() => {
+    try {
+      return window.sessionStorage.getItem(INTRO_SEEN_KEY) !== "true";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    if (!showIntro) return;
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timer = window.setTimeout(() => {
+      setShowIntro(false);
+      try {
+        window.sessionStorage.setItem(INTRO_SEEN_KEY, "true");
+      } catch {
+        // Session storage can be unavailable in restricted browser contexts.
+      }
+    }, reducedMotion ? 450 : 4300);
+
+    return () => window.clearTimeout(timer);
+  }, [showIntro]);
 
   useEffect(() => {
     try {
@@ -1867,6 +1896,24 @@ export default function Index() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
+      {showIntro && (
+        <div className="itmap-intro" aria-label="ITMAP introduction" aria-live="polite">
+          <div className="itmap-intro-glow" aria-hidden="true" />
+          <img src={scsSwoosh} alt="" className="itmap-intro-swoosh" />
+          <div className="itmap-intro-wordmark" aria-label="ITMAP">
+            {"ITMAP".split("").map((letter, index) => (
+              <span key={letter + index} className="itmap-intro-letter" aria-hidden="true">
+                {letter}
+              </span>
+            ))}
+          </div>
+          <img
+            src={imperialLogo}
+            alt="Imperial College London - School of Convergence Science"
+            className="itmap-intro-imperial"
+          />
+        </div>
+      )}
       {isRewritingMission && (
         <MissionRewriteOverlay seconds={rewriteSeconds} onCancel={cancelSearch} />
       )}
@@ -1980,23 +2027,23 @@ export default function Index() {
         </DialogContent>
       </Dialog>
       {/* Header */}
-      <header className="h-24 border-b border-border bg-card flex items-center justify-between px-6 shrink-0 relative overflow-hidden">
+      <header className="h-24 border-b border-border bg-card flex items-center justify-between gap-4 px-6 shrink-0 relative overflow-hidden">
         {/* Swoosh background */}
         <img
           src={scsSwoosh}
           alt=""
-          className="absolute inset-0 w-full h-full object-cover scale-[2] translate-y-[30%] brightness-0 opacity-[0.18] pointer-events-none"
+          className="itmap-thematic-swoosh absolute inset-0 h-full w-full scale-[2] translate-y-[30%] object-cover opacity-[0.18] pointer-events-none dark:opacity-[0.12]"
         />
-        <div className="flex items-center gap-4 relative z-10">
+        <div className="relative z-10 flex shrink-0 items-center gap-4">
           <img
             src={imperialLogo}
             alt="Imperial College London - School of Convergence Science"
-            className="h-8 brightness-0"
+            className={`h-8 brightness-0 transition-opacity duration-200 dark:invert ${showIntro ? "opacity-0" : "opacity-100"}`}
           />
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-1 bg-secondary rounded-lg p-0.5 relative z-10">
+        <div className="itmap-header-tabs relative z-10 flex min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5">
           <button
             onClick={() => setTabMode("quick")}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
@@ -2082,9 +2129,10 @@ export default function Index() {
           </button>
         </div>
 
-        <h1 className="font-brand text-xl tracking-[0.15em] font-semibold text-foreground relative z-10">
-          ITMAP
-        </h1>
+        <div className={`relative z-10 flex shrink-0 items-center gap-2 transition-opacity duration-200 ${showIntro ? "opacity-0" : "opacity-100"}`}>
+          <ThemeToggle />
+          <h1 className="font-itmap text-xl font-bold text-foreground">ITMAP</h1>
+        </div>
       </header>
 
       {/* Body */}
@@ -2174,7 +2222,7 @@ export default function Index() {
                   <img
                     src={scsSwoosh}
                     alt=""
-                    className="h-auto w-full max-w-3xl opacity-20"
+                    className="itmap-thematic-swoosh h-auto w-full max-w-3xl opacity-20"
                   />
                 </div>
               )}
@@ -2303,7 +2351,7 @@ export default function Index() {
                 <img
                   src={scsSwoosh}
                   alt=""
-                  className="h-auto w-full max-w-3xl opacity-20"
+                  className="itmap-thematic-swoosh h-auto w-full max-w-3xl opacity-20"
                 />
               </div>
             )}

@@ -19,7 +19,7 @@ const NODE_SIZES: Record<string, number> = {
   phd: 10,
 };
 
-const GRAPH_FONT = '"General Sans", "Inter", system-ui, sans-serif';
+const GRAPH_FONT = '"Imperial Sans Display", system-ui, sans-serif';
 const MIN_GRAPH_SCALE = 0.3;
 const MAX_GRAPH_SCALE = 3;
 
@@ -569,7 +569,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
   };
 
   return (
-    <div className="graph-view flex-1 flex flex-col overflow-hidden relative bg-[hsl(150,12%,97%)]">
+    <div className="graph-view relative flex flex-1 flex-col overflow-hidden bg-background">
       {/* Graph Controls */}
       <div className="z-10 flex items-center justify-between gap-4 border-b border-border/70 bg-card/90 px-6 py-3 backdrop-blur-xl">
         <div className="flex items-center gap-3">
@@ -667,7 +667,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                 x={cluster.cx}
                 y={cluster.cy - cluster.ry - 10}
                 textAnchor="middle"
-                fill="hsl(151, 8%, 39%)"
+                className="fill-muted-foreground"
                 fontSize="7"
                 fontFamily={GRAPH_FONT}
                 fontWeight="500"
@@ -730,7 +730,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
           {/* Nodes */}
           {nodes.map(node => {
             const size = NODE_SIZES[node.role] || 12;
-            const color = node.role === "mission" ? "#3844a8" : clusterNodeColors.get(node.cluster) ?? "#647a75";
+            const color = node.role === "mission" ? "hsl(var(--primary))" : clusterNodeColors.get(node.cluster) ?? "#647a75";
             const cluster = clustersById.get(node.cluster);
             const label = getNodeLabelPlacement(node, cluster, size);
             const isSelected = selectedNode?.id === node.id;
@@ -788,11 +788,11 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
                     {/* Name label */}
                     {(isFocused || isConnected || !focusedNode) && (
                       <>
-                        <text x={label.x} y={label.y} textAnchor={label.anchor} fill="hsl(153, 18%, 18%)" fontSize="5" fontFamily={GRAPH_FONT} fontWeight="500">
+                        <text x={label.x} y={label.y} textAnchor={label.anchor} className="fill-foreground" fontSize="5" fontFamily={GRAPH_FONT} fontWeight="500">
                           {shortNameLabel(node.label)}
                         </text>
                         {(isSelected || hoveredNode?.id === node.id) && (
-                          <text x={label.x} y={label.roleY} textAnchor={label.anchor} fill="hsl(151, 7%, 45%)" fontSize="3.8" fontFamily={GRAPH_FONT}>
+                          <text x={label.x} y={label.roleY} textAnchor={label.anchor} className="fill-muted-foreground" fontSize="3.8" fontFamily={GRAPH_FONT}>
                             {node.networkRole}
                           </text>
                         )}

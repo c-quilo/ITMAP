@@ -1,5 +1,42 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
-@import url('https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap');
+@font-face {
+  font-family: 'Imperial Sans Display';
+  src: url('./assets/fonts/ImperialSansDisplay-Extralight.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 200;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Imperial Sans Display';
+  src: url('./assets/fonts/ImperialSansDisplay-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Imperial Sans Display';
+  src: url('./assets/fonts/ImperialSansDisplay-Medium.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Imperial Sans Display';
+  src: url('./assets/fonts/ImperialSansDisplay-Semibold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Imperial Sans Display';
+  src: url('./assets/fonts/ImperialSansDisplay-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -17,8 +54,8 @@
     --popover: 0 0% 100%;
     --popover-foreground: 260 25% 12%;
 
-    /* Imperial Purple */
-    --primary: 268 65% 50%;
+    /* Light-mode accent: #7b68ee */
+    --primary: 248.51 79.76% 67.06%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 260 20% 95%;
@@ -27,22 +64,22 @@
     --muted: 260 15% 93%;
     --muted-foreground: 260 10% 48%;
 
-    --accent: 268 60% 94%;
-    --accent-foreground: 268 65% 40%;
+    --accent: 249 80% 95%;
+    --accent-foreground: 249 55% 44%;
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
     --border: 260 15% 89%;
     --input: 260 15% 89%;
-    --ring: 268 65% 50%;
+    --ring: 248.51 79.76% 67.06%;
 
     --radius: 0.5rem;
 
     /* Custom tokens */
-    --imperial-purple: 268 65% 50%;
-    --imperial-purple-light: 268 60% 94%;
-    --imperial-purple-dark: 268 65% 35%;
+    --imperial-purple: 248.51 79.76% 67.06%;
+    --imperial-purple-light: 249 80% 95%;
+    --imperial-purple-dark: 249 55% 44%;
     --imperial-teal: 180 42% 42%;
     --imperial-gold: 42 78% 52%;
 
@@ -50,21 +87,91 @@
     --relevance-medium: 38 92% 50%;
     --relevance-low: 0 72% 51%;
 
-    --graph-cluster-1: 268 60% 65%;
+    --graph-cluster-1: 248.51 79.76% 67.06%;
     --graph-cluster-2: 200 60% 60%;
     --graph-cluster-3: 160 50% 50%;
     --graph-cluster-4: 140 50% 50%;
     --graph-cluster-5: 30 60% 55%;
 
+    --publication-ai: 248.51 79.76% 67.06%;
+    --publication-climate: 174 62% 36%;
+    --publication-health: 342 64% 52%;
+    --publication-energy: 40 84% 48%;
+    --publication-materials: 24 74% 52%;
+    --publication-engineering: 204 70% 47%;
+    --publication-policy: 335 44% 50%;
+    --publication-science: 214 38% 48%;
+
     --sidebar-width: 420px;
     --sidebar-background: 0 0% 100%;
     --sidebar-foreground: 260 25% 12%;
-    --sidebar-primary: 268 65% 50%;
+    --sidebar-primary: 248.51 79.76% 67.06%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 268 60% 94%;
-    --sidebar-accent-foreground: 268 65% 40%;
+    --sidebar-accent: 249 80% 95%;
+    --sidebar-accent-foreground: 249 55% 44%;
     --sidebar-border: 260 15% 89%;
-    --sidebar-ring: 268 65% 50%;
+    --sidebar-ring: 248.51 79.76% 67.06%;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    /* Dark-mode background: #232333; accent: #00ff7f */
+    --background: 240 18.60% 16.86%;
+    --foreground: 250 15% 92%;
+
+    --card: 240 16% 13%;
+    --card-foreground: 250 15% 92%;
+
+    --popover: 240 16% 13%;
+    --popover-foreground: 250 15% 92%;
+
+    --primary: 149.88 100% 50%;
+    --primary-foreground: 240 19% 10%;
+
+    --secondary: 240 15% 22%;
+    --secondary-foreground: 250 14% 90%;
+
+    --muted: 240 13% 23%;
+    --muted-foreground: 250 8% 66%;
+
+    --accent: 150 48% 18%;
+    --accent-foreground: 150 100% 72%;
+
+    --destructive: 0 68% 58%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 12% 29%;
+    --input: 240 12% 29%;
+    --ring: 149.88 100% 50%;
+
+    --imperial-purple: 149.88 100% 50%;
+    --imperial-purple-light: 150 48% 18%;
+    --imperial-purple-dark: 150 100% 72%;
+    --imperial-teal: 180 48% 58%;
+    --imperial-gold: 42 82% 62%;
+
+    --relevance-high: 142 62% 55%;
+    --relevance-medium: 42 88% 62%;
+    --relevance-low: 0 72% 64%;
+
+    --publication-ai: 149.88 100% 50%;
+    --publication-climate: 174 68% 56%;
+    --publication-health: 342 76% 68%;
+    --publication-energy: 42 88% 62%;
+    --publication-materials: 24 82% 66%;
+    --publication-engineering: 204 82% 68%;
+    --publication-policy: 335 66% 70%;
+    --publication-science: 214 62% 70%;
+
+    --sidebar-background: 240 16% 13%;
+    --sidebar-foreground: 250 15% 92%;
+    --sidebar-primary: 149.88 100% 50%;
+    --sidebar-primary-foreground: 240 19% 10%;
+    --sidebar-accent: 150 48% 18%;
+    --sidebar-accent-foreground: 150 100% 72%;
+    --sidebar-border: 240 12% 29%;
+    --sidebar-ring: 149.88 100% 50%;
   }
 }
 
@@ -75,19 +182,239 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
   }
 
   h1, h2, h3, h4 {
-    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
   }
 }
 
 @layer components {
   .font-brand {
-    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
     letter-spacing: 0.12em;
     font-weight: 600;
+  }
+
+  .font-itmap {
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
+    letter-spacing: 0;
+    font-weight: 700;
+  }
+
+  .itmap-header-tabs {
+    scrollbar-width: none;
+  }
+
+  .itmap-header-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .itmap-header-tabs > button {
+    flex-shrink: 0;
+  }
+
+  .itmap-intro {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    overflow: hidden;
+    background: hsl(var(--background));
+    animation: itmap-intro-dismiss 4.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .itmap-intro-glow {
+    position: absolute;
+    inset: 0;
+    background: hsl(var(--card));
+    animation: itmap-intro-glow 3.8s ease-out both;
+  }
+
+  .itmap-intro-swoosh {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(1200px, 118vw);
+    max-width: none;
+    transform: translate(-50%, -38%);
+    filter: brightness(0) saturate(100%) invert(45%) sepia(76%) saturate(2739%) hue-rotate(222deg) brightness(99%) contrast(89%);
+    opacity: 0;
+    pointer-events: none;
+    animation: itmap-intro-swoosh 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+  }
+
+  .itmap-intro-wordmark {
+    position: absolute;
+    right: 50%;
+    top: 36%;
+    z-index: 2;
+    display: flex;
+    gap: 0.04em;
+    overflow: hidden;
+    color: hsl(var(--foreground));
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
+    font-size: clamp(4.75rem, 12vw, 9.5rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+    white-space: nowrap;
+    transform: translate(50%, -50%);
+    transform-origin: right center;
+    animation: itmap-intro-wordmark 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+  }
+
+  .itmap-intro-letter {
+    display: inline-block;
+    transform: translateY(125%);
+    animation: itmap-intro-letter 2.1s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .itmap-intro-letter:nth-child(2) { animation-delay: 0.08s; }
+  .itmap-intro-letter:nth-child(3) { animation-delay: 0.16s; }
+  .itmap-intro-letter:nth-child(4) { animation-delay: 0.24s; }
+  .itmap-intro-letter:nth-child(5) { animation-delay: 0.32s; }
+
+  @keyframes itmap-intro-letter {
+    0%, 12% {
+      opacity: 0;
+      transform: translateY(125%);
+    }
+    55%, 100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .itmap-intro-imperial {
+    position: absolute;
+    left: 50%;
+    top: 60%;
+    z-index: 2;
+    width: min(68vw, 680px);
+    height: auto;
+    filter: brightness(0);
+    transform: translate(-50%, -50%);
+    transform-origin: left center;
+    animation: itmap-intro-imperial 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+  }
+
+  .dark .itmap-intro-imperial {
+    filter: brightness(0) invert(1);
+  }
+
+  .dark .itmap-intro-swoosh,
+  .dark .itmap-thematic-swoosh {
+    filter: brightness(0) saturate(100%) invert(77%) sepia(95%) saturate(1568%) hue-rotate(89deg) brightness(103%) contrast(104%);
+  }
+
+  .itmap-thematic-swoosh {
+    filter: brightness(0) saturate(100%) invert(45%) sepia(76%) saturate(2739%) hue-rotate(222deg) brightness(99%) contrast(89%);
+  }
+
+  @keyframes itmap-intro-wordmark {
+    0%, 72% {
+      opacity: 1;
+      right: 50%;
+      top: 36%;
+      font-size: clamp(4.75rem, 12vw, 9.5rem);
+      transform: translate(50%, -50%) scale(1);
+    }
+    100% {
+      opacity: 1;
+      right: 1.5rem;
+      top: 3rem;
+      font-size: 1.25rem;
+      transform: translate(0, -50%) scale(1);
+    }
+  }
+
+  @keyframes itmap-intro-imperial {
+    0%, 30% {
+      opacity: 0;
+      clip-path: inset(0 100% 0 0);
+      left: 50%;
+      top: 60%;
+      width: min(68vw, 680px);
+      transform: translate(-50%, -50%) scale(1);
+    }
+    54%, 60% {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      left: 50%;
+      top: 60%;
+      width: min(68vw, 680px);
+      transform: translate(-50%, -50%) scale(1);
+    }
+    74% {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      left: 50%;
+      top: 52%;
+      width: min(48vw, 480px);
+      transform: translate(-50%, -50%) scale(1);
+    }
+    100% {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      left: 1.5rem;
+      top: 3rem;
+      width: 152px;
+      transform: translate(0, -50%) scale(1);
+    }
+  }
+
+  @keyframes itmap-intro-swoosh {
+    0%, 18% {
+      opacity: 0;
+      transform: translate(-50%, -38%) scaleY(0.35);
+    }
+    52%, 72% {
+      opacity: 0.15;
+      transform: translate(-50%, -38%) scaleY(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(-47%, -45%) scaleY(0.72);
+    }
+  }
+
+  @keyframes itmap-intro-glow {
+    0% { opacity: 0; }
+    20%, 72% { opacity: 1; }
+    100% { opacity: 0.55; }
+  }
+
+  @keyframes itmap-intro-dismiss {
+    0%, 88% { opacity: 1; visibility: visible; }
+    100% { opacity: 0; visibility: hidden; }
+  }
+
+  @media (max-width: 900px) {
+    .itmap-intro-wordmark {
+      font-size: clamp(4rem, 18vw, 7rem);
+    }
+
+    .itmap-intro-imperial {
+      width: min(82vw, 560px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .itmap-intro,
+    .itmap-intro-glow,
+    .itmap-intro-swoosh,
+    .itmap-intro-wordmark,
+    .itmap-intro-imperial {
+      animation-duration: 0.45s;
+      animation-timing-function: ease-out;
+    }
+
+    .itmap-intro-wordmark,
+    .itmap-intro-imperial,
+    .itmap-intro-swoosh {
+      display: none;
+    }
   }
 
   .search-box-semantic {
@@ -132,22 +459,34 @@
     @apply bg-red-50 text-red-700 border border-red-200;
   }
 
+  .dark .relevance-high {
+    @apply border-green-800 bg-green-950/50 text-green-300;
+  }
+
+  .dark .relevance-medium {
+    @apply border-amber-800 bg-amber-950/50 text-amber-300;
+  }
+
+  .dark .relevance-low {
+    @apply border-red-800 bg-red-950/50 text-red-300;
+  }
+
   .section-label {
     @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
   /* Graph styles */
   .graph-view {
-    font-family: 'General Sans', 'Inter', system-ui, sans-serif;
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
   }
 
   .graph-view .font-brand {
-    font-family: 'General Sans', 'Inter', system-ui, sans-serif;
+    font-family: 'Imperial Sans Display', system-ui, sans-serif;
     letter-spacing: 0;
   }
 
   .graph-canvas {
-    background: hsl(150 12% 97%);
+    background: hsl(var(--background));
   }
 
   .graph-node {
