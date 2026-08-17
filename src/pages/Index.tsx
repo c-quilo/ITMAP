@@ -556,17 +556,17 @@ function QuickSearchPanel({
 
   const renderSuggestion = (suggestion: QuickSearchSuggestion) => (
     <div key={suggestion.researcherId} className="rounded-lg border border-border bg-background px-3 py-3">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-foreground">{suggestion.name}</p>
           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{suggestion.title}</p>
           <p className="mt-1 truncate text-[11px] text-muted-foreground">{suggestion.department}</p>
         </div>
-        <div className="flex shrink-0 flex-col gap-1.5">
+        <div className="flex shrink-0 flex-row gap-1.5 sm:flex-col">
           <button
             type="button"
             onClick={() => onOpenProfile(suggestion)}
-            className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
+            className="inline-flex min-h-9 items-center justify-center rounded-md border border-border px-3 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
           >
             Open profile
           </button>
@@ -575,7 +575,7 @@ function QuickSearchPanel({
               href={suggestion.profileUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center justify-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              className="inline-flex min-h-9 items-center justify-center gap-1 rounded-md border border-border px-3 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             >
               Imperial page
               <ExternalLink className="h-3 w-3" />
@@ -590,7 +590,7 @@ function QuickSearchPanel({
   );
 
   return (
-    <section className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-5 shadow-sm">
+    <section className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4 shadow-sm sm:p-5">
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
           <MessageSquareText className="h-5 w-5 text-primary" />
@@ -626,7 +626,7 @@ function QuickSearchPanel({
                 }
               }}
               placeholder="Ask a quick question or type a topic..."
-              className="h-11 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+              className="h-11 min-h-11 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20 sm:flex-1"
             />
             <button
               type="button"
@@ -645,7 +645,7 @@ function QuickSearchPanel({
                 key={example}
                 type="button"
                 onClick={() => onQueryChange(example)}
-                className="rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                className="min-h-9 rounded-full bg-secondary px-3 py-1.5 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
               >
                 {example}
               </button>
@@ -742,7 +742,7 @@ function HelpAboutPanel() {
 
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background">
-      <div className="mx-auto max-w-5xl space-y-5 p-6">
+      <div className="mx-auto max-w-5xl space-y-4 p-3 sm:space-y-5 sm:p-6">
         <section className="rounded-lg border border-primary/15 bg-card p-5">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
@@ -815,7 +815,7 @@ function ResearcherProfileView({
   const papers = profile.papers.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   return (
-    <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 items-start gap-5 overflow-y-auto p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
+    <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 items-start gap-3 overflow-y-auto p-3 sm:gap-5 sm:p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
       <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
@@ -837,7 +837,7 @@ function ResearcherProfileView({
                   }
                 }}
                 placeholder="e.g. What does their work say about AI for healthcare?"
-                className="h-10 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="h-10 min-h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20 sm:flex-1"
               />
               <button
                 type="button"
@@ -972,7 +972,7 @@ function ResearcherProfileView({
                 Showing {papers.length === 0 ? 0 : safePage * pageSize + 1}-{Math.min(profile.papers.length, safePage * pageSize + papers.length)} of {profile.papers.length.toLocaleString()} papers
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => onPageChange(Math.max(0, safePage - 1))}
                 disabled={safePage === 0}
@@ -1895,7 +1895,7 @@ export default function Index() {
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-background">
       {showIntro && (
         <div className="itmap-intro" aria-label="ITMAP introduction" aria-live="polite">
           <div className="itmap-intro-glow" aria-hidden="true" />
@@ -2027,26 +2027,26 @@ export default function Index() {
         </DialogContent>
       </Dialog>
       {/* Header */}
-      <header className="h-24 border-b border-border bg-card flex items-center justify-between gap-4 px-6 shrink-0 relative overflow-hidden">
+      <header className="relative flex min-h-[104px] shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 overflow-clip border-b border-border bg-card px-3 py-3 sm:px-4 lg:h-24 lg:min-h-24 lg:flex-nowrap lg:gap-4 lg:px-6 lg:py-0">
         {/* Swoosh background */}
         <img
           src={scsSwoosh}
           alt=""
           className="itmap-thematic-swoosh absolute inset-0 h-full w-full scale-[2] translate-y-[30%] object-cover opacity-[0.18] pointer-events-none dark:opacity-[0.12]"
         />
-        <div className="relative z-10 flex shrink-0 items-center gap-4">
+        <div className="relative z-10 order-1 flex shrink-0 items-center gap-4 lg:order-none">
           <img
             src={imperialLogo}
             alt="Imperial College London - School of Convergence Science"
-            className={`h-8 brightness-0 transition-opacity duration-200 dark:invert ${showIntro ? "opacity-0" : "opacity-100"}`}
+            className={`h-7 w-auto max-w-[190px] brightness-0 transition-opacity duration-200 dark:invert sm:h-8 sm:max-w-none ${showIntro ? "opacity-0" : "opacity-100"}`}
           />
         </div>
 
         {/* Tab Navigation */}
-        <div className="itmap-header-tabs relative z-10 flex min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5">
+        <nav aria-label="Main navigation" className="itmap-header-tabs relative z-10 order-3 flex w-full min-w-0 flex-none items-center justify-start gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5 lg:order-none lg:w-auto lg:flex-1 lg:justify-center">
           <button
             onClick={() => setTabMode("quick")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "quick"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -2057,7 +2057,7 @@ export default function Index() {
           </button>
           <button
             onClick={() => setTabMode("search")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "search"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -2070,7 +2070,7 @@ export default function Index() {
             type="button"
             disabled
             title="Deep Search is coming soon"
-            className="flex cursor-not-allowed items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium text-muted-foreground/70 opacity-75"
+            className="hidden min-h-9 cursor-not-allowed items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium text-muted-foreground/70 opacity-75 lg:flex"
           >
             <Brain className="h-3.5 w-3.5" />
             Deep Search
@@ -2080,18 +2080,19 @@ export default function Index() {
           </button>
           <button
             onClick={() => setTabMode("profile")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "profile"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
             <UserRound className="h-3.5 w-3.5" />
-            Researcher Profile
+            <span className="lg:hidden">Profile</span>
+            <span className="hidden lg:inline">Researcher Profile</span>
           </button>
           <button
             onClick={() => setTabMode("graph")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "graph"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -2102,7 +2103,7 @@ export default function Index() {
           </button>
           <button
             onClick={() => setTabMode("saved")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "saved"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -2118,18 +2119,19 @@ export default function Index() {
           </button>
           <button
             onClick={() => setTabMode("help")}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "help"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
             <CircleHelp className="h-3.5 w-3.5" />
-            Help / About
+            <span className="lg:hidden">Help</span>
+            <span className="hidden lg:inline">Help / About</span>
           </button>
-        </div>
+        </nav>
 
-        <div className={`relative z-10 flex shrink-0 items-center gap-2 transition-opacity duration-200 ${showIntro ? "opacity-0" : "opacity-100"}`}>
+        <div className={`relative z-10 order-2 ml-auto flex shrink-0 items-center gap-2 transition-opacity duration-200 lg:order-none lg:ml-0 ${showIntro ? "opacity-0" : "opacity-100"}`}>
           <ThemeToggle />
           <h1 className="font-itmap text-xl font-bold text-foreground">ITMAP</h1>
         </div>
@@ -2139,7 +2141,7 @@ export default function Index() {
       {tabMode === "search" || tabMode === "deep-search" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Sidebar */}
-          <div className="max-h-[46vh] w-full shrink-0 overflow-hidden border-b border-border lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r">
+          <div className={`${hasSearched ? "max-h-[38dvh]" : "max-h-[52dvh]"} w-full shrink-0 overflow-hidden border-b border-border transition-[max-height] duration-200 lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r`}>
             <SearchSidebar
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -2160,9 +2162,9 @@ export default function Index() {
           {/* Results */}
           <main className="flex-1 overflow-y-auto">
             {/* Results Header */}
-            <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border px-6 py-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+            <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-3 py-3 backdrop-blur-sm sm:px-6">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
                   <p className="text-sm font-medium text-foreground">
                     {hasSearched ? `${sortedResearchers.length} researchers found` : "Ready to search"}
                   </p>
@@ -2170,7 +2172,7 @@ export default function Index() {
                     <span className="text-xs text-destructive">{searchError}</span>
                   )}
                   {activeFilters.length > 0 && (
-                    <div className="flex items-center gap-1.5 ml-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-2">
                       {activeFilters.slice(0, 3).map(f => (
                         <span key={f} className="filter-chip filter-chip-active text-[10px] py-1 px-2" onClick={() => toggleFilter(f)}>
                           {f}
@@ -2183,15 +2185,15 @@ export default function Index() {
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
                   {hasSearched && sortedResearchers.length > 0 && (
                     <button
                       onClick={exportCurrentSearchCsv}
-                      className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                      className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
                       title="Download the current search results, publications, match reasons, and generated summary."
                     >
                       <Download className="h-3.5 w-3.5" />
-                      Export Search
+                      <span className="hidden sm:inline">Export Search</span>
                     </button>
                   )}
                   <div className="flex items-center gap-1.5">
@@ -2199,7 +2201,7 @@ export default function Index() {
                     <select
                       value={sortBy}
                       onChange={e => setSortBy(e.target.value as SortBy)}
-                      className="text-xs bg-transparent border-0 text-muted-foreground focus:outline-none cursor-pointer"
+                      className="min-h-10 cursor-pointer border-0 bg-transparent text-xs text-muted-foreground focus:outline-none"
                     >
                       <option value="relevance">Relevance</option>
                       <option value="name">Name</option>
@@ -2211,7 +2213,7 @@ export default function Index() {
             </div>
 
             {/* Results List */}
-            <div className="grid grid-cols-1 gap-4 p-6 xl:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 p-3 sm:gap-4 sm:p-6 xl:grid-cols-2">
               {isSearching && (
                 <div className="xl:col-span-2">
                   <SearchProgress seconds={searchSeconds} mode={currentSearchMode} />
@@ -2252,7 +2254,7 @@ export default function Index() {
                       <button
                         onClick={generatePoolSummary}
                         disabled={isGeneratingPoolSummary}
-                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                         title="Runs an opt-in LLM pass over the current top results and caches the summary."
                       >
                         {isGeneratingPoolSummary ? (
@@ -2286,7 +2288,7 @@ export default function Index() {
                     <button
                       onClick={checkSchoolMissions}
                       disabled={isCheckingMissions}
-                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                       title="Runs an opt-in LLM pass over the current top results and cached School Missions brief."
                     >
                       {isCheckingMissions ? (
@@ -2335,7 +2337,7 @@ export default function Index() {
         </div>
       ) : tabMode === "quick" ? (
         <main className="min-h-0 flex-1 overflow-y-auto bg-background">
-          <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-4 p-6">
+          <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-4 p-3 sm:p-6">
             <QuickSearchPanel
               query={quickSearchQuery}
               onQueryChange={setQuickSearchQuery}
@@ -2359,8 +2361,8 @@ export default function Index() {
         </main>
       ) : tabMode === "profile" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row">
-          <aside className="w-full shrink-0 border-b border-border bg-card lg:w-[380px] lg:border-b-0 lg:border-r">
-            <div className="space-y-4 p-5">
+          <aside className="max-h-[42dvh] w-full shrink-0 overflow-y-auto border-b border-border bg-card lg:max-h-none lg:w-[380px] lg:border-b-0 lg:border-r">
+            <div className="space-y-4 p-4 sm:p-5">
               <div>
                 <p className="text-sm font-semibold text-foreground">Find a researcher</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -2388,7 +2390,7 @@ export default function Index() {
                     Finding names...
                   </div>
                 )}
-                {!isLoadingProfileSuggestions && profileQuery.trim().length >= 2 && profileSuggestions.length === 0 && !profileSuggestionError && (
+                {!isLoadingProfileSuggestions && !selectedResearcherProfile && profileQuery.trim().length >= 2 && profileSuggestions.length === 0 && !profileSuggestionError && (
                   <div className="rounded-lg border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
                     No matching researchers yet.
                   </div>
@@ -2425,7 +2427,7 @@ export default function Index() {
                 </div>
               </div>
             ) : researcherProfileError ? (
-              <div className="flex flex-1 items-center justify-center p-6">
+              <div className="flex flex-1 items-center justify-center p-3 sm:p-6">
                 <div className="max-w-md rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
                   {researcherProfileError}
                 </div>
@@ -2443,7 +2445,7 @@ export default function Index() {
                 questionError={profileQuestionError}
               />
             ) : (
-              <div className="flex flex-1 items-center justify-center p-6">
+              <div className="flex flex-1 items-center justify-center p-3 sm:p-6">
                 <div className="max-w-md text-center">
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
                     <UserRound className="h-7 w-7 text-primary" />
@@ -2460,8 +2462,8 @@ export default function Index() {
         <HelpAboutPanel />
       ) : (
         <main className="min-h-0 flex-1 overflow-y-auto bg-background">
-          <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-3 backdrop-blur-sm">
-            <div className="flex items-center justify-between gap-3">
+          <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-3 py-3 backdrop-blur-sm sm:px-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-medium text-foreground">{savedResearchers.length} saved researchers</p>
                 <p className="text-xs text-muted-foreground">Each saved researcher keeps the search query that produced it.</p>
@@ -2486,11 +2488,11 @@ export default function Index() {
             </div>
           </div>
           {savedResearchers.length === 0 ? (
-            <div className="p-6 text-sm text-muted-foreground">
+            <div className="p-3 text-sm text-muted-foreground sm:p-6">
               Saved researchers will appear here when you click the bookmark icon on a researcher card.
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 p-6 xl:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 p-3 sm:gap-4 sm:p-6 xl:grid-cols-2">
               {savedResearchers.map(researcher => (
                 <ResearcherCard
                   key={researcher.id}

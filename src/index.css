@@ -183,6 +183,7 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: 'Imperial Sans Display', system-ui, sans-serif;
+    overflow-x: hidden;
   }
 
   h1, h2, h3, h4 {
@@ -205,6 +206,7 @@
 
   .itmap-header-tabs {
     scrollbar-width: none;
+    scroll-snap-type: x proximity;
   }
 
   .itmap-header-tabs::-webkit-scrollbar {
@@ -213,6 +215,7 @@
 
   .itmap-header-tabs > button {
     flex-shrink: 0;
+    scroll-snap-align: start;
   }
 
   .itmap-intro {
@@ -430,6 +433,7 @@
     @apply border border-border bg-secondary text-secondary-foreground;
     @apply hover:bg-accent hover:text-accent-foreground hover:border-primary/30;
     @apply transition-all duration-150 cursor-pointer select-none;
+    min-height: 36px;
   }
 
   .filter-chip-active {
@@ -438,7 +442,7 @@
   }
 
   .result-card {
-    @apply bg-card rounded-xl border border-border p-5;
+    @apply bg-card rounded-xl border border-border p-4 sm:p-5;
     @apply hover:shadow-md hover:border-primary/20;
     @apply transition-all duration-200;
   }
@@ -506,7 +510,7 @@
   }
 
   .graph-mode-btn {
-    @apply whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150;
+    @apply min-h-10 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150 sm:min-h-0;
     @apply border border-transparent text-muted-foreground;
     @apply hover:bg-background hover:text-foreground hover:shadow-sm;
   }

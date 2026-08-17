@@ -29,9 +29,9 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 400, opacity: 0 }}
       transition={{ type: "spring", damping: 30, stiffness: 300 }}
-      className="absolute right-0 top-0 bottom-0 w-[380px] bg-card border-l border-border shadow-xl overflow-y-auto z-30"
+      className="absolute inset-x-0 bottom-0 z-30 max-h-[72%] w-full overflow-y-auto rounded-t-lg border-t border-border bg-card shadow-xl sm:inset-y-0 sm:left-auto sm:right-0 sm:max-h-none sm:w-[380px] sm:rounded-none sm:border-l sm:border-t-0"
     >
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <div>
@@ -42,7 +42,7 @@ export default function GraphSidePanel({ node, researcher, connections, onClose 
               <span className="text-xs text-muted-foreground">{node.department}</span>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-secondary transition-colors">
+          <button onClick={onClose} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-secondary" aria-label="Close researcher details">
             <X className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>

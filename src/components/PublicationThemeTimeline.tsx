@@ -223,10 +223,10 @@ export default function PublicationThemeTimeline({ papers }: { papers: Publicati
         </div>
       </div>
 
-      <div className="overflow-x-auto px-3 pt-3">
+      <div className="overflow-x-auto px-2 pt-3 sm:px-3">
         <svg
           viewBox={`0 0 ${CHART_WIDTH} ${chartHeight}`}
-          className="h-auto min-w-[760px] w-full"
+          className="h-auto min-w-[700px] w-full sm:min-w-[760px]"
           role="img"
           aria-label={`Publication timeline from ${timeline.minYear} to ${timeline.maxYear}, grouped into ${timeline.activeThemes.length} themes`}
         >
@@ -346,7 +346,7 @@ export default function PublicationThemeTimeline({ papers }: { papers: Publicati
         </svg>
       </div>
 
-      <div className="border-t border-border bg-background/45 px-4 py-3">
+      <div className="border-t border-border bg-background/45 px-3 py-3 sm:px-4">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
           <p className="text-sm font-semibold text-foreground">
             {selectedBucket.theme.label} in {selectedBucket.year}

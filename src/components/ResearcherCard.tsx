@@ -144,7 +144,7 @@ export default function ResearcherCard({
 
   return (
     <div className="result-card animate-fade-in h-fit">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         {/* Avatar + Info */}
         <div className="flex items-start gap-3 min-w-0">
           <div className="shrink-0 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
@@ -174,11 +174,11 @@ export default function ResearcherCard({
         </div>
 
         {/* Score + Actions */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
           <RelevanceBadge score={researcher.relevanceScore} />
           <button
             onClick={() => onToggleBookmark?.(researcher)}
-            className="p-1.5 rounded-md hover:bg-secondary transition-colors"
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary"
             title={bookmarked ? "Remove from saved researchers" : "Save researcher"}
           >
             {bookmarked ? (
@@ -192,7 +192,7 @@ export default function ResearcherCard({
 
       <button
         onClick={() => setProfileExpanded(!profileExpanded)}
-        className="mt-3 flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        className="mt-2 flex min-h-10 items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:mt-3 sm:min-h-0"
       >
         {profileExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         {profileExpanded ? "Hide" : "Show"} Profile
@@ -242,7 +242,7 @@ export default function ResearcherCard({
       {/* Expand Publications */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="mt-3 flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+        className="mt-2 flex min-h-10 items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/80 sm:mt-3 sm:min-h-0"
       >
         {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         {expanded ? "Hide" : "Show"} Relevant Publications ({Math.min(researcher.publications.length, 10)})

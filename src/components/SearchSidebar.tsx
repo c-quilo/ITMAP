@@ -169,8 +169,8 @@ export default function SearchSidebar({
   };
 
   return (
-    <aside className="flex h-full w-full min-h-0 flex-col border-r border-border bg-card">
-      <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6">
+    <aside className="flex h-full w-full min-h-0 flex-col bg-card lg:border-r lg:border-border">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:space-y-6 sm:p-5">
         {/* Search Mode Tabs */}
         <div>
           <p className="section-label mb-2.5" title="Semantic search understands a query in natural language. Keyword search is stricter and better for exact terms.">Search Mode</p>
@@ -574,10 +574,10 @@ export default function SearchSidebar({
         </FilterSection>
       </div>
       {(searchMode === "semantic" || searchMode === "keyword") && (
-        <div className="shrink-0 border-t border-border bg-card p-4">
+        <div className="shrink-0 border-t border-border bg-card p-3 sm:p-4">
           <button
             onClick={runSearch}
-            className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-colors ${
               isSearching
                 ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 : "bg-primary text-primary-foreground hover:bg-primary/90"

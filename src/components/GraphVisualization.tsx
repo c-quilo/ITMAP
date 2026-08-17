@@ -497,20 +497,25 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
     zoomAtPoint(factor, pointX, pointY);
   }, [zoomAtPoint]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if ((e.target as Element).closest?.(".graph-node")) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
     setIsPanning(true);
     panStartRef.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y };
   }, [transform.x, transform.y]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!isPanning) return;
     const dx = e.clientX - panStartRef.current.x;
     const dy = e.clientY - panStartRef.current.y;
     setTransform(prev => ({ ...prev, x: panStartRef.current.tx + dx, y: panStartRef.current.ty + dy }));
   }, [isPanning]);
 
-  const handleMouseUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     setIsPanning(false);
   }, []);
 
@@ -571,8 +576,8 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
   return (
     <div className="graph-view relative flex flex-1 flex-col overflow-hidden bg-background">
       {/* Graph Controls */}
-      <div className="z-10 flex items-center justify-between gap-4 border-b border-border/70 bg-card/90 px-6 py-3 backdrop-blur-xl">
-        <div className="flex items-center gap-3">
+      <div className="z-10 flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-card/90 px-3 py-2 backdrop-blur-xl sm:flex-nowrap sm:gap-4 sm:px-6 sm:py-3">
+        <div className="hidden items-center gap-3 md:flex">
           <div className="hidden items-center gap-2 rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground md:flex">
             <Network className="h-4 w-4 text-primary" />
             <span>{nodes.length - 1} researchers</span>
@@ -584,22 +589,22 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
             <span>{bridgeCount} bridges</span>
           </div>
         </div>
-        <div className="flex flex-1 items-center justify-center gap-2 overflow-x-auto">
+        <div className="order-3 flex w-full items-center justify-center gap-2 overflow-x-auto sm:order-none sm:w-auto sm:flex-1">
           {GRAPH_MODES.map(m => (
             <button
               key={m.id}
               onClick={() => setMode(m.id)}
-              className={`graph-mode-btn ${mode === m.id ? "graph-mode-btn-active" : ""}`}
+              className={`graph-mode-btn flex-1 sm:flex-none ${mode === m.id ? "graph-mode-btn-active" : ""}`}
               title={m.description}
             >
               {m.label}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/70 p-1">
+        <div className="order-2 ml-auto flex items-center gap-1 rounded-md border border-border/70 bg-background/70 p-1 sm:order-none sm:ml-0">
           <button
             onClick={() => zoomAtPoint(1.18)}
-            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary sm:h-auto sm:w-auto sm:p-2"
             title="Zoom in"
             aria-label="Zoom in"
           >
@@ -607,7 +612,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
           </button>
           <button
             onClick={() => zoomAtPoint(1 / 1.18)}
-            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary sm:h-auto sm:w-auto sm:p-2"
             title="Zoom out"
             aria-label="Zoom out"
           >
@@ -615,7 +620,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
           </button>
           <button
             onClick={resetView}
-            className="rounded-md p-2 transition-colors hover:bg-secondary"
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary sm:h-auto sm:w-auto sm:p-2"
             title="Re-frame graph"
             aria-label="Re-frame graph"
           >
@@ -627,12 +632,12 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
       {/* Graph Canvas */}
       <div
         ref={containerRef}
-        className="graph-canvas flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing"
+        className="graph-canvas relative flex-1 touch-none cursor-grab overflow-hidden active:cursor-grabbing"
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
         <svg
           ref={svgRef}
@@ -842,7 +847,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </AnimatePresence>
 
         {/* Legend */}
-        <div className="absolute bottom-4 left-4 z-10 space-y-1.5 rounded-lg border border-border/70 bg-card/88 p-3 text-xs shadow-sm backdrop-blur-xl">
+        <div className="absolute bottom-4 left-4 z-10 hidden space-y-1.5 rounded-lg border border-border/70 bg-card/88 p-3 text-xs shadow-sm backdrop-blur-xl sm:block">
           <p className="font-brand text-[10px] font-semibold tracking-wider text-muted-foreground uppercase mb-2">Legend</p>
           <div className="flex items-center gap-2">
             <span className="inline-block h-3 w-3 rounded-full bg-[#2878b5]" />
@@ -866,7 +871,7 @@ export default function GraphVisualization({ researchers, missionLabel }: GraphV
         </div>
 
         {/* Info overlay */}
-        <div className="absolute top-4 left-4 z-10 max-w-xs rounded-lg border border-border/70 bg-card/88 px-4 py-3 shadow-sm backdrop-blur-xl">
+        <div className="absolute left-4 top-4 z-10 hidden max-w-xs rounded-lg border border-border/70 bg-card/88 px-4 py-3 shadow-sm backdrop-blur-xl sm:block">
           <p className="font-brand text-xs font-semibold text-foreground">
             {GRAPH_MODES.find(m => m.id === mode)?.label}
           </p>

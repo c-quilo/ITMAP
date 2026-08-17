@@ -102,7 +102,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
         </div>
       </div>
 
-      <div className="grid gap-4 px-4 py-4 xl:grid-cols-[minmax(0,1fr),280px]">
+      <div className="grid gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4 xl:grid-cols-[minmax(0,1fr),280px]">
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
             <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-primary" />Active co-authors</span>
@@ -110,7 +110,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
             <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[hsl(var(--publication-engineering))]" />Other faculties</span>
             <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[hsl(var(--publication-health))]" />Other institutions</span>
           </div>
-          <div className="h-[290px] w-full">
+          <div className="h-[250px] w-full sm:h-[290px]">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={chartData} margin={{ top: 12, right: 4, bottom: 2, left: -14 }}>
                 <defs>
@@ -166,7 +166,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
             <select
               value={selected.year}
               onChange={event => setSelectedYear(Number(event.target.value))}
-              className="h-8 rounded-md border border-border bg-card px-2 text-xs text-foreground outline-none focus:border-primary"
+              className="h-10 rounded-md border border-border bg-card px-2 text-xs text-foreground outline-none focus:border-primary sm:h-8"
               aria-label="Select collaboration year"
             >
               {[...availableYears].reverse().map(point => <option key={point.year} value={point.year}>{point.year}</option>)}
