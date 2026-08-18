@@ -132,6 +132,158 @@ export interface ResearcherCoauthor {
   }>;
 }
 
+export interface ResearcherNetworkFocal {
+  researcherId: string;
+  openalexId: string;
+  profileUrl?: string;
+  name: string;
+  title: string;
+  department: string;
+  faculty: string;
+}
+
+export interface ResearcherNetworkConnection {
+  openalexId: string;
+  name: string;
+  sharedPapers: number;
+  institutions: string[];
+  latestYear?: number | null;
+  totalCitations: number;
+  isImperialProfile: boolean;
+  imperialResearcherId?: string | null;
+  imperialProfileUrl?: string | null;
+  imperialTitle: string;
+  imperialDepartment: string;
+  imperialFaculty: string;
+  paperTitles: Array<{
+    title: string;
+    year?: number | null;
+    citations?: number;
+    openalexWorkId?: string;
+  }>;
+}
+
+export interface ResearcherNetwork {
+  focal: ResearcherNetworkFocal;
+  connections: ResearcherNetworkConnection[];
+  counts: {
+    totalCoauthors: number;
+    returnedCoauthors: number;
+    imperialCoauthors: number;
+    externalCoauthors: number;
+    departments: number;
+    faculties: number;
+  };
+  durationMs: number;
+}
+
+export interface ResearcherConnectionNode {
+  openalexId: string;
+  name: string;
+  isImperialProfile: boolean;
+  researcherId?: string | null;
+  profileUrl?: string | null;
+  title: string;
+  department: string;
+  faculty: string;
+  institutions: string[];
+}
+
+export interface ResearcherConnectionEdge {
+  sourceOpenalexId: string;
+  targetOpenalexId: string;
+  sharedPapers: number;
+  latestYear?: number | null;
+  totalCitations: number;
+  paperTitles: ResearcherNetworkConnection["paperTitles"];
+}
+
+export interface ResearcherConnectionPath {
+  id: string;
+  degree: number;
+  nodeIds: string[];
+  edges: ResearcherConnectionEdge[];
+  strength: number;
+}
+
+export interface ResearcherConnection {
+  found: boolean;
+  degree?: number | null;
+  source: ResearcherConnectionNode;
+  target: ResearcherConnectionNode;
+  nodes: ResearcherConnectionNode[];
+  paths: ResearcherConnectionPath[];
+  coverageNote: string;
+  durationMs: number;
+}
+
+export interface ResearcherThemeEvidencePaper {
+  openalexWorkId: string;
+  title: string;
+  year?: number | null;
+  citations: number;
+  doi?: string | null;
+  topicWeight: number;
+}
+
+export interface ResearcherTheme {
+  openalexTopicId: string;
+  label: string;
+  description: string;
+  keywords: string[];
+  domain: string;
+  field: string;
+  subfield: string;
+  topicStrength: number;
+  paperShare: number;
+  paperCount: number;
+  firstYear?: number | null;
+  latestYear?: number | null;
+  recentPaperCount: number;
+  trend: "emerging" | "stable" | "declining" | "insufficient_data";
+  confidence: number;
+  evidencePapers: ResearcherThemeEvidencePaper[];
+}
+
+export interface CollaborationSharedTopic {
+  openalexTopicId: string;
+  label: string;
+  sourceStrength: number;
+  candidateStrength: number;
+  sourcePaperCount: number;
+  candidatePaperCount: number;
+  sourceLatestYear?: number | null;
+  candidateLatestYear?: number | null;
+  sourceTrend: ResearcherTheme["trend"];
+  candidateTrend: ResearcherTheme["trend"];
+  sourceEvidence: ResearcherThemeEvidencePaper[];
+  candidateEvidence: ResearcherThemeEvidencePaper[];
+}
+
+export interface CollaborationOpportunity {
+  researcherId: string;
+  profileUrl?: string | null;
+  openalexId?: string | null;
+  name: string;
+  title: string;
+  department: string;
+  faculty: string;
+  sharedTopicCount: number;
+  topicalScore: number;
+  crossDepartment: boolean;
+  crossFaculty: boolean;
+  sharedTopicIds: string[];
+  sharedTopics: CollaborationSharedTopic[];
+}
+
+export interface CollaborationOpportunitiesResult {
+  source: ResearcherSuggestion;
+  themes: ResearcherTheme[];
+  opportunities: CollaborationOpportunity[];
+  coverageNote: string;
+  durationMs: number;
+}
+
 export interface ResearcherProfileQuestionAnswer {
   answer: string;
   evidenceTitles: string[];
@@ -585,6 +737,311 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
       matchedImperialCoauthors: Number(collaborationTimeline?.matched_imperial_coauthors || 0),
       totalCoauthors: Number(collaborationTimeline?.total_coauthors || 0),
     },
+  };
+}
+
+export async function getResearcherNetwork(
+  researcherId: string,
+  limit = 60,
+): Promise<ResearcherNetwork> {
+  if (!hasSupabaseConfig || !supabase) {
+    const fallback = MOCK_RESEARCHERS.find(researcher => researcher.id === researcherId) || MOCK_RESEARCHERS[0];
+    return {
+      focal: {
+        researcherId: fallback.id,
+        openalexId: fallback.openalexId || "",
+        profileUrl: fallback.profileUrl,
+        name: fallback.name,
+        title: fallback.title,
+        department: normaliseDepartment(fallback.department),
+        faculty: fallback.faculty,
+      },
+      connections: [],
+      counts: {
+        totalCoauthors: 0,
+        returnedCoauthors: 0,
+        imperialCoauthors: 0,
+        externalCoauthors: 0,
+        departments: 0,
+        faculties: 0,
+      },
+      durationMs: 0,
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "researcher_network",
+      researcher_id: researcherId,
+      network_limit: Math.max(10, Math.min(limit, 100)),
+    },
+  });
+
+  if (error) throw new Error(error.message);
+  const focal = data?.focal || {};
+  const counts = data?.counts || {};
+  const connections = Array.isArray(data?.connections) ? data.connections : [];
+
+  return {
+    focal: {
+      researcherId: String(focal.researcher_id || researcherId),
+      openalexId: String(focal.openalex_id || ""),
+      profileUrl: focal.profile_url ? String(focal.profile_url) : undefined,
+      name: String(focal.name || "Imperial researcher"),
+      title: String(focal.title || "Imperial researcher"),
+      department: normaliseDepartment(String(focal.department || "")),
+      faculty: String(focal.faculty || "Imperial College London"),
+    },
+    connections: connections
+      .map((connection: Record<string, unknown>) => ({
+        openalexId: String(connection.openalex_id || ""),
+        name: String(connection.name || "Researcher"),
+        sharedPapers: Number(connection.shared_papers || 0),
+        institutions: Array.isArray(connection.institutions)
+          ? connection.institutions.map(String).filter(Boolean).slice(0, 5)
+          : [],
+        latestYear: connection.latest_year === null || connection.latest_year === undefined
+          ? null
+          : Number(connection.latest_year),
+        totalCitations: Number(connection.total_citations || 0),
+        isImperialProfile: Boolean(connection.is_imperial_profile),
+        imperialResearcherId: connection.imperial_researcher_id ? String(connection.imperial_researcher_id) : null,
+        imperialProfileUrl: connection.imperial_profile_url ? String(connection.imperial_profile_url) : null,
+        imperialTitle: String(connection.imperial_title || ""),
+        imperialDepartment: normaliseDepartment(String(connection.imperial_department || "")),
+        imperialFaculty: String(connection.imperial_faculty || ""),
+        paperTitles: Array.isArray(connection.paper_titles)
+          ? connection.paper_titles.map((paper: Record<string, unknown>) => ({
+            title: String(paper.title || ""),
+            year: paper.year === null || paper.year === undefined ? null : Number(paper.year),
+            citations: Number(paper.citations || 0),
+            openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+          })).filter((paper: { title: string }) => paper.title).slice(0, 6)
+          : [],
+      }))
+      .filter((connection: ResearcherNetworkConnection) => connection.openalexId && connection.name),
+    counts: {
+      totalCoauthors: Number(counts.total_coauthors || 0),
+      returnedCoauthors: Number(counts.returned_coauthors || connections.length || 0),
+      imperialCoauthors: Number(counts.imperial_coauthors || 0),
+      externalCoauthors: Number(counts.external_coauthors || 0),
+      departments: Number(counts.departments || 0),
+      faculties: Number(counts.faculties || 0),
+    },
+    durationMs: Number(data?.duration_ms || 0),
+  };
+}
+
+export async function getResearcherConnection(
+  sourceResearcherId: string,
+  targetResearcherId: string,
+  maxDegrees = 3,
+): Promise<ResearcherConnection> {
+  if (!hasSupabaseConfig || !supabase) {
+    const fallbackNode = (researcherId: string): ResearcherConnectionNode => {
+      const researcher = MOCK_RESEARCHERS.find(row => row.id === researcherId) || MOCK_RESEARCHERS[0];
+      return {
+        openalexId: researcher.openalexId || "",
+        name: researcher.name,
+        isImperialProfile: true,
+        researcherId: researcher.id,
+        profileUrl: researcher.profileUrl,
+        title: researcher.title,
+        department: normaliseDepartment(researcher.department),
+        faculty: researcher.faculty,
+        institutions: [],
+      };
+    };
+    return {
+      found: false,
+      degree: null,
+      source: fallbackNode(sourceResearcherId),
+      target: fallbackNode(targetResearcherId),
+      nodes: [],
+      paths: [],
+      coverageNote: "Connection paths need the live ITMAP database connection.",
+      durationMs: 0,
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "researcher_connection",
+      researcher_id: sourceResearcherId,
+      target_researcher_id: targetResearcherId,
+      max_degrees: Math.max(1, Math.min(maxDegrees, 3)),
+    },
+  });
+  if (error) throw new Error(error.message);
+
+  const toNode = (node: Record<string, unknown>): ResearcherConnectionNode => ({
+    openalexId: String(node?.openalex_id || ""),
+    name: String(node?.name || "Researcher"),
+    isImperialProfile: Boolean(node?.is_imperial_profile),
+    researcherId: node?.researcher_id ? String(node.researcher_id) : null,
+    profileUrl: node?.profile_url ? String(node.profile_url) : null,
+    title: String(node?.title || ""),
+    department: node?.department ? normaliseDepartment(String(node.department)) : "",
+    faculty: String(node?.faculty || ""),
+    institutions: Array.isArray(node?.institutions) ? node.institutions.map(String).filter(Boolean).slice(0, 6) : [],
+  });
+  const toEdge = (edge: Record<string, unknown>): ResearcherConnectionEdge => ({
+    sourceOpenalexId: String(edge?.source_openalex_id || ""),
+    targetOpenalexId: String(edge?.target_openalex_id || ""),
+    sharedPapers: Number(edge?.shared_papers || 0),
+    latestYear: edge?.latest_year === null || edge?.latest_year === undefined ? null : Number(edge.latest_year),
+    totalCitations: Number(edge?.total_citations || 0),
+    paperTitles: Array.isArray(edge?.paper_titles)
+      ? edge.paper_titles.map((paper: Record<string, unknown>) => ({
+        title: String(paper.title || ""),
+        year: paper.year === null || paper.year === undefined ? null : Number(paper.year),
+        citations: Number(paper.citations || 0),
+        openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+      })).filter((paper: { title: string }) => paper.title).slice(0, 6)
+      : [],
+  });
+
+  return {
+    found: Boolean(data?.found),
+    degree: data?.degree === null || data?.degree === undefined ? null : Number(data.degree),
+    source: toNode(data?.source || {}),
+    target: toNode(data?.target || {}),
+    nodes: Array.isArray(data?.nodes) ? data.nodes.map((node: Record<string, unknown>) => toNode(node)) : [],
+    paths: Array.isArray(data?.paths) ? data.paths.map((path: Record<string, unknown>) => ({
+      id: String(path.id || "path"),
+      degree: Number(path.degree || 0),
+      nodeIds: Array.isArray(path.node_ids) ? path.node_ids.map(String).filter(Boolean) : [],
+      edges: Array.isArray(path.edges) ? path.edges.map((edge: Record<string, unknown>) => toEdge(edge)) : [],
+      strength: Number(path.strength || 0),
+    })) : [],
+    coverageNote: String(data?.coverage_note || ""),
+    durationMs: Number(data?.duration_ms || 0),
+  };
+}
+
+function toThemeEvidencePapers(value: unknown): ResearcherThemeEvidencePaper[] {
+  const evidence = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const papers = Array.isArray(evidence.papers) ? evidence.papers : Array.isArray(value) ? value : [];
+  return papers
+    .map((paper: Record<string, unknown>) => ({
+      openalexWorkId: String(paper.openalex_work_id || ""),
+      title: String(paper.title || ""),
+      year: paper.year === null || paper.year === undefined ? null : Number(paper.year),
+      citations: Number(paper.citations || 0),
+      doi: paper.doi ? String(paper.doi) : null,
+      topicWeight: Number(paper.topic_weight || paper.relevance || 0),
+    }))
+    .filter((paper: ResearcherThemeEvidencePaper) => paper.title);
+}
+
+function toResearcherTheme(row: Record<string, unknown>): ResearcherTheme {
+  return {
+    openalexTopicId: String(row.openalex_topic_id || ""),
+    label: String(row.label || "Research topic"),
+    description: String(row.description || ""),
+    keywords: Array.isArray(row.keywords) ? row.keywords.map(String).filter(Boolean) : [],
+    domain: String(row.domain_name || ""),
+    field: String(row.field_name || ""),
+    subfield: String(row.subfield_name || ""),
+    topicStrength: Number(row.topic_strength || 0),
+    paperShare: Number(row.paper_share || 0),
+    paperCount: Number(row.paper_count || 0),
+    firstYear: row.first_year === null || row.first_year === undefined ? null : Number(row.first_year),
+    latestYear: row.latest_year === null || row.latest_year === undefined ? null : Number(row.latest_year),
+    recentPaperCount: Number(row.recent_paper_count || 0),
+    trend: ["emerging", "stable", "declining", "insufficient_data"].includes(String(row.trend))
+      ? String(row.trend) as ResearcherTheme["trend"]
+      : "stable",
+    confidence: Number(row.confidence || 0),
+    evidencePapers: toThemeEvidencePapers(row.evidence),
+  };
+}
+
+export async function getCollaborationOpportunities(
+  researcherId: string,
+  limit = 24,
+): Promise<CollaborationOpportunitiesResult> {
+  if (!hasSupabaseConfig || !supabase) {
+    const fallback = MOCK_RESEARCHERS.find(researcher => researcher.id === researcherId) || MOCK_RESEARCHERS[0];
+    return {
+      source: {
+        researcherId: fallback.id,
+        openalexId: fallback.openalexId,
+        profileUrl: fallback.profileUrl,
+        name: fallback.name,
+        title: fallback.title,
+        department: normaliseDepartment(fallback.department),
+        faculty: fallback.faculty,
+        score: 1,
+      },
+      themes: [],
+      opportunities: [],
+      coverageNote: "Collaboration opportunities need the live ITMAP database connection.",
+      durationMs: 0,
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "collaboration_opportunities",
+      researcher_id: researcherId,
+      limit: Math.max(6, Math.min(limit, 50)),
+    },
+  });
+  if (error) throw new Error(error.message);
+
+  const source = data?.source || {};
+  const themes = Array.isArray(data?.themes) ? data.themes : [];
+  const opportunities = Array.isArray(data?.opportunities) ? data.opportunities : [];
+  return {
+    source: {
+      researcherId: String(source.researcher_id || researcherId),
+      openalexId: source.openalex_id ? String(source.openalex_id) : undefined,
+      profileUrl: source.profile_url ? String(source.profile_url) : undefined,
+      name: String(source.full_name || "Imperial researcher"),
+      title: String(source.title || "Imperial researcher"),
+      department: normaliseDepartment(String(source.department || "")),
+      faculty: String(source.faculty || "Imperial College London"),
+      score: 1,
+    },
+    themes: themes.map((row: Record<string, unknown>) => toResearcherTheme(row)),
+    opportunities: opportunities.map((row: Record<string, unknown>) => ({
+      researcherId: String(row.researcher_id || ""),
+      profileUrl: row.profile_url ? String(row.profile_url) : null,
+      openalexId: row.openalex_id ? String(row.openalex_id) : null,
+      name: String(row.full_name || "Imperial researcher"),
+      title: String(row.title || "Imperial researcher"),
+      department: normaliseDepartment(String(row.department || "")),
+      faculty: String(row.faculty || "Imperial College London"),
+      sharedTopicCount: Number(row.shared_topic_count || 0),
+      topicalScore: Number(row.topical_score || 0),
+      crossDepartment: Boolean(row.cross_department),
+      crossFaculty: Boolean(row.cross_faculty),
+      sharedTopicIds: Array.isArray(row.shared_topic_ids)
+        ? row.shared_topic_ids.map(String).filter(Boolean)
+        : [],
+      sharedTopics: (Array.isArray(row.shared_topics) ? row.shared_topics : [])
+        .map((topic: Record<string, unknown>) => ({
+          openalexTopicId: String(topic.openalex_topic_id || ""),
+          label: String(topic.label || "Shared topic"),
+          sourceStrength: Number(topic.source_strength || 0),
+          candidateStrength: Number(topic.candidate_strength || 0),
+          sourcePaperCount: Number(topic.source_paper_count || 0),
+          candidatePaperCount: Number(topic.candidate_paper_count || 0),
+          sourceLatestYear: topic.source_latest_year === null || topic.source_latest_year === undefined
+            ? null
+            : Number(topic.source_latest_year),
+          candidateLatestYear: topic.candidate_latest_year === null || topic.candidate_latest_year === undefined
+            ? null
+            : Number(topic.candidate_latest_year),
+          sourceTrend: String(topic.source_trend || "stable") as ResearcherTheme["trend"],
+          candidateTrend: String(topic.candidate_trend || "stable") as ResearcherTheme["trend"],
+          sourceEvidence: toThemeEvidencePapers(topic.source_evidence),
+          candidateEvidence: toThemeEvidencePapers(topic.candidate_evidence),
+        })),
+    })).filter((row: CollaborationOpportunity) => row.researcherId && row.name),
+    coverageNote: String(data?.coverage_note || ""),
+    durationMs: Number(data?.duration_ms || 0),
   };
 }
 

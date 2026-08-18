@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
-import GraphVisualization from "@/components/GraphVisualization";
 import ThemeToggle from "@/components/ThemeToggle";
 import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
@@ -12,8 +11,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
+const ResearcherNetworkGraph = lazy(() => import("@/components/ResearcherNetworkGraph"));
+const CollaborationOpportunities = lazy(() => import("@/components/CollaborationOpportunities"));
+
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "saved" | "help";
+type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "collaborate" | "saved" | "help";
 type SearchMode = "semantic" | "keyword";
 
 type SavedSearch = SavedSearchSummary & {
@@ -730,8 +732,13 @@ function HelpAboutPanel() {
     },
     {
       title: "Graph",
-      text: "Use this after a Search. It shows links between the researchers in the results, such as co-authorship and cross-faculty bridges.",
-      examples: ["See who connects groups", "Find collaboration patterns"],
+      text: "Use this to explore one researcher's immediate collaboration network, or choose a second researcher to find a supported co-authorship path of up to three degrees. You can also inspect Imperial and external co-authors, departments, faculties, and institutions.",
+      examples: ["Find immediate co-authors", "Trace a connection between two researchers"],
+    },
+    {
+      title: "Collaborate",
+      text: "Use this to find researchers who work on related OpenAlex topics but do not have a recorded co-authorship. You can focus on cross-department, cross-faculty, or emerging-topic opportunities.",
+      examples: ["Start with one researcher", "Compare shared topics and papers"],
     },
     {
       title: "Saved",
@@ -2102,6 +2109,17 @@ export default function Index() {
             Graph
           </button>
           <button
+            onClick={() => setTabMode("collaborate")}
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
+              tabMode === "collaborate"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Handshake className="h-3.5 w-3.5" />
+            Collaborate
+          </button>
+          <button
             onClick={() => setTabMode("saved")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "saved"
@@ -2457,7 +2475,27 @@ export default function Index() {
           </main>
         </div>
       ) : tabMode === "graph" ? (
-        <GraphVisualization researchers={sortedResearchers} missionLabel={currentMission} />
+        <Suspense fallback={(
+          <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
+            <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Opening collaboration network...
+            </div>
+          </main>
+        )}>
+          <ResearcherNetworkGraph onOpenProfile={loadResearcherProfile} />
+        </Suspense>
+      ) : tabMode === "collaborate" ? (
+        <Suspense fallback={(
+          <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
+            <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Opening collaboration opportunities...
+            </div>
+          </main>
+        )}>
+          <CollaborationOpportunities onOpenProfile={loadResearcherProfile} />
+        </Suspense>
       ) : tabMode === "help" ? (
         <HelpAboutPanel />
       ) : (

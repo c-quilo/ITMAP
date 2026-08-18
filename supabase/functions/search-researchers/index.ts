@@ -6,13 +6,16 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_network" | "researcher_connection" | "collaboration_opportunities" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
   original_query?: string;
   researcher_id?: string;
+  target_researcher_id?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
+  network_limit?: number;
+  max_degrees?: number;
   offset?: number;
   enable_rerank?: boolean;
   include_external_evidence?: boolean;
@@ -2872,6 +2875,8 @@ function relationshipPaperKey(paper: Record<string, unknown>) {
 function canonicalRelationshipAffiliation(value: unknown) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (/grantham|institute for climate change/i.test(text)) return "Grantham Institute for Climate Change";
+  const repeated = text.match(/^(.{4,}?)\s+\1$/i);
+  if (repeated) return repeated[1].trim();
   return text;
 }
 
@@ -3281,6 +3286,504 @@ async function fetchTopCoauthorsForResearcher(
       paper_titles: coauthor.paper_titles.slice(0, 5),
     };
   });
+}
+
+async function researcherNetworkById(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+  requestedLimit = 60,
+) {
+  const startedAt = Date.now();
+  const networkLimit = Math.max(10, Math.min(Number(requestedLimit) || 60, 100));
+  const [researcherResult, coauthorResult] = await Promise.all([
+    supabase
+      .from("researchers")
+      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .eq("id", researcherId)
+      .maybeSingle(),
+    supabase
+      .from("researcher_coauthors")
+      .select(
+        "coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles",
+        { count: "exact" },
+      )
+      .eq("researcher_id", researcherId)
+      .order("shared_papers", { ascending: false })
+      .order("total_citations", { ascending: false })
+      .limit(networkLimit),
+  ]);
+
+  if (researcherResult.error) throw researcherResult.error;
+  if (!researcherResult.data) throw new Error("Researcher not found");
+  if (coauthorResult.error) throw coauthorResult.error;
+
+  const researcher = researcherResult.data as Record<string, unknown>;
+  const focalOpenAlexId = openAlexAuthorKey(researcher.openalex_id);
+  const ranked = ((coauthorResult.data || []) as Record<string, unknown>[])
+    .map(row => ({
+      row,
+      openalexId: openAlexAuthorKey(row.coauthor_openalex_id),
+    }))
+    .filter(item => item.openalexId && item.openalexId !== focalOpenAlexId);
+  const coauthorIds = [...new Set(ranked.map(item => item.openalexId))];
+  const profileByOpenAlexId = new Map<string, Record<string, unknown>>();
+  const chunks: string[][] = [];
+  for (let offset = 0; offset < coauthorIds.length; offset += 25) {
+    chunks.push(coauthorIds.slice(offset, offset + 25));
+  }
+
+  const profileResults = await Promise.all(chunks.map(chunk => {
+    const variants = [...new Set(chunk.flatMap(id => [
+      id,
+      id.toLowerCase(),
+      `https://openalex.org/${id}`,
+      `https://openalex.org/${id.toLowerCase()}`,
+    ]))];
+    return supabase
+      .from("researchers")
+      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .in("openalex_id", variants);
+  }));
+
+  for (const result of profileResults) {
+    if (result.error) {
+      console.warn("Could not match network co-author profiles", result.error);
+      continue;
+    }
+    for (const profile of (result.data || []) as Record<string, unknown>[]) {
+      const key = openAlexAuthorKey(profile.openalex_id);
+      if (key && !profileByOpenAlexId.has(key)) profileByOpenAlexId.set(key, profile);
+    }
+  }
+
+  const connections = ranked.map(({ row, openalexId }) => {
+    const imperialProfile = profileByOpenAlexId.get(openalexId);
+    const institutions = Array.isArray(row.institution_names)
+      ? [...new Set(row.institution_names.map(String).map(name => name.trim()).filter(Boolean))].slice(0, 5)
+      : [];
+    const paperTitles = Array.isArray(row.paper_titles) ? row.paper_titles.slice(0, 6) : [];
+    return {
+      openalex_id: openalexId,
+      name: String(imperialProfile?.full_name || row.coauthor_name || "Researcher"),
+      shared_papers: Number(row.shared_papers || 0),
+      institutions,
+      latest_year: Number(row.latest_year || 0) || null,
+      total_citations: Number(row.total_citations || 0),
+      paper_titles: paperTitles,
+      is_imperial_profile: Boolean(imperialProfile),
+      imperial_researcher_id: imperialProfile?.id || null,
+      imperial_profile_url: imperialProfile?.profile_url || null,
+      imperial_title: imperialProfile ? (imperialProfile.position_name || imperialProfile.position || "") : "",
+      imperial_department: imperialProfile ? canonicalRelationshipAffiliation(imperialProfile.affiliation) : "",
+      imperial_faculty: imperialProfile?.faculty || "",
+    };
+  });
+
+  const imperialConnections = connections.filter(connection => connection.is_imperial_profile);
+  return {
+    focal: {
+      researcher_id: researcher.id,
+      openalex_id: focalOpenAlexId,
+      profile_url: researcher.profile_url,
+      name: researcher.full_name,
+      title: researcher.position_name || researcher.position || "Imperial researcher",
+      department: canonicalRelationshipAffiliation(researcher.affiliation),
+      faculty: researcher.faculty || "Imperial College London",
+    },
+    connections,
+    counts: {
+      total_coauthors: Number(coauthorResult.count || connections.length),
+      returned_coauthors: connections.length,
+      imperial_coauthors: imperialConnections.length,
+      external_coauthors: connections.length - imperialConnections.length,
+      departments: new Set(imperialConnections.map(connection => connection.imperial_department).filter(Boolean)).size,
+      faculties: new Set(imperialConnections.map(connection => connection.imperial_faculty).filter(Boolean)).size,
+    },
+    duration_ms: Date.now() - startedAt,
+  };
+}
+
+async function collaborationOpportunitiesByResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+  requestedLimit = 24,
+) {
+  const startedAt = Date.now();
+  const opportunityLimit = Math.max(6, Math.min(Number(requestedLimit) || 24, 50));
+  const [researcherResult, themesResult, opportunitiesResult] = await Promise.all([
+    supabase
+      .from("researchers")
+      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .eq("id", researcherId)
+      .maybeSingle(),
+    supabase
+      .from("researcher_themes")
+      .select(
+        "openalex_topic_id,label,description,keywords,domain_name,field_name,subfield_name,topic_strength,paper_share,paper_count,first_year,latest_year,recent_paper_count,trend,confidence",
+      )
+      .eq("researcher_id", researcherId)
+      .eq("source_type", "openalex_topic")
+      .order("topic_strength", { ascending: false })
+      .limit(12),
+    supabase.rpc("find_collaboration_opportunities", {
+      p_researcher_id: researcherId,
+      p_match_count: opportunityLimit,
+    }),
+  ]);
+
+  if (researcherResult.error) throw researcherResult.error;
+  if (!researcherResult.data) throw new Error("Researcher not found");
+  if (themesResult.error) throw themesResult.error;
+  if (opportunitiesResult.error) throw opportunitiesResult.error;
+
+  const researcher = researcherResult.data as Record<string, unknown>;
+  const themes = (themesResult.data || []) as Record<string, unknown>[];
+  const opportunities = (opportunitiesResult.data || []) as Record<string, unknown>[];
+
+  return {
+    source: {
+      researcher_id: researcher.id,
+      openalex_id: openAlexAuthorKey(researcher.openalex_id),
+      profile_url: researcher.profile_url,
+      full_name: researcher.full_name,
+      title: researcher.position_name || researcher.position || "Imperial researcher",
+      department: researcher.affiliation || "",
+      faculty: researcher.faculty || "",
+    },
+    themes,
+    opportunities,
+    coverage_note: themes.length > 0
+      ? "Recommendations compare official OpenAlex topics across stored papers and exclude co-authorships found in ITMAP."
+      : "No OpenAlex Topics are cached for this researcher's stored papers yet.",
+    duration_ms: Date.now() - startedAt,
+  };
+}
+
+type StoredConnectionRow = {
+  researcherId: string;
+  openalexId: string;
+  name: string;
+  sharedPapers: number;
+  institutions: string[];
+  latestYear: number | null;
+  totalCitations: number;
+  paperTitles: Record<string, unknown>[];
+};
+
+function storedConnectionRow(row: Record<string, unknown>): StoredConnectionRow {
+  return {
+    researcherId: String(row.researcher_id || ""),
+    openalexId: openAlexAuthorKey(row.coauthor_openalex_id),
+    name: String(row.coauthor_name || "Researcher").trim() || "Researcher",
+    sharedPapers: Math.max(0, Number(row.shared_papers || 0)),
+    institutions: Array.isArray(row.institution_names)
+      ? [...new Set(row.institution_names.map(String).map(value => value.trim()).filter(Boolean))].slice(0, 6)
+      : [],
+    latestYear: Number(row.latest_year || 0) || null,
+    totalCitations: Math.max(0, Number(row.total_citations || 0)),
+    paperTitles: Array.isArray(row.paper_titles)
+      ? (row.paper_titles as Record<string, unknown>[]).slice(0, 6)
+      : [],
+  };
+}
+
+function connectionEdge(
+  sourceOpenAlexId: string,
+  targetOpenAlexId: string,
+  row: StoredConnectionRow,
+) {
+  return {
+    source_openalex_id: sourceOpenAlexId,
+    target_openalex_id: targetOpenAlexId,
+    shared_papers: row.sharedPapers,
+    latest_year: row.latestYear,
+    total_citations: row.totalCitations,
+    paper_titles: row.paperTitles,
+  };
+}
+
+function connectionPathStrength(edges: Array<ReturnType<typeof connectionEdge>>) {
+  if (edges.length === 0) return 0;
+  const currentYear = new Date().getUTCFullYear();
+  const edgeScores = edges.map(edge => {
+    const papers = Math.log1p(Math.max(0, Number(edge.shared_papers || 0))) * 18;
+    const age = edge.latest_year ? Math.max(0, currentYear - Number(edge.latest_year)) : 20;
+    const recency = Math.max(0, 12 - age) * 0.75;
+    return papers + recency;
+  });
+  const weakest = Math.min(...edgeScores);
+  const average = edgeScores.reduce((sum, value) => sum + value, 0) / edgeScores.length;
+  return Math.round((weakest * 1.7 + average) * 100) / 100;
+}
+
+async function connectionProfilesByOpenAlexId(
+  supabase: ReturnType<typeof createClient>,
+  openalexIds: string[],
+) {
+  const uniqueIds = [...new Set(openalexIds.map(openAlexAuthorKey).filter(Boolean))];
+  const profiles = new Map<string, Record<string, unknown>>();
+  const chunks: string[][] = [];
+  for (let offset = 0; offset < uniqueIds.length; offset += 25) {
+    chunks.push(uniqueIds.slice(offset, offset + 25));
+  }
+  const results = await Promise.all(chunks.map(chunk => {
+    const variants = [...new Set(chunk.flatMap(id => [
+      id,
+      id.toLowerCase(),
+      `https://openalex.org/${id}`,
+      `https://openalex.org/${id.toLowerCase()}`,
+    ]))];
+    return supabase
+      .from("researchers")
+      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .in("openalex_id", variants);
+  }));
+
+  for (const result of results) {
+    if (result.error) throw result.error;
+    for (const profile of (result.data || []) as Record<string, unknown>[]) {
+      const key = openAlexAuthorKey(profile.openalex_id);
+      if (key && !profiles.has(key)) profiles.set(key, profile);
+    }
+  }
+  return profiles;
+}
+
+async function storedBridgeRows(
+  supabase: ReturnType<typeof createClient>,
+  sourceProfiles: Record<string, unknown>[],
+  targetOpenAlexIds: string[],
+) {
+  const sourceIds = [...new Set(sourceProfiles.map(profile => String(profile.id || "")).filter(Boolean))];
+  const targetIds = [...new Set(targetOpenAlexIds.map(openAlexAuthorKey).filter(Boolean))];
+  if (sourceIds.length === 0 || targetIds.length === 0) return [] as StoredConnectionRow[];
+
+  const sourceChunks: string[][] = [];
+  const targetChunks: string[][] = [];
+  for (let offset = 0; offset < sourceIds.length; offset += 50) {
+    sourceChunks.push(sourceIds.slice(offset, offset + 50));
+  }
+  for (let offset = 0; offset < targetIds.length; offset += 50) {
+    targetChunks.push(targetIds.slice(offset, offset + 50));
+  }
+
+  const requests = sourceChunks.flatMap(sourceChunk => targetChunks.map(targetChunk => (
+    supabase
+      .from("researcher_coauthors")
+      .select("researcher_id,coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles")
+      .in("researcher_id", sourceChunk)
+      .in("coauthor_openalex_id", targetChunk)
+      .limit(1000)
+  )));
+  const results = await Promise.all(requests);
+  const rows = new Map<string, StoredConnectionRow>();
+  for (const result of results) {
+    if (result.error) throw result.error;
+    for (const rawRow of (result.data || []) as Record<string, unknown>[]) {
+      const row = storedConnectionRow(rawRow);
+      if (!row.researcherId || !row.openalexId) continue;
+      rows.set(`${row.researcherId}:${row.openalexId}`, row);
+    }
+  }
+  return [...rows.values()];
+}
+
+function connectionProfileNode(
+  openalexId: string,
+  profile: Record<string, unknown> | undefined,
+  fallback: StoredConnectionRow | undefined,
+) {
+  return {
+    openalex_id: openalexId,
+    name: String(profile?.full_name || fallback?.name || "Researcher"),
+    is_imperial_profile: Boolean(profile),
+    researcher_id: profile?.id || null,
+    profile_url: profile?.profile_url || null,
+    title: profile ? (profile.position_name || profile.position || "Imperial researcher") : "",
+    department: profile ? canonicalRelationshipAffiliation(profile.affiliation) : "",
+    faculty: profile?.faculty || "",
+    institutions: fallback?.institutions || [],
+  };
+}
+
+async function researcherConnectionById(
+  supabase: ReturnType<typeof createClient>,
+  sourceResearcherId: string,
+  targetResearcherId: string,
+  requestedMaxDegrees = 3,
+) {
+  const startedAt = Date.now();
+  const maxDegrees = Math.max(1, Math.min(Number(requestedMaxDegrees) || 3, 3));
+  if (sourceResearcherId === targetResearcherId) throw new Error("Choose two different researchers");
+
+  const researcherSelect = "id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty";
+  const coauthorSelect = "researcher_id,coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles";
+  const [sourceResult, targetResult, sourceRowsResult, targetRowsResult] = await Promise.all([
+    supabase.from("researchers").select(researcherSelect).eq("id", sourceResearcherId).maybeSingle(),
+    supabase.from("researchers").select(researcherSelect).eq("id", targetResearcherId).maybeSingle(),
+    supabase.from("researcher_coauthors").select(coauthorSelect).eq("researcher_id", sourceResearcherId).order("shared_papers", { ascending: false }).limit(100),
+    supabase.from("researcher_coauthors").select(coauthorSelect).eq("researcher_id", targetResearcherId).order("shared_papers", { ascending: false }).limit(100),
+  ]);
+
+  if (sourceResult.error) throw sourceResult.error;
+  if (targetResult.error) throw targetResult.error;
+  if (sourceRowsResult.error) throw sourceRowsResult.error;
+  if (targetRowsResult.error) throw targetRowsResult.error;
+  if (!sourceResult.data || !targetResult.data) throw new Error("Researcher not found");
+
+  const sourceProfile = sourceResult.data as Record<string, unknown>;
+  const targetProfile = targetResult.data as Record<string, unknown>;
+  const sourceOpenAlexId = openAlexAuthorKey(sourceProfile.openalex_id);
+  const targetOpenAlexId = openAlexAuthorKey(targetProfile.openalex_id);
+  if (!sourceOpenAlexId || !targetOpenAlexId) throw new Error("Both researchers need an OpenAlex ID to find co-authorship paths");
+
+  const sourceRows = ((sourceRowsResult.data || []) as Record<string, unknown>[])
+    .map(storedConnectionRow)
+    .filter(row => row.openalexId && row.openalexId !== sourceOpenAlexId);
+  const targetRows = ((targetRowsResult.data || []) as Record<string, unknown>[])
+    .map(storedConnectionRow)
+    .filter(row => row.openalexId && row.openalexId !== targetOpenAlexId);
+  const sourceNeighbours = new Map(sourceRows.map(row => [row.openalexId, row]));
+  const targetNeighbours = new Map(targetRows.map(row => [row.openalexId, row]));
+  const fallbackByOpenAlexId = new Map<string, StoredConnectionRow>();
+  for (const row of [...sourceRows, ...targetRows]) {
+    const existing = fallbackByOpenAlexId.get(row.openalexId);
+    if (!existing || row.sharedPapers > existing.sharedPapers) fallbackByOpenAlexId.set(row.openalexId, row);
+  }
+
+  type PathCandidate = {
+    nodeIds: string[];
+    edges: Array<ReturnType<typeof connectionEdge>>;
+    strength: number;
+  };
+  let candidates: PathCandidate[] = [];
+
+  if (maxDegrees >= 1) {
+    const directRow = sourceNeighbours.get(targetOpenAlexId) || targetNeighbours.get(sourceOpenAlexId);
+    if (directRow) {
+      const edges = [connectionEdge(sourceOpenAlexId, targetOpenAlexId, directRow)];
+      candidates.push({ nodeIds: [sourceOpenAlexId, targetOpenAlexId], edges, strength: connectionPathStrength(edges) });
+    }
+  }
+
+  if (candidates.length === 0 && maxDegrees >= 2) {
+    for (const [commonId, sourceRow] of sourceNeighbours) {
+      if (commonId === sourceOpenAlexId || commonId === targetOpenAlexId) continue;
+      const targetRow = targetNeighbours.get(commonId);
+      if (!targetRow) continue;
+      const edges = [
+        connectionEdge(sourceOpenAlexId, commonId, sourceRow),
+        connectionEdge(commonId, targetOpenAlexId, targetRow),
+      ];
+      candidates.push({
+        nodeIds: [sourceOpenAlexId, commonId, targetOpenAlexId],
+        edges,
+        strength: connectionPathStrength(edges),
+      });
+    }
+  }
+
+  const profileByOpenAlexId = new Map<string, Record<string, unknown>>([
+    [sourceOpenAlexId, sourceProfile],
+    [targetOpenAlexId, targetProfile],
+  ]);
+
+  if (candidates.length === 0 && maxDegrees >= 3) {
+    const neighbourIds = [...new Set([...sourceNeighbours.keys(), ...targetNeighbours.keys()])];
+    const neighbourProfiles = await connectionProfilesByOpenAlexId(supabase, neighbourIds);
+    for (const [key, profile] of neighbourProfiles) profileByOpenAlexId.set(key, profile);
+    const profileByResearcherId = new Map<string, Record<string, unknown>>();
+    for (const profile of neighbourProfiles.values()) {
+      const id = String(profile.id || "");
+      if (id) profileByResearcherId.set(id, profile);
+    }
+    const sourceInternalProfiles = [...sourceNeighbours.keys()]
+      .map(id => neighbourProfiles.get(id))
+      .filter((profile): profile is Record<string, unknown> => Boolean(profile));
+    const targetInternalProfiles = [...targetNeighbours.keys()]
+      .map(id => neighbourProfiles.get(id))
+      .filter((profile): profile is Record<string, unknown> => Boolean(profile));
+    const [forwardBridges, reverseBridges] = await Promise.all([
+      storedBridgeRows(supabase, sourceInternalProfiles, [...targetNeighbours.keys()]),
+      storedBridgeRows(supabase, targetInternalProfiles, [...sourceNeighbours.keys()]),
+    ]);
+    const seenPaths = new Set<string>();
+
+    for (const bridge of forwardBridges) {
+      const sourceIntermediateProfile = profileByResearcherId.get(bridge.researcherId);
+      const sourceIntermediateId = openAlexAuthorKey(sourceIntermediateProfile?.openalex_id);
+      const targetIntermediateId = bridge.openalexId;
+      const firstEdge = sourceNeighbours.get(sourceIntermediateId);
+      const lastEdge = targetNeighbours.get(targetIntermediateId);
+      const nodeIds = [sourceOpenAlexId, sourceIntermediateId, targetIntermediateId, targetOpenAlexId];
+      if (!firstEdge || !lastEdge || new Set(nodeIds).size !== 4) continue;
+      const key = nodeIds.join(">");
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
+      fallbackByOpenAlexId.set(targetIntermediateId, fallbackByOpenAlexId.get(targetIntermediateId) || bridge);
+      const edges = [
+        connectionEdge(sourceOpenAlexId, sourceIntermediateId, firstEdge),
+        connectionEdge(sourceIntermediateId, targetIntermediateId, bridge),
+        connectionEdge(targetIntermediateId, targetOpenAlexId, lastEdge),
+      ];
+      candidates.push({ nodeIds, edges, strength: connectionPathStrength(edges) });
+    }
+
+    for (const bridge of reverseBridges) {
+      const targetIntermediateProfile = profileByResearcherId.get(bridge.researcherId);
+      const targetIntermediateId = openAlexAuthorKey(targetIntermediateProfile?.openalex_id);
+      const sourceIntermediateId = bridge.openalexId;
+      const firstEdge = sourceNeighbours.get(sourceIntermediateId);
+      const lastEdge = targetNeighbours.get(targetIntermediateId);
+      const nodeIds = [sourceOpenAlexId, sourceIntermediateId, targetIntermediateId, targetOpenAlexId];
+      if (!firstEdge || !lastEdge || new Set(nodeIds).size !== 4) continue;
+      const key = nodeIds.join(">");
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
+      fallbackByOpenAlexId.set(sourceIntermediateId, fallbackByOpenAlexId.get(sourceIntermediateId) || bridge);
+      const edges = [
+        connectionEdge(sourceOpenAlexId, sourceIntermediateId, firstEdge),
+        connectionEdge(sourceIntermediateId, targetIntermediateId, bridge),
+        connectionEdge(targetIntermediateId, targetOpenAlexId, lastEdge),
+      ];
+      candidates.push({ nodeIds, edges, strength: connectionPathStrength(edges) });
+    }
+  }
+
+  candidates = candidates
+    .sort((first, second) => second.strength - first.strength)
+    .slice(0, 3);
+  const intermediateIds = [...new Set(candidates.flatMap(path => path.nodeIds.slice(1, -1)))];
+  const missingProfileIds = intermediateIds.filter(id => !profileByOpenAlexId.has(id));
+  if (missingProfileIds.length > 0) {
+    const intermediateProfiles = await connectionProfilesByOpenAlexId(supabase, missingProfileIds);
+    for (const [key, profile] of intermediateProfiles) profileByOpenAlexId.set(key, profile);
+  }
+  const visibleNodeIds = [...new Set(candidates.flatMap(path => path.nodeIds))];
+  const nodes = visibleNodeIds.map(openalexId => connectionProfileNode(
+    openalexId,
+    profileByOpenAlexId.get(openalexId),
+    fallbackByOpenAlexId.get(openalexId),
+  ));
+
+  return {
+    found: candidates.length > 0,
+    degree: candidates[0]?.edges.length || null,
+    source: connectionProfileNode(sourceOpenAlexId, sourceProfile, undefined),
+    target: connectionProfileNode(targetOpenAlexId, targetProfile, undefined),
+    nodes,
+    paths: candidates.map((path, index) => ({
+      id: `path-${index + 1}`,
+      degree: path.edges.length,
+      node_ids: path.nodeIds,
+      edges: path.edges,
+      strength: path.strength,
+    })),
+    coverage_note: candidates.length > 0
+      ? "Paths use stored ITMAP co-authorship evidence. Department and faculty membership do not count as degrees of separation."
+      : "No known co-authorship path was found within three degrees in the stored ITMAP network. This does not prove that no wider relationship exists.",
+    duration_ms: Date.now() - startedAt,
+  };
 }
 
 function collaborationGroupKey(value: unknown) {
@@ -3855,6 +4358,56 @@ Deno.serve(async req => {
       }
       const profile = await researcherProfileById(supabase, openAiKey, rankingModel, researcherId);
       return Response.json(profile, { headers: corsHeaders });
+    }
+
+    if (body.action === "researcher_network") {
+      const researcherId = String(body.researcher_id || "");
+      if (!researcherId) {
+        return Response.json(
+          { error: "Missing researcher_id" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const network = await researcherNetworkById(
+        supabase,
+        researcherId,
+        Number(body.network_limit || 60),
+      );
+      return Response.json(network, { headers: corsHeaders });
+    }
+
+    if (body.action === "researcher_connection") {
+      const researcherId = String(body.researcher_id || "");
+      const targetResearcherId = String(body.target_researcher_id || "");
+      if (!researcherId || !targetResearcherId) {
+        return Response.json(
+          { error: "Missing researcher_id or target_researcher_id" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const connection = await researcherConnectionById(
+        supabase,
+        researcherId,
+        targetResearcherId,
+        Number(body.max_degrees || 3),
+      );
+      return Response.json(connection, { headers: corsHeaders });
+    }
+
+    if (body.action === "collaboration_opportunities") {
+      const researcherId = String(body.researcher_id || "");
+      if (!researcherId) {
+        return Response.json(
+          { error: "Missing researcher_id" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const result = await collaborationOpportunitiesByResearcher(
+        supabase,
+        researcherId,
+        Number(body.limit || 24),
+      );
+      return Response.json(result, { headers: corsHeaders });
     }
 
     if (body.action === "researcher_profile_question") {
