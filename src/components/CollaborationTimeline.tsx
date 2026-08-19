@@ -119,7 +119,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
                     <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 5" vertical={false} />
+                <CartesianGrid stroke="hsl(var(--border))" strokeOpacity={0.6} vertical={false} />
                 <XAxis dataKey="year" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} tickLine={false} axisLine={false} minTickGap={24} />
                 <YAxis
                   yAxisId="network"
@@ -135,8 +135,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
                   yAxisId="network"
                   x={selected.year}
                   stroke="hsl(var(--primary))"
-                  strokeDasharray="3 5"
-                  strokeOpacity={0.5}
+                  strokeOpacity={0.35}
                 />
                 <Area
                   yAxisId="network"
@@ -151,7 +150,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
                 />
                 <Line yAxisId="imperial" type="monotone" dataKey="crossDepartment" name="Other departments" stroke="hsl(var(--publication-energy))" strokeWidth={2.2} dot={{ r: 2.2, fill: "hsl(var(--card))", strokeWidth: 1.5 }} activeDot={{ r: 4.5 }} />
                 <Line yAxisId="imperial" type="monotone" dataKey="crossFaculty" name="Other faculties" stroke="hsl(var(--publication-engineering))" strokeWidth={2.2} dot={{ r: 2.2, fill: "hsl(var(--card))", strokeWidth: 1.5 }} activeDot={{ r: 4.5 }} />
-                <Line yAxisId="network" type="monotone" dataKey="otherInstitutionsDisplay" name="Other institutions" stroke="hsl(var(--publication-health))" strokeWidth={1.7} strokeDasharray="5 4" dot={false} activeDot={{ r: 4 }} />
+                <Line yAxisId="network" type="monotone" dataKey="otherInstitutionsDisplay" name="Other institutions" stroke="hsl(var(--publication-health))" strokeWidth={1.9} dot={false} activeDot={{ r: 4 }} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>

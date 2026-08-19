@@ -93,9 +93,21 @@ type Palette = {
   selected: string;
 };
 
-const NETWORK_LIMITS = [30, 60, 100] as const;
-const networkCache = new Map<string, ResearcherNetwork>();
-const connectionCache = new Map<string, ResearcherConnection>();
+const NETWORK_LIMITS = [30, 60, 100, 250, 500, 0] as const;
+const CACHE_TTL_MS = 60_000;
+type TimedCacheEntry<T> = { value: T; expiresAt: number };
+const networkCache = new Map<string, TimedCacheEntry<ResearcherNetwork>>();
+const connectionCache = new Map<string, TimedCacheEntry<ResearcherConnection>>();
+
+function cachedValue<T>(cache: Map<string, TimedCacheEntry<T>>, key: string) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
 
 function slug(value: string) {
   return value
@@ -946,15 +958,17 @@ function NetworkNodePanel({
 
 export default function ResearcherNetworkGraph({
   onOpenProfile,
+  focalResearcher,
 }: {
   onOpenProfile?: (suggestion: ResearcherSuggestion) => void;
+  focalResearcher?: ResearcherSuggestion | null;
 }) {
   const requestIdRef = useRef(0);
   const connectionRequestIdRef = useRef(0);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(focalResearcher?.name || "");
   const [suggestions, setSuggestions] = useState<ResearcherSuggestion[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
-  const [selectedResearcher, setSelectedResearcher] = useState<ResearcherSuggestion | null>(null);
+  const [selectedResearcher, setSelectedResearcher] = useState<ResearcherSuggestion | null>(focalResearcher || null);
   const [network, setNetwork] = useState<ResearcherNetwork | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -973,6 +987,21 @@ export default function ResearcherNetworkGraph({
   const [isLoadingConnection, setIsLoadingConnection] = useState(false);
   const [connectionError, setConnectionError] = useState("");
 
+  useEffect(() => {
+    if (!focalResearcher || selectedResearcher?.researcherId === focalResearcher.researcherId) return;
+
+    connectionRequestIdRef.current += 1;
+    setSelectedResearcher(focalResearcher);
+    setQuery(focalResearcher.name);
+    setSuggestions([]);
+    setTargetQuery("");
+    setTargetSuggestions([]);
+    setSelectedTarget(null);
+    setConnection(null);
+    setConnectionError("");
+    setIsLoadingConnection(false);
+  }, [focalResearcher, selectedResearcher?.researcherId]);
+
   const loadNetwork = useCallback(async (researcher: ResearcherSuggestion, limit: number) => {
     const requestId = ++requestIdRef.current;
     const cacheKey = `${researcher.researcherId}:${limit}`;
@@ -980,10 +1009,10 @@ export default function ResearcherNetworkGraph({
     setError("");
     setSelectedNode(null);
     try {
-      const cached = networkCache.get(cacheKey);
+      const cached = cachedValue(networkCache, cacheKey);
       const result = cached || await getResearcherNetwork(researcher.researcherId, limit);
       if (requestId !== requestIdRef.current) return;
-      if (!cached) networkCache.set(cacheKey, result);
+      if (!cached) networkCache.set(cacheKey, { value: result, expiresAt: Date.now() + CACHE_TTL_MS });
       setNetwork(result);
       setMinimumSharedPapers(1);
     } catch (loadError) {
@@ -1005,10 +1034,10 @@ export default function ResearcherNetworkGraph({
     setConnectionError("");
     setSelectedNode(null);
     try {
-      const cached = connectionCache.get(cacheKey);
+      const cached = cachedValue(connectionCache, cacheKey);
       const result = cached || await getResearcherConnection(source.researcherId, target.researcherId, 3);
       if (requestId !== connectionRequestIdRef.current) return;
-      if (!cached) connectionCache.set(cacheKey, result);
+      if (!cached) connectionCache.set(cacheKey, { value: result, expiresAt: Date.now() + CACHE_TTL_MS });
       setConnection(result);
     } catch (loadError) {
       if (requestId !== connectionRequestIdRef.current) return;
@@ -1150,38 +1179,40 @@ export default function ResearcherNetworkGraph({
             </p>
           </div>
 
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={event => {
-                setQuery(event.target.value);
-                if (selectedResearcher && event.target.value !== selectedResearcher.name) {
-                  setSelectedResearcher(null);
-                  clearConnection();
-                }
-              }}
-              placeholder="Type a researcher name..."
-              className="h-11 w-full rounded-lg border border-border bg-background pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
-            />
-            {isSuggesting && <Loader2 className="absolute right-3 top-3.5 h-4 w-4 animate-spin text-primary" />}
-            {suggestions.length > 0 && (
-              <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
-                {suggestions.map(suggestion => (
-                  <button
-                    key={suggestion.researcherId}
-                    type="button"
-                    onClick={() => selectResearcher(suggestion)}
-                    className="w-full rounded-md px-3 py-2.5 text-left hover:bg-secondary"
-                  >
-                    <p className="text-sm font-semibold text-foreground">{suggestion.name}</p>
-                    <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">{suggestion.title}</p>
-                    <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{suggestion.department}</p>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {!focalResearcher && (
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={event => {
+                  setQuery(event.target.value);
+                  if (selectedResearcher && event.target.value !== selectedResearcher.name) {
+                    setSelectedResearcher(null);
+                    clearConnection();
+                  }
+                }}
+                placeholder="Type a researcher name..."
+                className="h-11 w-full rounded-lg border border-border bg-background pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+              />
+              {isSuggesting && <Loader2 className="absolute right-3 top-3.5 h-4 w-4 animate-spin text-primary" />}
+              {suggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
+                  {suggestions.map(suggestion => (
+                    <button
+                      key={suggestion.researcherId}
+                      type="button"
+                      onClick={() => selectResearcher(suggestion)}
+                      className="w-full rounded-md px-3 py-2.5 text-left hover:bg-secondary"
+                    >
+                      <p className="text-sm font-semibold text-foreground">{suggestion.name}</p>
+                      <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">{suggestion.title}</p>
+                      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{suggestion.department}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {network && (
             <>
@@ -1325,9 +1356,10 @@ export default function ResearcherNetworkGraph({
                       key={limit}
                       type="button"
                       onClick={() => setNetworkLimit(limit)}
+                      title={limit === 0 ? "Show every stored co-author; large networks can take longer" : `Show up to ${limit} co-authors`}
                       className={`min-h-9 rounded-md text-xs font-medium transition-colors ${networkLimit === limit ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
-                      {limit}
+                      {limit === 0 ? "All" : limit}
                     </button>
                   ))}
                 </div>

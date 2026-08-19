@@ -7,7 +7,6 @@ type SearchMode = "semantic" | "keyword";
 export type SearchOptions = {
   enableRerank: boolean;
   includeExternalEvidence: boolean;
-  rewriteMission: boolean;
 };
 
 export interface SavedSearchSummary {
@@ -103,7 +102,6 @@ export default function SearchSidebar({
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [semanticQuery, setSemanticQuery] = useState("");
   const [keywordQuery, setKeywordQuery] = useState("");
-  const [rewriteMission, setRewriteMission] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     match: true,
     grade: true,
@@ -121,9 +119,8 @@ export default function SearchSidebar({
     onOptionsChange?.({
       enableRerank: searchMode === "semantic",
       includeExternalEvidence: false,
-      rewriteMission,
     });
-  }, [searchMode, rewriteMission, onOptionsChange]);
+  }, [searchMode, onOptionsChange]);
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -145,7 +142,6 @@ export default function SearchSidebar({
     onSearch?.(query, searchMode, {
       enableRerank: searchMode === "semantic",
       includeExternalEvidence: false,
-      rewriteMission,
     });
   };
 
@@ -213,26 +209,6 @@ export default function SearchSidebar({
                 type="checkbox"
                 checked={false}
                 disabled
-                className="mt-0.5 h-4 w-4 accent-primary"
-              />
-            </label>
-          )}
-          {searchMode === "semantic" && (
-            <label
-              className="flex cursor-pointer items-start justify-between gap-3"
-              title="Ask ITMAP to rewrite the query first. You will review the original and rewritten text before any search runs."
-            >
-              <span>
-                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  Rewrite query first
-                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
-                </span>
-                <span className="block text-[11px] leading-relaxed text-muted-foreground">Review and edit the rewritten query before searching.</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={rewriteMission}
-                onChange={event => setRewriteMission(event.target.checked)}
                 className="mt-0.5 h-4 w-4 accent-primary"
               />
             </label>

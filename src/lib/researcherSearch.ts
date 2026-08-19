@@ -29,6 +29,12 @@ export interface SearchPayload {
   includeExternalEvidence?: boolean;
 }
 
+export interface ResearcherSearchResponse {
+  researchers: Researcher[];
+  originalQuery: string;
+  expandedQuery: string;
+}
+
 export interface SchoolMissionMatch {
   researcherId: string;
   school: string;
@@ -46,14 +52,6 @@ export interface ResearchPoolSummary {
     reason: string;
   }>;
   gaps: string[];
-}
-
-export interface MissionRewrite {
-  rewrittenQuery: string;
-  mustHave: string[];
-  niceToHave: string[];
-  methodTerms: string[];
-  domainTerms: string[];
 }
 
 export interface ResearcherSuggestion {
@@ -295,12 +293,82 @@ export interface QuickSearchSuggestion extends ResearcherSuggestion {
 }
 
 export interface QuickSearchResult {
-  kind: "person" | "topic" | "redirect" | "empty";
+  kind: "person" | "topic" | "information" | "redirect" | "empty";
   answer: string;
   researcher?: ResearcherSuggestion;
   suggestions: QuickSearchSuggestion[];
   evidenceTitles: string[];
   caveat: string;
+}
+
+export type OrganizationKind = "department" | "institute" | "school" | "faculty" | "centre" | "laboratory" | "unit";
+
+export interface OrganizationSuggestion {
+  name: string;
+  kind: OrganizationKind;
+  researcherCount: number;
+  score: number;
+}
+
+export interface OrganizationThemeEvidencePaper {
+  openalexWorkId?: string;
+  title: string;
+  year?: number | null;
+  citations: number;
+}
+
+export interface OrganizationTheme {
+  openalexTopicId: string;
+  label: string;
+  description: string;
+  keywords: string[];
+  domain: string;
+  field: string;
+  subfield: string;
+  researcherCount: number;
+  paperCount: number;
+  recentPaperCount: number;
+  firstYear?: number | null;
+  latestYear?: number | null;
+  trend: "emerging" | "stable" | "declining";
+  emergingResearchers: number;
+  yearCounts: Array<{ year: number; count: number }>;
+  evidencePapers: OrganizationThemeEvidencePaper[];
+}
+
+export interface OrganizationResearcher {
+  researcherId: string;
+  openalexId?: string;
+  profileUrl?: string;
+  name: string;
+  title: string;
+  department: string;
+  faculty: string;
+  fieldsOfResearch: string;
+  paperCount: number;
+  themes: Array<{
+    openalexTopicId: string;
+    label: string;
+    trend: string;
+  }>;
+}
+
+export interface OrganizationProfile {
+  organization: {
+    name: string;
+    kind: OrganizationKind;
+    researcherCount: number;
+    researchersWithTopics: number;
+    distinctTopicCount: number;
+    emergingTopicCount: number;
+    firstYear?: number | null;
+    latestYear?: number | null;
+  };
+  summary: string;
+  themes: OrganizationTheme[];
+  emergingThemes: OrganizationTheme[];
+  researchers: OrganizationResearcher[];
+  coverageNote: string;
 }
 
 export interface SearchAuditLog {
@@ -497,9 +565,13 @@ function localFallbackSearch(query: string) {
     .sort((a, b) => b.relevanceScore - a.relevanceScore);
 }
 
-export async function searchResearchers(payload: SearchPayload): Promise<Researcher[]> {
+export async function searchResearchers(payload: SearchPayload): Promise<ResearcherSearchResponse> {
   if (!hasSupabaseConfig || !supabase) {
-    return localFallbackSearch(payload.query);
+    return {
+      researchers: localFallbackSearch(payload.query),
+      originalQuery: payload.originalQuery || payload.query,
+      expandedQuery: payload.query,
+    };
   }
 
   const { data, error } = await supabase.functions.invoke("search-researchers", {
@@ -519,7 +591,11 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
   }
 
   const rows = Array.isArray(data?.results) ? data.results : [];
-  return rows.map(toResearcher);
+  return {
+    researchers: rows.map(toResearcher),
+    originalQuery: String(data?.original_query || payload.originalQuery || payload.query),
+    expandedQuery: String(data?.expanded_query || payload.query),
+  };
 }
 
 export async function getSearchAuditLogs(
@@ -572,37 +648,6 @@ export async function getSearchAuditLogs(
   };
 }
 
-export async function rewriteMission(query: string): Promise<MissionRewrite> {
-  if (!hasSupabaseConfig || !supabase) {
-    return {
-      rewrittenQuery: query,
-      mustHave: [],
-      niceToHave: [],
-      methodTerms: [],
-      domainTerms: [],
-    };
-  }
-
-  const { data, error } = await supabase.functions.invoke("search-researchers", {
-    body: {
-      action: "rewrite_mission",
-      query,
-    },
-  });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return {
-    rewrittenQuery: String(data?.rewritten_query || query),
-    mustHave: Array.isArray(data?.must_have) ? data.must_have.map(String) : [],
-    niceToHave: Array.isArray(data?.nice_to_have) ? data.nice_to_have.map(String) : [],
-    methodTerms: Array.isArray(data?.method_terms) ? data.method_terms.map(String) : [],
-    domainTerms: Array.isArray(data?.domain_terms) ? data.domain_terms.map(String) : [],
-  };
-}
-
 export async function suggestResearchers(query: string): Promise<ResearcherSuggestion[]> {
   if (!hasSupabaseConfig || !supabase || query.trim().length < 2) {
     return [];
@@ -629,6 +674,154 @@ export async function suggestResearchers(query: string): Promise<ResearcherSugge
     faculty: String(row.faculty || "Imperial College London"),
     score: Number(row.score || 0),
   })).filter(row => row.researcherId && row.name);
+}
+
+export async function suggestOrganizations(query: string): Promise<OrganizationSuggestion[]> {
+  const trimmedQuery = query.trim();
+  if (!hasSupabaseConfig || !supabase || trimmedQuery.length < 2) return [];
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "suggest_organizations",
+      query: trimmedQuery,
+      limit: 12,
+    },
+  });
+
+  if (error) throw new Error(error.message);
+
+  const rows = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  return rows
+    .map((row: Record<string, unknown>) => ({
+      name: String(row.name || ""),
+      kind: String(row.kind || "unit") as OrganizationKind,
+      researcherCount: Number(row.researcher_count || 0),
+      score: Number(row.score || 0),
+    }))
+    .filter((row: OrganizationSuggestion) => row.name);
+}
+
+export async function listOrganizations(): Promise<OrganizationSuggestion[]> {
+  if (!hasSupabaseConfig || !supabase) return [];
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: { action: "list_organizations" },
+  });
+
+  if (error) throw new Error(error.message);
+
+  const rows = Array.isArray(data?.organizations) ? data.organizations : [];
+  return rows
+    .map((row: Record<string, unknown>) => ({
+      name: String(row.name || ""),
+      kind: String(row.kind || "unit") as OrganizationKind,
+      researcherCount: Number(row.researcher_count || 0),
+      score: Number(row.score || 0),
+    }))
+    .filter((row: OrganizationSuggestion) => row.name);
+}
+
+function toOrganizationTheme(row: Record<string, unknown>): OrganizationTheme {
+  const evidencePapers = Array.isArray(row.evidence_papers) ? row.evidence_papers : [];
+  return {
+    openalexTopicId: String(row.openalex_topic_id || ""),
+    label: String(row.label || "Untitled topic"),
+    description: String(row.description || ""),
+    keywords: Array.isArray(row.keywords) ? row.keywords.map(String).filter(Boolean) : [],
+    domain: String(row.domain || ""),
+    field: String(row.field || ""),
+    subfield: String(row.subfield || ""),
+    researcherCount: Number(row.researcher_count || 0),
+    paperCount: Number(row.paper_count || 0),
+    recentPaperCount: Number(row.recent_paper_count || 0),
+    firstYear: row.first_year === null || row.first_year === undefined ? null : Number(row.first_year),
+    latestYear: row.latest_year === null || row.latest_year === undefined ? null : Number(row.latest_year),
+    trend: ["emerging", "declining"].includes(String(row.trend))
+      ? String(row.trend) as OrganizationTheme["trend"]
+      : "stable",
+    emergingResearchers: Number(row.emerging_researchers || 0),
+    yearCounts: Array.isArray(row.year_counts)
+      ? row.year_counts
+        .map((item: Record<string, unknown>) => ({
+          year: Number(item.year || 0),
+          count: Number(item.count || 0),
+        }))
+        .filter((item: { year: number; count: number }) => item.year >= 1970 && item.count > 0)
+      : [],
+    evidencePapers: evidencePapers
+      .map((paper: Record<string, unknown>) => ({
+        openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+        title: String(paper.title || ""),
+        year: paper.publication_year === null || paper.publication_year === undefined
+          ? null
+          : Number(paper.publication_year),
+        citations: Number(paper.cited_by_count || 0),
+      }))
+      .filter((paper: OrganizationThemeEvidencePaper) => paper.title),
+  };
+}
+
+export async function getOrganizationProfile(organizationName: string): Promise<OrganizationProfile> {
+  if (!hasSupabaseConfig || !supabase) {
+    throw new Error("The live ITMAP database connection is needed for department exploration.");
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "organization_profile",
+      organization_name: organizationName,
+    },
+  });
+
+  if (error) throw new Error(error.message);
+
+  const organization = data?.organization && typeof data.organization === "object"
+    ? data.organization as Record<string, unknown>
+    : {};
+  const themes = Array.isArray(data?.themes) ? data.themes : [];
+  const emergingThemes = Array.isArray(data?.emerging_themes) ? data.emerging_themes : [];
+  const researchers = Array.isArray(data?.researchers) ? data.researchers : [];
+
+  return {
+    organization: {
+      name: String(organization.name || organizationName),
+      kind: String(organization.kind || "unit") as OrganizationKind,
+      researcherCount: Number(organization.researcher_count || researchers.length || 0),
+      researchersWithTopics: Number(organization.researchers_with_topics || 0),
+      distinctTopicCount: Number(organization.distinct_topic_count || 0),
+      emergingTopicCount: Number(organization.emerging_topic_count || 0),
+      firstYear: organization.first_year === null || organization.first_year === undefined
+        ? null
+        : Number(organization.first_year),
+      latestYear: organization.latest_year === null || organization.latest_year === undefined
+        ? null
+        : Number(organization.latest_year),
+    },
+    summary: String(data?.summary || ""),
+    themes: themes.map((row: Record<string, unknown>) => toOrganizationTheme(row)),
+    emergingThemes: emergingThemes.map((row: Record<string, unknown>) => toOrganizationTheme(row)),
+    researchers: researchers
+      .map((row: Record<string, unknown>) => ({
+        researcherId: String(row.researcher_id || ""),
+        openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
+        profileUrl: row.profile_url ? String(row.profile_url) : undefined,
+        name: String(row.full_name || ""),
+        title: String(row.title || "Imperial researcher"),
+        department: normaliseDepartment(String(row.department || "")),
+        faculty: String(row.faculty || "Imperial College London"),
+        fieldsOfResearch: String(row.fields_of_research || ""),
+        paperCount: Number(row.paper_count || 0),
+        themes: Array.isArray(row.themes)
+          ? row.themes.map((theme: Record<string, unknown>) => ({
+            openalexTopicId: String(theme.openalex_topic_id || ""),
+            label: String(theme.label || ""),
+            trend: String(theme.trend || "stable"),
+          })).filter((theme: { label: string }) => theme.label)
+          : [],
+      }))
+      .filter((row: OrganizationResearcher) => row.researcherId && row.name),
+    coverageNote: String(data?.coverage_note || ""),
+  };
 }
 
 export async function getResearcherProfile(researcherId: string): Promise<ResearcherProfile> {
@@ -773,7 +966,7 @@ export async function getResearcherNetwork(
     body: {
       action: "researcher_network",
       researcher_id: researcherId,
-      network_limit: Math.max(10, Math.min(limit, 100)),
+      network_limit: limit <= 0 ? 0 : Math.max(10, Math.min(limit, 500)),
     },
   });
 
@@ -1115,7 +1308,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
     : null;
 
   return {
-    kind: ["person", "topic", "redirect", "empty"].includes(String(data?.kind))
+    kind: ["person", "topic", "information", "redirect", "empty"].includes(String(data?.kind))
       ? String(data?.kind) as QuickSearchResult["kind"]
       : "empty",
     answer: String(data?.answer || ""),

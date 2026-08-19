@@ -76,6 +76,7 @@ class TopicAggregate:
     recent_paper_count: int = 0
     recent_weight: float = 0.0
     prior_weight: float = 0.0
+    year_counts: dict[int, int] = field(default_factory=dict)
     evidence: list[dict] = field(default_factory=list)
 
 
@@ -325,7 +326,16 @@ def build_theme_rows(
     )[:max(1, min(top_topics, 24))]
     source_digest = hashlib.sha256(
         json.dumps(
-            [(item.topic.openalex_id, round(item.weight, 8), item.paper_count, item.latest_year) for item in ranked],
+            [
+                (
+                    item.topic.openalex_id,
+                    round(item.weight, 8),
+                    item.paper_count,
+                    item.latest_year,
+                    sorted(item.year_counts.items()),
+                )
+                for item in ranked
+            ],
             separators=(",", ":"),
         ).encode("utf-8"),
     ).hexdigest()
@@ -361,6 +371,7 @@ def build_theme_rows(
                     "source": "OpenAlex Topics snapshot",
                     "author_openalex_id": openalex_id,
                     "total_author_papers": total_papers,
+                    "year_counts": {str(year): count for year, count in sorted(aggregate.year_counts.items())},
                 },
                 "source_hash": source_digest,
                 "clustering_version": "openalex-topics-2026-03-rank-weight-v1",
@@ -428,6 +439,7 @@ def iter_theme_rows(
                 if year:
                     aggregate.first_year = year if aggregate.first_year is None else min(aggregate.first_year, year)
                     aggregate.latest_year = year if aggregate.latest_year is None else max(aggregate.latest_year, year)
+                    aggregate.year_counts[year] = aggregate.year_counts.get(year, 0) + 1
                 if year >= current_year - RECENT_YEARS:
                     aggregate.recent_paper_count += 1
                     aggregate.recent_weight += weight

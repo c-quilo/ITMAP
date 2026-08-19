@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
   BookOpen,
@@ -26,8 +26,6 @@ import {
   type ResearcherThemeEvidencePaper,
 } from "@/lib/researcherSearch";
 
-
-const resultCache = new Map<string, CollaborationOpportunitiesResult>();
 type ScopeFilter = "all" | "department" | "faculty";
 
 
@@ -206,11 +204,13 @@ function OpportunityCard({
 
 export default function CollaborationOpportunities({
   onOpenProfile,
+  focalResearcher,
 }: {
   onOpenProfile?: (suggestion: ResearcherSuggestion) => void;
+  focalResearcher?: ResearcherSuggestion | null;
 }) {
   const requestIdRef = useRef(0);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(focalResearcher?.name || "");
   const [suggestions, setSuggestions] = useState<ResearcherSuggestion[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [selectedResearcher, setSelectedResearcher] = useState<ResearcherSuggestion | null>(null);
@@ -248,7 +248,7 @@ export default function CollaborationOpportunities({
     };
   }, [query, selectedResearcher]);
 
-  const selectResearcher = async (researcher: ResearcherSuggestion) => {
+  const selectResearcher = useCallback(async (researcher: ResearcherSuggestion) => {
     const requestId = ++requestIdRef.current;
     setSelectedResearcher(researcher);
     setQuery(researcher.name);
@@ -259,10 +259,8 @@ export default function CollaborationOpportunities({
     setIsLoading(true);
     setError("");
     try {
-      const cached = resultCache.get(researcher.researcherId);
-      const response = cached || await getCollaborationOpportunities(researcher.researcherId, 24);
+      const response = await getCollaborationOpportunities(researcher.researcherId, 24);
       if (requestId !== requestIdRef.current) return;
-      if (!cached) resultCache.set(researcher.researcherId, response);
       setResult(response);
     } catch (loadError) {
       if (requestId !== requestIdRef.current) return;
@@ -271,7 +269,11 @@ export default function CollaborationOpportunities({
     } finally {
       if (requestId === requestIdRef.current) setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (focalResearcher) void selectResearcher(focalResearcher);
+  }, [focalResearcher, selectResearcher]);
 
   const clearResearcher = () => {
     requestIdRef.current += 1;
@@ -326,54 +328,56 @@ export default function CollaborationOpportunities({
             </div>
           </div>
 
-          <div className="relative w-full lg:max-w-xl">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={event => {
-                setQuery(event.target.value);
-                if (selectedResearcher && event.target.value !== selectedResearcher.name) {
-                  setSelectedResearcher(null);
-                  setResult(null);
-                }
-              }}
-              placeholder="Find an Imperial researcher"
-              className="h-11 w-full rounded-lg border border-input bg-card pl-10 pr-10 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/15"
-            />
-            {isSuggesting ? (
-              <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-primary" />
-            ) : query ? (
-              <button
-                type="button"
-                title="Clear researcher"
-                onClick={clearResearcher}
-                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : null}
+          {!focalResearcher && (
+            <div className="relative w-full lg:max-w-xl">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={event => {
+                  setQuery(event.target.value);
+                  if (selectedResearcher && event.target.value !== selectedResearcher.name) {
+                    setSelectedResearcher(null);
+                    setResult(null);
+                  }
+                }}
+                placeholder="Find an Imperial researcher"
+                className="h-11 w-full rounded-lg border border-input bg-card pl-10 pr-10 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/15"
+              />
+              {isSuggesting ? (
+                <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-primary" />
+              ) : query ? (
+                <button
+                  type="button"
+                  title="Clear researcher"
+                  onClick={clearResearcher}
+                  className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
 
-            {suggestions.length > 0 ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-80 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
-                {suggestions.map(suggestion => (
-                  <button
-                    key={suggestion.researcherId}
-                    type="button"
-                    onClick={() => selectResearcher(suggestion)}
-                    className="flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-secondary"
-                  >
-                    <UserRoundSearch className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-foreground">{suggestion.name}</span>
-                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                        {[suggestion.title, suggestion.department].filter(Boolean).join(" · ")}
+              {suggestions.length > 0 ? (
+                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-80 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
+                  {suggestions.map(suggestion => (
+                    <button
+                      key={suggestion.researcherId}
+                      type="button"
+                      onClick={() => selectResearcher(suggestion)}
+                      className="flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-secondary"
+                    >
+                      <UserRoundSearch className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-foreground">{suggestion.name}</span>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                          {[suggestion.title, suggestion.department].filter(Boolean).join(" · ")}
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
 

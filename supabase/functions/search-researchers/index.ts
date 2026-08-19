@@ -6,11 +6,12 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "researcher_profile" | "researcher_network" | "researcher_connection" | "collaboration_opportunities" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "suggest_organizations" | "list_organizations" | "organization_profile" | "researcher_profile" | "researcher_network" | "researcher_connection" | "collaboration_opportunities" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
   original_query?: string;
   researcher_id?: string;
   target_researcher_id?: string;
+  organization_name?: string;
   mode?: "semantic" | "keyword";
   filters?: string[];
   limit?: number;
@@ -1600,8 +1601,24 @@ async function openAiWebSearchJson(
   return parseJsonObject(outputText);
 }
 
+function implicitResearchTopic(query: string) {
+  const cleaned = query
+    .replace(/\b(?:at|from|within)\s+imperial(?:\s+college(?:\s+london)?)?\b/gi, " ")
+    .replace(/\b(?:i|we)\s+(?:need|want|would\s+like)\s+to\s+(?:find|identify|look\s+for)\b/gi, " ")
+    .replace(/\b(?:please\s+)?(?:find|list|show|identify|recommend)\s+(?:me\s+)?(?:some\s+)?(?:people|researchers|experts|academics|staff)\b/gi, " ")
+    .replace(/\b(?:tell|give)\s+me\s+(?:about\s+)?(?:some\s+)?(?:people|researchers|experts|academics|staff)\b/gi, " ")
+    .replace(/\b(?:people|researchers|experts|academics|staff)\s+(?:who|that)\s+(?:are\s+)?(?:working|work|speciali[sz](?:e|ing)|researching)\s+(?:on|in)\b/gi, " ")
+    .replace(/^\s*(?:who\s+(?:is|are)\s+)?(?:working|works?|researching)\s+(?:on|in)\s+/i, "")
+    .replace(/^\s*(?:on|in|about)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, "")
+    .trim();
+  return cleaned || query.trim();
+}
+
 async function expandMission(openAiKey: string, model: string, query: string, metrics?: UsageMetrics): Promise<MissionExpansion> {
-  const fallback = { expanded_query: query };
+  const implicitTopic = implicitResearchTopic(query);
+  const fallback = { expanded_query: implicitTopic || query };
   try {
     const result = await openAiJson(
       openAiKey,
@@ -1611,23 +1628,32 @@ async function expandMission(openAiKey: string, model: string, query: string, me
           role: "system",
           content: [
             "You rewrite search queries for an expert-finding system.",
-            "Expand the user's query into a concise, evidence-oriented search query.",
-            "Preserve the user's intent. Do not add unrelated topics. Do not name researchers.",
+            "The system always searches for Imperial College London researchers, so finding people at Imperial is implicit.",
+            "Remove interface instructions such as find, list, show or recommend people, researchers or experts at Imperial.",
+            "Extract the actual research theme, problem, method, application domain, population and outcome the user cares about.",
+            "Preserve conjunctions and relationships between central requirements. For example, climate change impacts on health must retain both climate change and health as must-have concepts.",
+            "Do not turn a precise topic into a broad wishlist and do not add unrelated synonyms, sectors, methods or outcomes.",
+            "For a long brief, retain its concrete requirements while producing a concise, evidence-oriented search query.",
+            "Do not name or suggest researchers.",
+            "Put only indispensable concepts in must_have. Put methods in method_terms and research/application domains in domain_terms.",
             "Return JSON only with keys: expanded_query, must_have, nice_to_have, method_terms, domain_terms.",
           ].join(" "),
         },
         {
           role: "user",
-          content: `Query:\n${query}`,
+          content: JSON.stringify({
+            original_query: truncateText(query, 20000),
+            topic_after_removing_interface_instructions: truncateText(implicitTopic, 16000),
+          }),
         },
       ],
       900,
       metrics,
     ) as MissionExpansion;
 
-    const expanded = truncateText(result.expanded_query || query, 900);
+    const expanded = truncateText(result.expanded_query || implicitTopic || query, 900);
     return {
-      expanded_query: expanded || query,
+      expanded_query: expanded || implicitTopic || query,
       must_have: Array.isArray(result.must_have) ? result.must_have.slice(0, 8).map(String) : [],
       nice_to_have: Array.isArray(result.nice_to_have) ? result.nice_to_have.slice(0, 8).map(String) : [],
       method_terms: Array.isArray(result.method_terms) ? result.method_terms.slice(0, 8).map(String) : [],
@@ -2511,11 +2537,18 @@ function quickTopicReason(query: string, terms: string[], row: Record<string, un
 
 function quickTopicSearchQuery(query: string) {
   return query
+    .replace(/\b(?:please|list|show|give|tell|name|identify)\b/gi, " ")
+    .replace(/\b(?:impact|impacts|effect|effects)\s+of\b/gi, " ")
     .replace(/\b(?:people|person|researchers?|experts?)\b/gi, " ")
     .replace(/\b(?:connected|connection|connections|linked|links?|affiliated|affiliation)\b/gi, " ")
-    .replace(/\b(?:to|with|at|in|from|who|work|works|working|on)\b/gi, " ")
+    .replace(/\b(?:to|with|at|in|from|who|whom|whose|work|works|working|on|are|is|the|of)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isQuickAffiliationQuery(query: string) {
+  return /\bgrantham\b/i.test(query)
+    || /\b(?:affiliated|affiliation|connected\s+to|associated\s+with|part\s+of|belongs?\s+to|members?|department|institute|school|faculty|centre|center|laboratory|lab)\b/i.test(query);
 }
 
 function quickAffiliationTerms(query: string) {
@@ -2689,12 +2722,8 @@ async function schoolOfConvergenceScienceAnswer(
     answer += ` Its operations leadership includes ${info.operations.join("; ")}.`;
   }
 
-  if (!wantsCoDirectors) {
-    answer += " In ITMAP, questions about the School can be connected back to researchers, themes and missions, but deeper expert ranking should still use the full Search workflow.";
-  }
-
   return {
-    kind: "topic",
+    kind: "information",
     answer,
     suggestions: wantsCoDirectors || wantsDirectors
       ? await schoolCoDirectorSuggestions(supabase)
@@ -2770,15 +2799,26 @@ async function quickTopicSuggestions(
   supabase: ReturnType<typeof createClient>,
   query: string,
   limit = 8,
+  mission?: MissionExpansion,
+  sourceQuery = query,
 ) {
   const searchQuery = quickTopicSearchQuery(query) || query;
-  const terms = queryTerms(searchQuery);
+  const structuredConcepts = mission?.must_have?.length
+    ? mission.must_have
+    : [...(mission?.method_terms || []), ...(mission?.domain_terms || [])];
+  const termSource = structuredConcepts.length > 0 ? structuredConcepts.join(" ") : searchQuery;
+  const terms = [...new Set(queryTerms(termSource))]
+    .filter(term => !["impact", "impacts", "effect", "effects", "topic", "topics"].includes(term))
+    .slice(0, 8);
   if (terms.length === 0) return [];
+  const requiredTermQuery = terms.join(" AND ");
 
-  const directMatches = await quickAffiliationSuggestions(supabase, query, limit);
+  const directMatches = isQuickAffiliationQuery(sourceQuery)
+    ? await quickAffiliationSuggestions(supabase, sourceQuery, limit)
+    : [];
 
   const { data, error } = await supabase.rpc("match_keyword_researchers", {
-    search_query: searchQuery,
+    search_query: requiredTermQuery,
     match_count: Math.max(20, limit * 4),
     faculty_filters: [],
     role_filters: [],
@@ -3178,14 +3218,41 @@ async function quickSearch(
     };
   }
 
-  const topicSuggestions = await quickTopicSuggestions(supabase, trimmedQuery, 8);
+  const topicMission = await expandMission(
+    openAiKey,
+    model,
+    truncateText(redactSensitiveSearchText(trimmedQuery), 20000),
+  );
+  const topicQuery = topicMission.expanded_query?.trim()
+    || implicitResearchTopic(trimmedQuery)
+    || trimmedQuery;
+  const topicSuggestions = await quickTopicSuggestions(
+    supabase,
+    topicQuery,
+    8,
+    topicMission,
+    trimmedQuery,
+  );
   if (topicSuggestions.length > 0) {
+    if (isQuickAffiliationQuery(trimmedQuery)) {
+      const affiliationDescription = /\bgrantham\b/i.test(trimmedQuery)
+        ? "a Grantham Institute connection"
+        : "the requested institutional connection";
+      return {
+        kind: "information",
+        answer: `Here are researchers whose Imperial profiles indicate ${affiliationDescription}.`,
+        suggestions: topicSuggestions,
+        evidence_titles: [],
+        caveat: "Affiliations are drawn from stored Imperial profile text and may not reflect very recent role changes.",
+      };
+    }
+
     return {
       kind: "topic",
-      answer: `Here are quick, non-reranked matches for "${trimmedQuery}". This is useful for a first pointer; use the full Search tab when you need ranked results with paper evidence and deeper comparison.`,
+      answer: `Here are quick, non-reranked matches for "${topicQuery}". This is useful for a first pointer; use the full Search tab when you need ranked results with paper evidence and deeper comparison.`,
       suggestions: topicSuggestions,
       evidence_titles: [],
-      caveat: "Ask ITMAP does not run ITMAP reranking, query rewriting, media/grant checks, or the graph workflow.",
+      caveat: "Ask ITMAP clarifies the topic but does not run the full semantic retrieval, ITMAP reranking, media/grant checks, or the graph workflow.",
     };
   }
 
@@ -3195,6 +3262,508 @@ async function quickSearch(
     suggestions: [],
     evidence_titles: [],
     caveat: "",
+  };
+}
+
+type OrganizationKind = "department" | "institute" | "school" | "faculty" | "centre" | "laboratory" | "unit";
+
+function organizationIdentityKey(value: unknown) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\bcenter\b/g, "centre")
+    .replace(/\bdept\b/g, "department")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const CANONICAL_ORGANIZATION_NAMES = new Map<string, string>([
+  ["department of earth science and engineering", "Department of Earth Science & Engineering"],
+  ["department of surgery and cancer", "Department of Surgery & Cancer"],
+  ["department of analytics marketing and operations", "Department of Analytics, Marketing and Operations"],
+  ["national heart and lung institute", "National Heart & Lung Institute"],
+  ["institute for security science and technology", "Institute for Security Science & Technology"],
+  ["grantham institute for climate change", "Grantham Institute for Climate Change"],
+  ["institute for climate change", "Grantham Institute for Climate Change"],
+]);
+
+function canonicalOrganizationName(value: unknown) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/grantham|institute for climate change/i.test(text)) {
+    return "Grantham Institute for Climate Change";
+  }
+  const markers = [...text.matchAll(/\b(?:Department of|Faculty of|Institute (?:of|for)|School of|(?:Centre|Center) (?:for|of)|Division of)\b/gi)];
+  if (markers.length === 2 && markers[0].index === 0 && typeof markers[1].index === "number") {
+    const first = text.slice(0, markers[1].index).trim();
+    const second = text.slice(markers[1].index).trim();
+    if (organizationIdentityKey(first) === organizationIdentityKey(second)) {
+      return CANONICAL_ORGANIZATION_NAMES.get(organizationIdentityKey(first)) || first.replace(/^Center\b/i, "Centre");
+    }
+  }
+  const repeated = text.match(/^(.{4,}?)\s+\1$/i)?.[1]?.trim() || text;
+  const key = organizationIdentityKey(repeated);
+  return CANONICAL_ORGANIZATION_NAMES.get(key) || repeated.replace(/^Center\b/i, "Centre");
+}
+
+function organizationKind(name: string): OrganizationKind {
+  if (/\bfaculty\b/i.test(name)) return "faculty";
+  if (/\bdepartment\b/i.test(name)) return "department";
+  if (/\binstitute\b/i.test(name)) return "institute";
+  if (/\bschool\b/i.test(name)) return "school";
+  if (/\bcentre|center\b/i.test(name)) return "centre";
+  if (/\blaboratory|\blab\b/i.test(name)) return "laboratory";
+  return "unit";
+}
+
+function isOrganizationName(name: string) {
+  if (name === "Grantham Institute for Climate Change") return true;
+  if (name.length < 6 || name.length > 110 || name.split(/\s+/).length > 15) return false;
+  if (/\b(?:I|my|we|our|he|she|they|their)\b/i.test(name)) return false;
+  if (/\b(?:joined|worked|working|role|support|provides|commenced|tenure|professor|lecturer|researcher|administrator)\b/i.test(name)) return false;
+
+  const structureCount = (name.match(/\b(?:department|institute|school|faculty|centre|center|laboratory|lab|division)\b/gi) || []).length;
+  if (structureCount !== 1) return false;
+
+  const department = name.match(/^Department of\s+(.+)$/i);
+  if (department) return department[1].trim().length >= 4;
+  if (/^(?:Institute (?:of|for)\s+.+|National\s+.+\s+Institute|[\p{L}\d&'()/-]+(?:\s+[\p{L}\d&'()/-]+){1,5}\s+Institute)$/iu.test(name)) return true;
+  if (/^(?:School of\s+.+|[\p{L}\d&'()/-]+(?:\s+[\p{L}\d&'()/-]+){1,5}\s+School(?:\s+of\s+.+)?)$/iu.test(name)) return true;
+  if (/^Faculty of\s+.+$/i.test(name)) return true;
+  if (/^(?:Centre|Center) (?:for|of)\s+.+$/i.test(name)) return true;
+  if (/^(?:Laboratory|Lab) (?:for|of)\s+.+$/i.test(name)) return true;
+  if (/^[\p{L}\d&'()/-]+(?:\s+[\p{L}\d&'()/-]+){1,5}\s+(?:Laboratory|Lab)$/iu.test(name)) return true;
+  return /^Division of\s+.+$/i.test(name);
+}
+
+function organizationNamesForResearcher(row: Record<string, unknown>) {
+  return [...new Set([
+    canonicalOrganizationName(row.affiliation),
+    canonicalOrganizationName(row.faculty),
+  ].filter(name => name && isOrganizationName(name)))];
+}
+
+function organizationQueryAliases(query: string) {
+  if (/\bgrantham\b|\binstitute for climate change\b/i.test(query)) {
+    return ["Grantham", "Institute for Climate Change"];
+  }
+  const trimmed = query.trim();
+  return [...new Set([
+    trimmed,
+    trimmed.includes("&") ? trimmed.replace(/\s*&\s*/g, " and ") : "",
+    /\band\b/i.test(trimmed) ? trimmed.replace(/\band\b/gi, "&") : "",
+    /\bcentre\b/i.test(trimmed) ? trimmed.replace(/\bcentre\b/gi, "Center") : "",
+    /\bcenter\b/i.test(trimmed) ? trimmed.replace(/\bcenter\b/gi, "Centre") : "",
+  ].filter(Boolean))];
+}
+
+let organizationDirectoryCache: {
+  expiresAt: number;
+  rows: Array<{
+    name: string;
+    kind: OrganizationKind;
+    researcher_count: number;
+    score: number;
+  }>;
+} | null = null;
+
+async function listOrganizations(supabase: ReturnType<typeof createClient>) {
+  if (organizationDirectoryCache && organizationDirectoryCache.expiresAt > Date.now()) {
+    return organizationDirectoryCache.rows;
+  }
+
+  const pageSize = 1000;
+  const researcherRows: Record<string, unknown>[] = [];
+  for (let offset = 0; offset < 25000; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("researchers")
+      .select("id,affiliation,faculty")
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const rows = (data || []) as Record<string, unknown>[];
+    researcherRows.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+
+  const organizations = new Map<string, {
+    name: string;
+    kind: OrganizationKind;
+    researcherIds: Set<string>;
+    nameCounts: Map<string, number>;
+  }>();
+  for (const row of researcherRows) {
+    const researcherId = String(row.id || "");
+    if (!researcherId) continue;
+    for (const name of organizationNamesForResearcher(row)) {
+      const key = organizationIdentityKey(name);
+      if (!key) continue;
+      const organization = organizations.get(key) || {
+        name,
+        kind: organizationKind(name),
+        researcherIds: new Set<string>(),
+        nameCounts: new Map<string, number>(),
+      };
+      organization.researcherIds.add(researcherId);
+      organization.nameCounts.set(name, (organization.nameCounts.get(name) || 0) + 1);
+      organization.name = [...organization.nameCounts.entries()]
+        .sort((first, second) => second[1] - first[1] || first[0].length - second[0].length)[0][0];
+      organization.kind = organizationKind(organization.name);
+      organizations.set(key, organization);
+    }
+  }
+
+  const kindOrder: Record<OrganizationKind, number> = {
+    department: 0,
+    institute: 1,
+    school: 2,
+    faculty: 3,
+    centre: 4,
+    laboratory: 5,
+    unit: 6,
+  };
+  const rows = [...organizations.values()]
+    .map(organization => ({
+      name: organization.name,
+      kind: organization.kind,
+      researcher_count: organization.researcherIds.size,
+      score: 1,
+    }))
+    .sort((first, second) => kindOrder[first.kind] - kindOrder[second.kind]
+      || second.researcher_count - first.researcher_count
+      || first.name.localeCompare(second.name));
+
+  organizationDirectoryCache = {
+    expiresAt: Date.now() + 15 * 60 * 1000,
+    rows,
+  };
+  return rows;
+}
+
+async function suggestOrganizations(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+  requestedLimit = 10,
+) {
+  const trimmed = truncateText(query.trim(), 140);
+  if (trimmed.length < 2) return [];
+  const limit = Math.max(3, Math.min(Number(requestedLimit) || 10, 20));
+  const aliases = organizationQueryAliases(trimmed);
+  const filters = aliases.flatMap(alias => {
+    const escaped = escapeIlike(alias);
+    return [
+      `affiliation.ilike.%${escaped}%`,
+      `faculty.ilike.%${escaped}%`,
+    ];
+  });
+  const { data, error } = await supabase
+    .from("researchers")
+    .select("id,affiliation,faculty")
+    .or(filters.join(","))
+    .limit(700);
+  if (error) throw error;
+
+  const organizations = new Map<string, { name: string; researcherIds: Set<string> }>();
+  for (const row of (data || []) as Record<string, unknown>[]) {
+    for (const name of organizationNamesForResearcher(row)) {
+      const normalizedName = organizationIdentityKey(name);
+      const normalizedQuery = organizationIdentityKey(trimmed);
+      if (
+        name !== "Grantham Institute for Climate Change"
+        && !normalizedName.includes(normalizedQuery)
+        && !normalizedQuery.includes(normalizedName)
+      ) continue;
+      const organization = organizations.get(normalizedName) || {
+        name,
+        researcherIds: new Set<string>(),
+      };
+      organization.researcherIds.add(String(row.id || ""));
+      organizations.set(normalizedName, organization);
+    }
+  }
+
+  const normalizedQuery = organizationIdentityKey(trimmed);
+  return [...organizations.values()]
+    .map(({ name, researcherIds }) => {
+      const normalizedName = organizationIdentityKey(name);
+      const score = normalizedName === normalizedQuery
+        ? 1
+        : normalizedName.startsWith(normalizedQuery)
+          ? 0.94
+          : normalizedName.includes(normalizedQuery)
+            ? 0.88
+            : name === "Grantham Institute for Climate Change" && normalizedQuery.includes("grantham")
+              ? 0.98
+              : 0.72;
+      return {
+        name,
+        kind: organizationKind(name),
+        researcher_count: researcherIds.size,
+        score,
+      };
+    })
+    .sort((first, second) => Number(second.score) - Number(first.score)
+      || Number(second.researcher_count) - Number(first.researcher_count)
+      || String(first.name).localeCompare(String(second.name)))
+    .slice(0, limit);
+}
+
+function themeEvidencePapers(row: Record<string, unknown>) {
+  const evidence = row.evidence && typeof row.evidence === "object"
+    ? row.evidence as Record<string, unknown>
+    : {};
+  return Array.isArray(evidence.papers)
+    ? (evidence.papers as Record<string, unknown>[])
+    : [];
+}
+
+function themeAuthorPaperCount(row: Record<string, unknown>) {
+  const evidence = row.evidence && typeof row.evidence === "object"
+    ? row.evidence as Record<string, unknown>
+    : {};
+  return Math.max(0, Number(evidence.total_author_papers || 0));
+}
+
+function themeYearCounts(row: Record<string, unknown>) {
+  const evidence = row.evidence && typeof row.evidence === "object"
+    ? row.evidence as Record<string, unknown>
+    : {};
+  const rawCounts = evidence.year_counts && typeof evidence.year_counts === "object"
+    ? evidence.year_counts as Record<string, unknown>
+    : {};
+  return Object.entries(rawCounts)
+    .map(([year, count]) => [Number(year), Math.max(0, Number(count || 0))] as const)
+    .filter(([year, count]) => year >= 1970 && year <= new Date().getFullYear() + 1 && count > 0);
+}
+
+async function organizationProfile(
+  supabase: ReturnType<typeof createClient>,
+  requestedName: string,
+) {
+  const name = canonicalOrganizationName(truncateText(requestedName.trim(), 220));
+  if (!name || !isOrganizationName(name)) throw new Error("Organisation not found");
+  const aliases = organizationQueryAliases(name);
+  const filters = aliases.flatMap(alias => {
+    const escaped = escapeIlike(alias);
+    return [
+      `affiliation.ilike.%${escaped}%`,
+      `faculty.ilike.%${escaped}%`,
+    ];
+  });
+  const { data: candidateRows, error: candidateError } = await supabase
+    .from("researchers")
+    .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty,fields_of_research")
+    .or(filters.join(","))
+    .limit(1000);
+  if (candidateError) throw candidateError;
+
+  const normalizedName = organizationIdentityKey(name);
+  const researchers = ((candidateRows || []) as Record<string, unknown>[])
+    .filter(row => organizationNamesForResearcher(row)
+      .some(candidate => organizationIdentityKey(candidate) === normalizedName));
+  if (researchers.length === 0) throw new Error("No researchers found for this organisation");
+
+  const researcherIds = researchers.map(row => String(row.id || "")).filter(Boolean);
+  const themeResults = await Promise.all(chunkItems(researcherIds, 50).map(async ids => {
+    const { data, error } = await supabase
+      .from("researcher_themes")
+      .select("researcher_id,openalex_topic_id,label,description,keywords,domain_name,field_name,subfield_name,topic_strength,paper_count,first_year,latest_year,recent_paper_count,trend,confidence,evidence")
+      .in("researcher_id", ids)
+      .eq("source_type", "openalex_topic")
+      .order("topic_strength", { ascending: false })
+      .limit(1000);
+    if (error) throw error;
+    return (data || []) as Record<string, unknown>[];
+  }));
+  const themeRows = themeResults.flat();
+
+  type TopicAggregate = {
+    openalexTopicId: string;
+    label: string;
+    description: string;
+    keywords: string[];
+    domain: string;
+    field: string;
+    subfield: string;
+    researcherIds: Set<string>;
+    paperCount: number;
+    recentPaperCount: number;
+    firstYear: number | null;
+    latestYear: number | null;
+    strength: number;
+    emergingResearchers: number;
+    stableResearchers: number;
+    decliningResearchers: number;
+    yearCounts: Map<number, number>;
+    evidencePapers: Record<string, unknown>[];
+  };
+
+  const topicByKey = new Map<string, TopicAggregate>();
+  const themesByResearcher = new Map<string, Record<string, unknown>[]>();
+  const authorPaperCount = new Map<string, number>();
+  for (const row of themeRows) {
+    const researcherId = String(row.researcher_id || "");
+    const topicId = String(row.openalex_topic_id || "");
+    const label = String(row.label || "").trim();
+    if (!researcherId || !label) continue;
+
+    const researcherThemes = themesByResearcher.get(researcherId) || [];
+    researcherThemes.push(row);
+    themesByResearcher.set(researcherId, researcherThemes);
+    authorPaperCount.set(researcherId, Math.max(
+      authorPaperCount.get(researcherId) || 0,
+      themeAuthorPaperCount(row),
+    ));
+
+    const key = topicId || normalizeName(label);
+    const aggregate = topicByKey.get(key) || {
+      openalexTopicId: topicId,
+      label,
+      description: String(row.description || ""),
+      keywords: Array.isArray(row.keywords) ? row.keywords.map(String).filter(Boolean).slice(0, 8) : [],
+      domain: String(row.domain_name || ""),
+      field: String(row.field_name || ""),
+      subfield: String(row.subfield_name || ""),
+      researcherIds: new Set<string>(),
+      paperCount: 0,
+      recentPaperCount: 0,
+      firstYear: null,
+      latestYear: null,
+      strength: 0,
+      emergingResearchers: 0,
+      stableResearchers: 0,
+      decliningResearchers: 0,
+      yearCounts: new Map<number, number>(),
+      evidencePapers: [],
+    };
+    aggregate.researcherIds.add(researcherId);
+    aggregate.paperCount += Math.max(0, Number(row.paper_count || 0));
+    aggregate.recentPaperCount += Math.max(0, Number(row.recent_paper_count || 0));
+    aggregate.strength += Math.max(0, Number(row.topic_strength || 0));
+    const firstYear = Number(row.first_year || 0);
+    const latestYear = Number(row.latest_year || 0);
+    if (firstYear >= 1970) aggregate.firstYear = aggregate.firstYear === null ? firstYear : Math.min(aggregate.firstYear, firstYear);
+    if (latestYear >= 1970) aggregate.latestYear = aggregate.latestYear === null ? latestYear : Math.max(aggregate.latestYear, latestYear);
+    if (row.trend === "emerging") aggregate.emergingResearchers += 1;
+    else if (row.trend === "declining") aggregate.decliningResearchers += 1;
+    else aggregate.stableResearchers += 1;
+    for (const [year, count] of themeYearCounts(row)) {
+      aggregate.yearCounts.set(year, (aggregate.yearCounts.get(year) || 0) + count);
+    }
+    for (const paper of themeEvidencePapers(row)) {
+      const paperKey = String(paper.openalex_work_id || paper.title || "").toLowerCase();
+      if (!paperKey || aggregate.evidencePapers.some(candidate =>
+        String(candidate.openalex_work_id || candidate.title || "").toLowerCase() === paperKey
+      )) continue;
+      aggregate.evidencePapers.push(paper);
+    }
+    aggregate.evidencePapers.sort((first, second) =>
+      Number(second.publication_year || 0) - Number(first.publication_year || 0)
+      || Number(second.cited_by_count || 0) - Number(first.cited_by_count || 0));
+    aggregate.evidencePapers = aggregate.evidencePapers.slice(0, 5);
+    topicByKey.set(key, aggregate);
+  }
+
+  const allThemes = [...topicByKey.values()].map(theme => {
+    const researcherCount = theme.researcherIds.size;
+    const isEmerging = theme.emergingResearchers >= Math.max(1, Math.ceil(researcherCount * 0.35))
+      && theme.emergingResearchers >= theme.decliningResearchers
+      && theme.recentPaperCount >= 3;
+    const isDeclining = !isEmerging
+      && theme.decliningResearchers > theme.emergingResearchers
+      && theme.decliningResearchers >= Math.max(2, Math.ceil(researcherCount * 0.4));
+    return {
+      openalex_topic_id: theme.openalexTopicId,
+      label: theme.label,
+      description: theme.description,
+      keywords: theme.keywords,
+      domain: theme.domain,
+      field: theme.field,
+      subfield: theme.subfield,
+      researcher_count: researcherCount,
+      paper_count: theme.paperCount,
+      recent_paper_count: theme.recentPaperCount,
+      first_year: theme.firstYear,
+      latest_year: theme.latestYear,
+      trend: isEmerging ? "emerging" : isDeclining ? "declining" : "stable",
+      emerging_researchers: theme.emergingResearchers,
+      year_counts: [...theme.yearCounts.entries()]
+        .sort((first, second) => first[0] - second[0])
+        .map(([year, count]) => ({ year, count })),
+      evidence_papers: theme.evidencePapers.map(paper => ({
+        openalex_work_id: paper.openalex_work_id,
+        title: paper.title,
+        publication_year: paper.publication_year,
+        cited_by_count: paper.cited_by_count,
+      })),
+      importance: researcherCount * 5 + theme.recentPaperCount * 0.6 + theme.paperCount * 0.08 + theme.strength * 10,
+    };
+  }).sort((first, second) => second.importance - first.importance || first.label.localeCompare(second.label));
+  const emergingThemes = allThemes
+    .filter(theme => theme.trend === "emerging")
+    .sort((first, second) => second.recent_paper_count - first.recent_paper_count
+      || second.researcher_count - first.researcher_count)
+    .slice(0, 40);
+  const selectedThemeKeys = new Set([
+    ...allThemes.slice(0, 80).map(theme => theme.openalex_topic_id || normalizeName(theme.label)),
+    ...emergingThemes.map(theme => theme.openalex_topic_id || normalizeName(theme.label)),
+  ]);
+  const returnedThemes = allThemes.filter(theme =>
+    selectedThemeKeys.has(theme.openalex_topic_id || normalizeName(theme.label))
+  );
+
+  const researcherRows = researchers.map(row => {
+    const researcherId = String(row.id || "");
+    const themes = (themesByResearcher.get(researcherId) || [])
+      .sort((first, second) => Number(second.topic_strength || 0) - Number(first.topic_strength || 0))
+      .slice(0, 6);
+    return {
+      researcher_id: researcherId,
+      openalex_id: row.openalex_id,
+      profile_url: row.profile_url,
+      full_name: row.full_name,
+      title: row.position_name || row.position || "Imperial researcher",
+      department: canonicalOrganizationName(row.affiliation),
+      faculty: row.faculty || "",
+      fields_of_research: row.fields_of_research || "",
+      paper_count: authorPaperCount.get(researcherId) || 0,
+      themes: themes.map(theme => ({
+        openalex_topic_id: theme.openalex_topic_id,
+        label: theme.label,
+        trend: theme.trend,
+      })),
+    };
+  }).sort((first, second) => String(first.full_name).localeCompare(String(second.full_name)));
+
+  const datedThemes = returnedThemes.filter(theme => theme.first_year && theme.latest_year);
+  const firstYear = datedThemes.length > 0 ? Math.min(...datedThemes.map(theme => Number(theme.first_year))) : null;
+  const latestYear = datedThemes.length > 0 ? Math.max(...datedThemes.map(theme => Number(theme.latest_year))) : null;
+  const topThemeNames = allThemes.slice(0, 5).map(theme => theme.label);
+  const emergingNames = emergingThemes.slice(0, 3).map(theme => theme.label);
+
+  return {
+    organization: {
+      name,
+      kind: organizationKind(name),
+      researcher_count: researcherRows.length,
+      researchers_with_topics: themesByResearcher.size,
+      distinct_topic_count: topicByKey.size,
+      emerging_topic_count: emergingThemes.length,
+      first_year: firstYear,
+      latest_year: latestYear,
+    },
+    summary: [
+      `${name} has ${researcherRows.length.toLocaleString()} researcher profiles in ITMAP, with OpenAlex topic coverage for ${themesByResearcher.size.toLocaleString()}.`,
+      topThemeNames.length > 0 ? `Leading themes include ${topThemeNames.join(", ")}.` : "",
+      emergingNames.length > 0 ? `Current emerging signals include ${emergingNames.join(", ")}.` : "",
+    ].filter(Boolean).join(" "),
+    themes: returnedThemes,
+    emerging_themes: emergingThemes,
+    researchers: researcherRows,
+    coverage_note: "Theme periods use the earliest and latest publication years in stored OpenAlex author-topic profiles. Paper counts are summed across author profiles, so a paper co-authored within the same unit can appear more than once.",
   };
 }
 
@@ -3225,65 +3794,262 @@ async function fetchAllPapersForResearcher(
   return allPapers;
 }
 
+type CanonicalCoauthorConnection = {
+  openalexId: string;
+  name: string;
+  sharedPapers: number;
+  institutions: string[];
+  latestYear: number | null;
+  totalCitations: number;
+  paperTitles: Record<string, unknown>[];
+  imperialProfile?: Record<string, unknown>;
+};
+
+function sharedPaperEvidenceKey(paper: Record<string, unknown>) {
+  const workId = String(paper.openalex_work_id || "").trim().toUpperCase();
+  if (workId) return `work:${workId}`;
+  return `title:${String(paper.title || "").trim().toLowerCase()}:${String(paper.year || "")}`;
+}
+
+async function fetchCompleteCanonicalCoauthorsForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+) {
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("researcher_paper_authors")
+      .select("coauthor_openalex_id,coauthor_name,institution_names,publication_year,cited_by_count,paper_title,openalex_work_id")
+      .eq("researcher_id", researcherId)
+      .order("publication_year", { ascending: false, nullsFirst: false })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = (data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  if (rows.length === 0) return [] as CanonicalCoauthorConnection[];
+
+  const papersByAuthor = new Map<string, {
+    name: string;
+    institutions: Set<string>;
+    papers: Map<string, Record<string, unknown>>;
+    latestYear: number | null;
+  }>();
+  for (const row of rows) {
+    const openalexId = openAlexAuthorKey(row.coauthor_openalex_id);
+    if (!openalexId) continue;
+    const aggregate = papersByAuthor.get(openalexId) || {
+      name: String(row.coauthor_name || "Researcher").trim() || "Researcher",
+      institutions: new Set<string>(),
+      papers: new Map<string, Record<string, unknown>>(),
+      latestYear: null,
+    };
+    for (const institution of Array.isArray(row.institution_names) ? row.institution_names : []) {
+      const name = String(institution || "").trim();
+      if (name) aggregate.institutions.add(name);
+    }
+    const paper = {
+      openalex_work_id: row.openalex_work_id,
+      title: row.paper_title,
+      year: row.publication_year,
+      citations: Number(row.cited_by_count || 0),
+    };
+    aggregate.papers.set(sharedPaperEvidenceKey(paper), paper);
+    const year = Number(row.publication_year || 0);
+    if (year) aggregate.latestYear = Math.max(Number(aggregate.latestYear || 0), year);
+    papersByAuthor.set(openalexId, aggregate);
+  }
+
+  const profiles = await connectionProfilesByOpenAlexId(supabase, [...papersByAuthor.keys()]);
+  const canonical = new Map<string, CanonicalCoauthorConnection>();
+  for (const [aliasOpenAlexId, aggregate] of papersByAuthor) {
+    const imperialProfile = profiles.get(aliasOpenAlexId);
+    const imperialResearcherId = String(imperialProfile?.id || "");
+    const canonicalOpenAlexId = openAlexAuthorKey(imperialProfile?.openalex_id) || aliasOpenAlexId;
+    const identity = imperialResearcherId
+      ? `researcher:${imperialResearcherId}`
+      : `author:${aliasOpenAlexId}`;
+    const papers = [...aggregate.papers.values()];
+    const next: CanonicalCoauthorConnection = {
+      openalexId: canonicalOpenAlexId,
+      name: String(imperialProfile?.full_name || aggregate.name),
+      sharedPapers: papers.length,
+      institutions: [...aggregate.institutions].slice(0, 8),
+      latestYear: aggregate.latestYear,
+      totalCitations: papers.reduce((sum, paper) => sum + Number(paper.citations || 0), 0),
+      paperTitles: papers
+        .sort((first, second) => Number(second.year || 0) - Number(first.year || 0)
+          || Number(second.citations || 0) - Number(first.citations || 0))
+        .slice(0, 10),
+      imperialProfile,
+    };
+    const existing = canonical.get(identity);
+    if (!existing) {
+      canonical.set(identity, next);
+      continue;
+    }
+    const mergedPapers = new Map<string, Record<string, unknown>>();
+    for (const paper of [...existing.paperTitles, ...next.paperTitles]) {
+      mergedPapers.set(sharedPaperEvidenceKey(paper), paper);
+    }
+    existing.sharedPapers += next.sharedPapers;
+    existing.totalCitations += next.totalCitations;
+    existing.latestYear = Math.max(Number(existing.latestYear || 0), Number(next.latestYear || 0)) || null;
+    existing.institutions = [...new Set([...existing.institutions, ...next.institutions])].slice(0, 8);
+    existing.paperTitles = [...mergedPapers.values()].slice(0, 10);
+  }
+
+  return [...canonical.values()].sort((first, second) => (
+    second.sharedPapers - first.sharedPapers
+    || second.totalCitations - first.totalCitations
+    || first.name.localeCompare(second.name)
+  ));
+}
+
+async function fetchCanonicalCoauthorsForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+  limit = 100,
+) {
+  const requestedLimit = Number(limit);
+  const fetchAll = Number.isFinite(requestedLimit) && requestedLimit <= 0;
+  if (fetchAll || requestedLimit > 100) {
+    const complete = await fetchCompleteCanonicalCoauthorsForResearcher(supabase, researcherId);
+    return fetchAll ? complete : complete.slice(0, requestedLimit);
+  }
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    let request = supabase
+      .from("researcher_coauthors")
+      .select("coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles,imperial_researcher_id")
+      .eq("researcher_id", researcherId)
+      .order("shared_papers", { ascending: false })
+      .order("total_citations", { ascending: false });
+    request = fetchAll
+      ? request.range(offset, offset + pageSize - 1)
+      : request.limit(Math.max(pageSize, Math.min(5000, requestedLimit * 4)));
+    const { data, error } = await request;
+    if (error) throw error;
+    const page = (data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (!fetchAll || page.length < pageSize) break;
+  }
+  if (rows.length === 0) return [] as CanonicalCoauthorConnection[];
+
+  const profileByOpenAlexId = await connectionProfilesByOpenAlexId(
+    supabase,
+    rows.map(row => String(row.coauthor_openalex_id || "")),
+  );
+  const profileByResearcherId = new Map<string, Record<string, unknown>>();
+  for (const profile of profileByOpenAlexId.values()) {
+    const profileId = String(profile.id || "");
+    if (profileId) profileByResearcherId.set(profileId, profile);
+  }
+
+  const missingProfileIds = [...new Set(
+    rows
+      .map(row => String(row.imperial_researcher_id || ""))
+      .filter(id => id && !profileByResearcherId.has(id)),
+  )];
+  for (let offset = 0; offset < missingProfileIds.length; offset += 50) {
+    const { data: profiles, error: profileError } = await supabase
+      .from("researchers")
+      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .in("id", missingProfileIds.slice(offset, offset + 50));
+    if (profileError) throw profileError;
+    for (const profile of (profiles || []) as Record<string, unknown>[]) {
+      const profileId = String(profile.id || "");
+      if (profileId) profileByResearcherId.set(profileId, profile);
+    }
+  }
+
+  const canonical = new Map<string, CanonicalCoauthorConnection>();
+  for (const row of rows) {
+    const aliasOpenAlexId = openAlexAuthorKey(row.coauthor_openalex_id);
+    if (!aliasOpenAlexId) continue;
+    const imperialProfile = profileByResearcherId.get(String(row.imperial_researcher_id || ""))
+      || profileByOpenAlexId.get(aliasOpenAlexId);
+    const imperialResearcherId = String(imperialProfile?.id || "");
+    const canonicalOpenAlexId = openAlexAuthorKey(imperialProfile?.openalex_id) || aliasOpenAlexId;
+    const identity = imperialResearcherId
+      ? `researcher:${imperialResearcherId}`
+      : `author:${aliasOpenAlexId}`;
+    const institutions = Array.isArray(row.institution_names)
+      ? row.institution_names.map(String).map(value => value.trim()).filter(Boolean)
+      : [];
+    const paperTitles = Array.isArray(row.paper_titles)
+      ? row.paper_titles as Record<string, unknown>[]
+      : [];
+    const next: CanonicalCoauthorConnection = {
+      openalexId: canonicalOpenAlexId,
+      name: String(imperialProfile?.full_name || row.coauthor_name || "Researcher").trim() || "Researcher",
+      sharedPapers: Math.max(0, Number(row.shared_papers || 0)),
+      institutions: [...new Set(institutions)].slice(0, 8),
+      latestYear: Number(row.latest_year || 0) || null,
+      totalCitations: Math.max(0, Number(row.total_citations || 0)),
+      paperTitles: paperTitles.slice(0, 10),
+      imperialProfile,
+    };
+
+    const existing = canonical.get(identity);
+    if (!existing) {
+      canonical.set(identity, next);
+      continue;
+    }
+
+    const papers = new Map<string, Record<string, unknown>>();
+    for (const paper of [...existing.paperTitles, ...next.paperTitles]) {
+      const key = sharedPaperEvidenceKey(paper);
+      if (!papers.has(key)) papers.set(key, paper);
+    }
+    existing.sharedPapers += next.sharedPapers;
+    existing.totalCitations += next.totalCitations;
+    existing.latestYear = Math.max(Number(existing.latestYear || 0), Number(next.latestYear || 0)) || null;
+    existing.institutions = [...new Set([...existing.institutions, ...next.institutions])].slice(0, 8);
+    existing.paperTitles = [...papers.values()].slice(0, 10);
+  }
+
+  const ranked = [...canonical.values()]
+    .sort((first, second) => (
+      second.sharedPapers - first.sharedPapers
+      || second.totalCitations - first.totalCitations
+      || first.name.localeCompare(second.name)
+    ));
+  return fetchAll
+    ? ranked
+    : ranked.slice(0, Math.max(1, requestedLimit || 100));
+}
+
 async function fetchTopCoauthorsForResearcher(
   supabase: ReturnType<typeof createClient>,
   researcherId: string,
   limit = 20,
 ) {
-  const { data, error } = await supabase
-    .from("researcher_coauthors")
-    .select("coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles")
-    .eq("researcher_id", researcherId)
-    .order("shared_papers", { ascending: false })
-    .order("total_citations", { ascending: false })
-    .limit(limit);
-
-  if (error) {
+  let ranked: CanonicalCoauthorConnection[] = [];
+  try {
+    ranked = await fetchCanonicalCoauthorsForResearcher(supabase, researcherId, limit);
+  } catch (error) {
     console.warn("Could not load researcher co-authors", error);
     return [];
   }
 
-  const ranked = (data || [])
-    .map(row => ({
-      openalex_id: String(row.coauthor_openalex_id || "").trim(),
-      name: String(row.coauthor_name || "").trim(),
-      shared_papers: Number(row.shared_papers || 0),
-      institutions: Array.isArray(row.institution_names) ? row.institution_names.map(String).filter(Boolean) : [],
-      latest_year: Number(row.latest_year || 0) || null,
-      paper_titles: Array.isArray(row.paper_titles) ? row.paper_titles : [],
-    }))
-    .filter(coauthor => coauthor.openalex_id && coauthor.name);
-
-  const imperialIds = ranked.map(coauthor => coauthor.openalex_id);
-  const imperialMatches = new Map<string, Record<string, unknown>>();
-  if (imperialIds.length > 0) {
-    const { data: imperialRows, error: imperialError } = await supabase
-      .from("researchers")
-      .select("id,openalex_id,full_name,position_name,position,affiliation,faculty")
-      .in("openalex_id", imperialIds);
-    if (!imperialError) {
-      for (const row of imperialRows || []) {
-        if (row.openalex_id && !imperialMatches.has(String(row.openalex_id))) {
-          imperialMatches.set(String(row.openalex_id), row);
-        }
-      }
-    }
-  }
-
   return ranked.map(coauthor => {
-    const imperialProfile = imperialMatches.get(coauthor.openalex_id);
+    const imperialProfile = coauthor.imperialProfile;
     return {
-      openalex_id: coauthor.openalex_id,
+      openalex_id: coauthor.openalexId,
       name: coauthor.name,
-      shared_papers: coauthor.shared_papers,
+      shared_papers: coauthor.sharedPapers,
       institutions: coauthor.institutions.slice(0, 4),
-      latest_year: coauthor.latest_year,
+      latest_year: coauthor.latestYear,
       is_imperial_profile: Boolean(imperialProfile),
       imperial_researcher_id: imperialProfile?.id || null,
       imperial_title: imperialProfile ? (imperialProfile.position_name || imperialProfile.position || "") : "",
       imperial_department: imperialProfile ? (imperialProfile.affiliation || "") : "",
       imperial_faculty: imperialProfile ? (imperialProfile.faculty || "") : "",
-      paper_titles: coauthor.paper_titles.slice(0, 5),
+      paper_titles: coauthor.paperTitles.slice(0, 10),
     };
   });
 }
@@ -3294,90 +4060,44 @@ async function researcherNetworkById(
   requestedLimit = 60,
 ) {
   const startedAt = Date.now();
-  const networkLimit = Math.max(10, Math.min(Number(requestedLimit) || 60, 100));
-  const [researcherResult, coauthorResult] = await Promise.all([
+  const numericLimit = Number(requestedLimit);
+  const networkLimit = Number.isFinite(numericLimit) && numericLimit <= 0
+    ? 0
+    : Math.max(10, Math.min(numericLimit || 60, 500));
+  const [researcherResult, canonicalConnections] = await Promise.all([
     supabase
       .from("researchers")
       .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
       .eq("id", researcherId)
       .maybeSingle(),
-    supabase
-      .from("researcher_coauthors")
-      .select(
-        "coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles",
-        { count: "exact" },
-      )
-      .eq("researcher_id", researcherId)
-      .order("shared_papers", { ascending: false })
-      .order("total_citations", { ascending: false })
-      .limit(networkLimit),
+    fetchCanonicalCoauthorsForResearcher(supabase, researcherId, networkLimit),
   ]);
 
   if (researcherResult.error) throw researcherResult.error;
   if (!researcherResult.data) throw new Error("Researcher not found");
-  if (coauthorResult.error) throw coauthorResult.error;
 
   const researcher = researcherResult.data as Record<string, unknown>;
   const focalOpenAlexId = openAlexAuthorKey(researcher.openalex_id);
-  const ranked = ((coauthorResult.data || []) as Record<string, unknown>[])
-    .map(row => ({
-      row,
-      openalexId: openAlexAuthorKey(row.coauthor_openalex_id),
-    }))
-    .filter(item => item.openalexId && item.openalexId !== focalOpenAlexId);
-  const coauthorIds = [...new Set(ranked.map(item => item.openalexId))];
-  const profileByOpenAlexId = new Map<string, Record<string, unknown>>();
-  const chunks: string[][] = [];
-  for (let offset = 0; offset < coauthorIds.length; offset += 25) {
-    chunks.push(coauthorIds.slice(offset, offset + 25));
-  }
-
-  const profileResults = await Promise.all(chunks.map(chunk => {
-    const variants = [...new Set(chunk.flatMap(id => [
-      id,
-      id.toLowerCase(),
-      `https://openalex.org/${id}`,
-      `https://openalex.org/${id.toLowerCase()}`,
-    ]))];
-    return supabase
-      .from("researchers")
-      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
-      .in("openalex_id", variants);
-  }));
-
-  for (const result of profileResults) {
-    if (result.error) {
-      console.warn("Could not match network co-author profiles", result.error);
-      continue;
-    }
-    for (const profile of (result.data || []) as Record<string, unknown>[]) {
-      const key = openAlexAuthorKey(profile.openalex_id);
-      if (key && !profileByOpenAlexId.has(key)) profileByOpenAlexId.set(key, profile);
-    }
-  }
-
-  const connections = ranked.map(({ row, openalexId }) => {
-    const imperialProfile = profileByOpenAlexId.get(openalexId);
-    const institutions = Array.isArray(row.institution_names)
-      ? [...new Set(row.institution_names.map(String).map(name => name.trim()).filter(Boolean))].slice(0, 5)
-      : [];
-    const paperTitles = Array.isArray(row.paper_titles) ? row.paper_titles.slice(0, 6) : [];
-    return {
-      openalex_id: openalexId,
-      name: String(imperialProfile?.full_name || row.coauthor_name || "Researcher"),
-      shared_papers: Number(row.shared_papers || 0),
-      institutions,
-      latest_year: Number(row.latest_year || 0) || null,
-      total_citations: Number(row.total_citations || 0),
-      paper_titles: paperTitles,
-      is_imperial_profile: Boolean(imperialProfile),
-      imperial_researcher_id: imperialProfile?.id || null,
-      imperial_profile_url: imperialProfile?.profile_url || null,
-      imperial_title: imperialProfile ? (imperialProfile.position_name || imperialProfile.position || "") : "",
-      imperial_department: imperialProfile ? canonicalRelationshipAffiliation(imperialProfile.affiliation) : "",
-      imperial_faculty: imperialProfile?.faculty || "",
-    };
-  });
+  const connections = canonicalConnections
+    .filter(connection => connection.openalexId !== focalOpenAlexId)
+    .map(connection => {
+      const imperialProfile = connection.imperialProfile;
+      return {
+        openalex_id: connection.openalexId,
+        name: connection.name,
+        shared_papers: connection.sharedPapers,
+        institutions: connection.institutions.slice(0, 5),
+        latest_year: connection.latestYear,
+        total_citations: connection.totalCitations,
+        paper_titles: connection.paperTitles,
+        is_imperial_profile: Boolean(imperialProfile),
+        imperial_researcher_id: imperialProfile?.id || null,
+        imperial_profile_url: imperialProfile?.profile_url || null,
+        imperial_title: imperialProfile ? (imperialProfile.position_name || imperialProfile.position || "") : "",
+        imperial_department: imperialProfile ? canonicalRelationshipAffiliation(imperialProfile.affiliation) : "",
+        imperial_faculty: imperialProfile?.faculty || "",
+      };
+    });
 
   const imperialConnections = connections.filter(connection => connection.is_imperial_profile);
   return {
@@ -3392,7 +4112,7 @@ async function researcherNetworkById(
     },
     connections,
     counts: {
-      total_coauthors: Number(coauthorResult.count || connections.length),
+      total_coauthors: connections.length,
       returned_coauthors: connections.length,
       imperial_coauthors: imperialConnections.length,
       external_coauthors: connections.length - imperialConnections.length,
@@ -3453,7 +4173,7 @@ async function collaborationOpportunitiesByResearcher(
     themes,
     opportunities,
     coverage_note: themes.length > 0
-      ? "Recommendations compare official OpenAlex topics across stored papers and exclude co-authorships found in ITMAP."
+      ? "Recommendations compare official OpenAlex topics and exclude known collaborations using co-author summaries, author aliases, and shared paper IDs."
       : "No OpenAlex Topics are cached for this researcher's stored papers yet.",
     duration_ms: Date.now() - startedAt,
   };
@@ -3522,6 +4242,9 @@ async function connectionProfilesByOpenAlexId(
 ) {
   const uniqueIds = [...new Set(openalexIds.map(openAlexAuthorKey).filter(Boolean))];
   const profiles = new Map<string, Record<string, unknown>>();
+  if (uniqueIds.length === 0) return profiles;
+
+  const researcherSelect = "id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty";
   const chunks: string[][] = [];
   for (let offset = 0; offset < uniqueIds.length; offset += 25) {
     chunks.push(uniqueIds.slice(offset, offset + 25));
@@ -3535,7 +4258,7 @@ async function connectionProfilesByOpenAlexId(
     ]))];
     return supabase
       .from("researchers")
-      .select("id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty")
+      .select(researcherSelect)
       .in("openalex_id", variants);
   }));
 
@@ -3546,6 +4269,58 @@ async function connectionProfilesByOpenAlexId(
       if (key && !profiles.has(key)) profiles.set(key, profile);
     }
   }
+
+  const missingIds = uniqueIds.filter(id => !profiles.has(id));
+  if (missingIds.length === 0) return profiles;
+
+  const aliasChunks: string[][] = [];
+  for (let offset = 0; offset < missingIds.length; offset += 50) {
+    aliasChunks.push(missingIds.slice(offset, offset + 50));
+  }
+  const aliasResults = await Promise.all(aliasChunks.map(chunk => (
+    supabase
+      .from("researcher_openalex_aliases")
+      .select("researcher_id,openalex_id,confidence,is_primary")
+      .in("openalex_id", chunk)
+      .order("is_primary", { ascending: false })
+      .order("confidence", { ascending: false })
+  )));
+  const aliases: Record<string, unknown>[] = [];
+  for (const result of aliasResults) {
+    if (result.error) {
+      console.warn("Could not resolve OpenAlex aliases", result.error);
+      continue;
+    }
+    aliases.push(...((result.data || []) as Record<string, unknown>[]));
+  }
+
+  const researcherIds = [...new Set(aliases.map(alias => String(alias.researcher_id || "")).filter(Boolean))];
+  if (researcherIds.length === 0) return profiles;
+  const researcherChunks: string[][] = [];
+  for (let offset = 0; offset < researcherIds.length; offset += 50) {
+    researcherChunks.push(researcherIds.slice(offset, offset + 50));
+  }
+  const resolvedResults = await Promise.all(researcherChunks.map(chunk => (
+    supabase.from("researchers").select(researcherSelect).in("id", chunk)
+  )));
+  const profileByResearcherId = new Map<string, Record<string, unknown>>();
+  for (const result of resolvedResults) {
+    if (result.error) throw result.error;
+    for (const profile of (result.data || []) as Record<string, unknown>[]) {
+      const researcherId = String(profile.id || "");
+      if (researcherId && !profileByResearcherId.has(researcherId)) {
+        profileByResearcherId.set(researcherId, profile);
+      }
+      const primaryKey = openAlexAuthorKey(profile.openalex_id);
+      if (primaryKey && !profiles.has(primaryKey)) profiles.set(primaryKey, profile);
+    }
+  }
+
+  for (const alias of aliases) {
+    const aliasKey = openAlexAuthorKey(alias.openalex_id);
+    const profile = profileByResearcherId.get(String(alias.researcher_id || ""));
+    if (aliasKey && profile && !profiles.has(aliasKey)) profiles.set(aliasKey, profile);
+  }
   return profiles;
 }
 
@@ -3555,16 +4330,36 @@ async function storedBridgeRows(
   targetOpenAlexIds: string[],
 ) {
   const sourceIds = [...new Set(sourceProfiles.map(profile => String(profile.id || "")).filter(Boolean))];
-  const targetIds = [...new Set(targetOpenAlexIds.map(openAlexAuthorKey).filter(Boolean))];
-  if (sourceIds.length === 0 || targetIds.length === 0) return [] as StoredConnectionRow[];
+  const targetIds = new Set(targetOpenAlexIds.map(openAlexAuthorKey).filter(Boolean));
+  if (sourceIds.length === 0 || targetIds.size === 0) return [] as StoredConnectionRow[];
+
+  const targetProfiles = await connectionProfilesByOpenAlexId(supabase, [...targetIds]);
+  const targetResearcherIds = [...new Set(
+    [...targetProfiles.values()].map(profile => String(profile.id || "")).filter(Boolean),
+  )];
+  for (let offset = 0; offset < targetResearcherIds.length; offset += 50) {
+    const { data, error } = await supabase
+      .from("researcher_openalex_aliases")
+      .select("openalex_id")
+      .in("researcher_id", targetResearcherIds.slice(offset, offset + 50));
+    if (error) {
+      console.warn("Could not expand graph target aliases", error);
+      break;
+    }
+    for (const alias of data || []) {
+      const aliasKey = openAlexAuthorKey(alias.openalex_id);
+      if (aliasKey) targetIds.add(aliasKey);
+    }
+  }
 
   const sourceChunks: string[][] = [];
   const targetChunks: string[][] = [];
   for (let offset = 0; offset < sourceIds.length; offset += 50) {
     sourceChunks.push(sourceIds.slice(offset, offset + 50));
   }
-  for (let offset = 0; offset < targetIds.length; offset += 50) {
-    targetChunks.push(targetIds.slice(offset, offset + 50));
+  const expandedTargetIds = [...targetIds];
+  for (let offset = 0; offset < expandedTargetIds.length; offset += 50) {
+    targetChunks.push(expandedTargetIds.slice(offset, offset + 50));
   }
 
   const requests = sourceChunks.flatMap(sourceChunk => targetChunks.map(targetChunk => (
@@ -3617,18 +4412,15 @@ async function researcherConnectionById(
   if (sourceResearcherId === targetResearcherId) throw new Error("Choose two different researchers");
 
   const researcherSelect = "id,openalex_id,profile_url,full_name,position_name,position,affiliation,faculty";
-  const coauthorSelect = "researcher_id,coauthor_openalex_id,coauthor_name,shared_papers,institution_names,latest_year,total_citations,paper_titles";
-  const [sourceResult, targetResult, sourceRowsResult, targetRowsResult] = await Promise.all([
+  const [sourceResult, targetResult, sourceCanonical, targetCanonical] = await Promise.all([
     supabase.from("researchers").select(researcherSelect).eq("id", sourceResearcherId).maybeSingle(),
     supabase.from("researchers").select(researcherSelect).eq("id", targetResearcherId).maybeSingle(),
-    supabase.from("researcher_coauthors").select(coauthorSelect).eq("researcher_id", sourceResearcherId).order("shared_papers", { ascending: false }).limit(100),
-    supabase.from("researcher_coauthors").select(coauthorSelect).eq("researcher_id", targetResearcherId).order("shared_papers", { ascending: false }).limit(100),
+    fetchCanonicalCoauthorsForResearcher(supabase, sourceResearcherId, 100),
+    fetchCanonicalCoauthorsForResearcher(supabase, targetResearcherId, 100),
   ]);
 
   if (sourceResult.error) throw sourceResult.error;
   if (targetResult.error) throw targetResult.error;
-  if (sourceRowsResult.error) throw sourceRowsResult.error;
-  if (targetRowsResult.error) throw targetRowsResult.error;
   if (!sourceResult.data || !targetResult.data) throw new Error("Researcher not found");
 
   const sourceProfile = sourceResult.data as Record<string, unknown>;
@@ -3637,14 +4429,37 @@ async function researcherConnectionById(
   const targetOpenAlexId = openAlexAuthorKey(targetProfile.openalex_id);
   if (!sourceOpenAlexId || !targetOpenAlexId) throw new Error("Both researchers need an OpenAlex ID to find co-authorship paths");
 
-  const sourceRows = ((sourceRowsResult.data || []) as Record<string, unknown>[])
-    .map(storedConnectionRow)
-    .filter(row => row.openalexId && row.openalexId !== sourceOpenAlexId);
-  const targetRows = ((targetRowsResult.data || []) as Record<string, unknown>[])
-    .map(storedConnectionRow)
-    .filter(row => row.openalexId && row.openalexId !== targetOpenAlexId);
-  const sourceNeighbours = new Map(sourceRows.map(row => [row.openalexId, row]));
-  const targetNeighbours = new Map(targetRows.map(row => [row.openalexId, row]));
+  const toStoredRows = (
+    ownerResearcherId: string,
+    connections: CanonicalCoauthorConnection[],
+    focalOpenAlexId: string,
+  ) => connections.map(connection => ({
+    researcherId: ownerResearcherId,
+    openalexId: connection.openalexId,
+    name: connection.name,
+    sharedPapers: connection.sharedPapers,
+    institutions: connection.institutions,
+    latestYear: connection.latestYear,
+    totalCitations: connection.totalCitations,
+    paperTitles: connection.paperTitles,
+  }))
+    .filter(row => row.openalexId && row.openalexId !== focalOpenAlexId);
+  const rawSourceRows = toStoredRows(sourceResearcherId, sourceCanonical, sourceOpenAlexId);
+  const rawTargetRows = toStoredRows(targetResearcherId, targetCanonical, targetOpenAlexId);
+  const profileByOpenAlexId = new Map<string, Record<string, unknown>>([
+    [sourceOpenAlexId, sourceProfile],
+    [targetOpenAlexId, targetProfile],
+  ]);
+  for (const connection of [...sourceCanonical, ...targetCanonical]) {
+    const profile = connection.imperialProfile;
+    if (profile) profileByOpenAlexId.set(connection.openalexId, profile);
+  }
+  const sourceNeighbours = new Map(rawSourceRows.map(row => [row.openalexId, row]));
+  const targetNeighbours = new Map(rawTargetRows.map(row => [row.openalexId, row]));
+  sourceNeighbours.delete(sourceOpenAlexId);
+  targetNeighbours.delete(targetOpenAlexId);
+  const sourceRows = [...sourceNeighbours.values()];
+  const targetRows = [...targetNeighbours.values()];
   const fallbackByOpenAlexId = new Map<string, StoredConnectionRow>();
   for (const row of [...sourceRows, ...targetRows]) {
     const existing = fallbackByOpenAlexId.get(row.openalexId);
@@ -3683,36 +4498,34 @@ async function researcherConnectionById(
     }
   }
 
-  const profileByOpenAlexId = new Map<string, Record<string, unknown>>([
-    [sourceOpenAlexId, sourceProfile],
-    [targetOpenAlexId, targetProfile],
-  ]);
-
   if (candidates.length === 0 && maxDegrees >= 3) {
-    const neighbourIds = [...new Set([...sourceNeighbours.keys(), ...targetNeighbours.keys()])];
-    const neighbourProfiles = await connectionProfilesByOpenAlexId(supabase, neighbourIds);
-    for (const [key, profile] of neighbourProfiles) profileByOpenAlexId.set(key, profile);
     const profileByResearcherId = new Map<string, Record<string, unknown>>();
-    for (const profile of neighbourProfiles.values()) {
+    for (const profile of profileByOpenAlexId.values()) {
       const id = String(profile.id || "");
       if (id) profileByResearcherId.set(id, profile);
     }
     const sourceInternalProfiles = [...sourceNeighbours.keys()]
-      .map(id => neighbourProfiles.get(id))
+      .map(id => profileByOpenAlexId.get(id))
       .filter((profile): profile is Record<string, unknown> => Boolean(profile));
     const targetInternalProfiles = [...targetNeighbours.keys()]
-      .map(id => neighbourProfiles.get(id))
+      .map(id => profileByOpenAlexId.get(id))
       .filter((profile): profile is Record<string, unknown> => Boolean(profile));
     const [forwardBridges, reverseBridges] = await Promise.all([
       storedBridgeRows(supabase, sourceInternalProfiles, [...targetNeighbours.keys()]),
       storedBridgeRows(supabase, targetInternalProfiles, [...sourceNeighbours.keys()]),
     ]);
+    const bridgeProfiles = await connectionProfilesByOpenAlexId(
+      supabase,
+      [...forwardBridges, ...reverseBridges].map(bridge => bridge.openalexId),
+    );
+    for (const [key, profile] of bridgeProfiles) profileByOpenAlexId.set(key, profile);
     const seenPaths = new Set<string>();
 
     for (const bridge of forwardBridges) {
       const sourceIntermediateProfile = profileByResearcherId.get(bridge.researcherId);
       const sourceIntermediateId = openAlexAuthorKey(sourceIntermediateProfile?.openalex_id);
-      const targetIntermediateId = bridge.openalexId;
+      const targetIntermediateId = openAlexAuthorKey(profileByOpenAlexId.get(bridge.openalexId)?.openalex_id)
+        || bridge.openalexId;
       const firstEdge = sourceNeighbours.get(sourceIntermediateId);
       const lastEdge = targetNeighbours.get(targetIntermediateId);
       const nodeIds = [sourceOpenAlexId, sourceIntermediateId, targetIntermediateId, targetOpenAlexId];
@@ -3720,7 +4533,10 @@ async function researcherConnectionById(
       const key = nodeIds.join(">");
       if (seenPaths.has(key)) continue;
       seenPaths.add(key);
-      fallbackByOpenAlexId.set(targetIntermediateId, fallbackByOpenAlexId.get(targetIntermediateId) || bridge);
+      fallbackByOpenAlexId.set(
+        targetIntermediateId,
+        fallbackByOpenAlexId.get(targetIntermediateId) || { ...bridge, openalexId: targetIntermediateId },
+      );
       const edges = [
         connectionEdge(sourceOpenAlexId, sourceIntermediateId, firstEdge),
         connectionEdge(sourceIntermediateId, targetIntermediateId, bridge),
@@ -3732,7 +4548,8 @@ async function researcherConnectionById(
     for (const bridge of reverseBridges) {
       const targetIntermediateProfile = profileByResearcherId.get(bridge.researcherId);
       const targetIntermediateId = openAlexAuthorKey(targetIntermediateProfile?.openalex_id);
-      const sourceIntermediateId = bridge.openalexId;
+      const sourceIntermediateId = openAlexAuthorKey(profileByOpenAlexId.get(bridge.openalexId)?.openalex_id)
+        || bridge.openalexId;
       const firstEdge = sourceNeighbours.get(sourceIntermediateId);
       const lastEdge = targetNeighbours.get(targetIntermediateId);
       const nodeIds = [sourceOpenAlexId, sourceIntermediateId, targetIntermediateId, targetOpenAlexId];
@@ -3740,7 +4557,10 @@ async function researcherConnectionById(
       const key = nodeIds.join(">");
       if (seenPaths.has(key)) continue;
       seenPaths.add(key);
-      fallbackByOpenAlexId.set(sourceIntermediateId, fallbackByOpenAlexId.get(sourceIntermediateId) || bridge);
+      fallbackByOpenAlexId.set(
+        sourceIntermediateId,
+        fallbackByOpenAlexId.get(sourceIntermediateId) || { ...bridge, openalexId: sourceIntermediateId },
+      );
       const edges = [
         connectionEdge(sourceOpenAlexId, sourceIntermediateId, firstEdge),
         connectionEdge(sourceIntermediateId, targetIntermediateId, bridge),
@@ -4348,6 +5168,30 @@ Deno.serve(async req => {
       return Response.json({ suggestions }, { headers: corsHeaders });
     }
 
+    if (body.action === "suggest_organizations") {
+      const suggestions = query
+        ? await suggestOrganizations(supabase, query, Number(body.limit || 10))
+        : [];
+      return Response.json({ suggestions }, { headers: corsHeaders });
+    }
+
+    if (body.action === "list_organizations") {
+      const organizations = await listOrganizations(supabase);
+      return Response.json({ organizations }, { headers: corsHeaders });
+    }
+
+    if (body.action === "organization_profile") {
+      const organizationName = String(body.organization_name || query || "").trim();
+      if (!organizationName) {
+        return Response.json(
+          { error: "Missing organization_name" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const profile = await organizationProfile(supabase, organizationName);
+      return Response.json(profile, { headers: corsHeaders });
+    }
+
     if (body.action === "researcher_profile") {
       const researcherId = String(body.researcher_id || "");
       if (!researcherId) {
@@ -4371,7 +5215,7 @@ Deno.serve(async req => {
       const network = await researcherNetworkById(
         supabase,
         researcherId,
-        Number(body.network_limit || 60),
+        body.network_limit === undefined ? 60 : Number(body.network_limit),
       );
       return Response.json(network, { headers: corsHeaders });
     }
@@ -4453,7 +5297,7 @@ Deno.serve(async req => {
     }
 
     if (!query) {
-      return Response.json({ results: [] }, { headers: corsHeaders });
+      return Response.json({ results: [], original_query: "", expanded_query: "" }, { headers: corsHeaders });
     }
 
     const mode = body.mode || "semantic";
@@ -4484,18 +5328,36 @@ Deno.serve(async req => {
           skipped_reason: "administrative_form_without_research_intent",
         },
       });
-      return Response.json({ results: [] }, { headers: corsHeaders });
+      return Response.json({
+        results: [],
+        original_query: originalQuery || query,
+        expanded_query: query,
+      }, { headers: corsHeaders });
     }
 
-    const rawKeywordTerms = queryTerms(query);
-    const mission = {
-      expanded_query: query,
-      must_have: rawKeywordTerms.slice(0, 10),
-      nice_to_have: [],
-      method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
-      domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
-    };
-    const searchQuery = query;
+    let searchQuery = query;
+    let mission: MissionExpansion;
+    if (mode === "semantic") {
+      mission = await expandMission(
+        openAiKey,
+        rankingModel,
+        truncateText(redactSensitiveSearchText(query), 20000),
+        searchUsage,
+      );
+      searchQuery = mission.expanded_query?.trim()
+        || implicitResearchTopic(query)
+        || query;
+      mission.expanded_query = searchQuery;
+    } else {
+      const rawKeywordTerms = queryTerms(query);
+      mission = {
+        expanded_query: query,
+        must_have: rawKeywordTerms.slice(0, 10),
+        nice_to_have: [],
+        method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
+        domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
+      };
+    }
 
     const filters = body.filters || [];
     const terms = queryTerms(searchQuery);
@@ -4567,7 +5429,11 @@ Deno.serve(async req => {
         estimated_cost_usd: 0,
       });
 
-      return Response.json({ results }, { headers: corsHeaders });
+      return Response.json({
+        results,
+        original_query: originalQuery || query,
+        expanded_query: searchQuery,
+      }, { headers: corsHeaders });
     }
 
     const embeddingResponse = await fetch("https://api.openai.com/v1/embeddings", {
@@ -4898,7 +5764,7 @@ Deno.serve(async req => {
       await addExternalEvidenceToCandidates(openAiKey, rankingModel, externalEvidencePool, query, searchUsage);
     }
     const llmReranks = enableRerank
-      ? await rerankCandidatesWithLlm(openAiKey, rankingModel, query, mission, llmPool, searchUsage)
+      ? await rerankCandidatesWithLlm(openAiKey, rankingModel, originalQuery || query, mission, llmPool, searchUsage)
       : new Map<string, RerankedCandidate>();
     const rankedCandidates = enableRerank && llmReranks.size > 0
       ? llmPool
@@ -5022,7 +5888,11 @@ Deno.serve(async req => {
       },
     });
 
-    return Response.json({ results }, { headers: corsHeaders });
+    return Response.json({
+      results,
+      original_query: originalQuery || query,
+      expanded_query: searchQuery,
+    }, { headers: corsHeaders });
   } catch (error) {
     const message = error instanceof Error
       ? error.message

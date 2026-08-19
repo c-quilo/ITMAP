@@ -1,33 +1,28 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake, Building2 } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, rewriteMission, searchResearchers, suggestResearchers, summarizeResearchPool, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
 
 const ResearcherNetworkGraph = lazy(() => import("@/components/ResearcherNetworkGraph"));
 const CollaborationOpportunities = lazy(() => import("@/components/CollaborationOpportunities"));
+const DepartmentExplorer = lazy(() => import("@/components/DepartmentExplorer"));
 
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "quick" | "deep-search" | "profile" | "graph" | "collaborate" | "saved" | "help";
+type TabMode = "search" | "quick" | "deep-search" | "profile" | "departments" | "saved" | "help";
+type ResearcherWorkspaceView = "profile" | "graph" | "collaborate";
 type SearchMode = "semantic" | "keyword";
 
 type SavedSearch = SavedSearchSummary & {
   results: Researcher[];
   originalQuery?: string;
-};
-
-type PendingRewriteSearch = {
-  originalQuery: string;
-  rewrittenQuery: string;
-  mode: SearchMode;
-  options: SearchOptions;
 };
 
 type PendingProfileLookup = {
@@ -243,8 +238,8 @@ function poolSummaryCacheKey(query: string, researchers: Researcher[]) {
 const SEARCH_STEPS = [
   {
     at: 0,
-    label: "Reading the query",
-    detail: "ITMAP is using the query exactly as written to start the semantic search.",
+    label: "Clarifying the research topic",
+    detail: "ITMAP is removing search instructions and identifying the expertise, methods, and domains that matter.",
     Icon: Sparkles,
   },
   {
@@ -372,98 +367,6 @@ function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }
               })}
             </div>
           )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MissionRewriteOverlay({ seconds, onCancel }: { seconds: number; onCancel: () => void }) {
-  const steps = [
-    {
-      label: "Reading your query",
-      detail: "ITMAP is identifying the topic, context, and expertise you are asking for.",
-      Icon: FileText,
-    },
-    {
-      label: "Clarifying the intent",
-      detail: "It is turning the wording into a sharper search brief without starting the search yet.",
-      Icon: Sparkles,
-    },
-    {
-      label: "Preparing your review",
-      detail: "You will be able to edit the rewritten version or use your original wording.",
-      Icon: Brain,
-    },
-  ];
-  const activeIndex = Math.min(steps.length - 1, Math.floor(seconds / 3));
-  const progress = Math.min(94, 18 + seconds * 10);
-  const ActiveIcon = steps[activeIndex].Icon;
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 px-4 backdrop-blur-md">
-      <div className="relative w-full max-w-xl overflow-hidden rounded-lg border border-primary/15 bg-card p-6 shadow-2xl">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-primary/15">
-          <div
-            className="h-full rounded-r-full bg-primary transition-all duration-500"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="flex items-start gap-4">
-          <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-primary/10">
-            <Loader2 className="h-7 w-7 animate-spin text-primary" />
-            <ActiveIcon className="absolute h-4 w-4 text-primary" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-              Rewriting query
-            </p>
-            <h2 className="mt-1 text-lg font-semibold text-foreground">
-              ITMAP is improving the search brief
-            </h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              This usually takes a few seconds. The search will not run until you review the rewritten query and choose how to continue.
-            </p>
-            <div className="mt-5 space-y-2">
-              {steps.map((step, index) => {
-                const StepIcon = step.Icon;
-                const isActive = index === activeIndex;
-                const isDone = index < activeIndex;
-                return (
-                  <div
-                    key={step.label}
-                    className={`flex gap-3 rounded-lg border px-3 py-2 transition-colors ${
-                      isActive
-                        ? "border-primary/25 bg-primary/5"
-                        : isDone
-                          ? "border-border bg-secondary/45"
-                          : "border-transparent bg-transparent"
-                    }`}
-                  >
-                    <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-                      isActive ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
-                    }`}>
-                      {isDone ? <CheckCircle2 className="h-4 w-4" /> : <StepIcon className="h-4 w-4" />}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-foreground">{step.label}</p>
-                      <p className="text-xs leading-relaxed text-muted-foreground">{step.detail}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
-              <span className="text-xs text-muted-foreground">{seconds}s elapsed</span>
-              <button
-                type="button"
-                onClick={onCancel}
-                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
-              >
-                Stop
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -602,7 +505,7 @@ function QuickSearchPanel({
             <div>
               <p className="text-base font-semibold text-foreground">Ask ITMAP</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                Ask about a known researcher or get a fast first pointer on a topic. If ITMAP shows a name, click it to explore more in Researcher Profile. Deeper ranking still lives in Search.
+                Ask about a known researcher, an Imperial research topic, or the School of Convergence Science. If ITMAP shows a name, click it to explore more in Researcher Profile.
               </p>
             </div>
             {result?.kind === "topic" && (
@@ -727,18 +630,23 @@ function HelpAboutPanel() {
     },
     {
       title: "Researcher Profile",
-      text: "Use this when you want one person. Start typing the name, choose the researcher, then ask questions about their profile, papers, and co-authors.",
-      examples: ["Benjamin Barratt", "Cesar Quilodran", "Jonathan Eastwood"],
+      text: "Use this when you want one person. Choose the researcher once, then move between their Profile, Graph, and Collaborate views without searching for the name again.",
+      examples: ["Read their profile and papers", "Explore their network", "Find new collaborators"],
     },
     {
-      title: "Graph",
-      text: "Use this to explore one researcher's immediate collaboration network, or choose a second researcher to find a supported co-authorship path of up to three degrees. You can also inspect Imperial and external co-authors, departments, faculties, and institutions.",
+      title: "Researcher Profile: Graph",
+      text: "Inside Researcher Profile, use Graph to explore the selected person's immediate collaboration network. You can choose a second researcher to find a supported co-authorship path of up to three degrees.",
       examples: ["Find immediate co-authors", "Trace a connection between two researchers"],
     },
     {
-      title: "Collaborate",
-      text: "Use this to find researchers who work on related OpenAlex topics but do not have a recorded co-authorship. You can focus on cross-department, cross-faculty, or emerging-topic opportunities.",
+      title: "Researcher Profile: Collaborate",
+      text: "Inside Researcher Profile, use Collaborate to find people with related OpenAlex topics who do not have a recorded co-authorship with the selected researcher.",
       examples: ["Start with one researcher", "Compare shared topics and papers"],
+    },
+    {
+      title: "Departments",
+      text: "Use this to explore an Imperial department, institute, school, faculty, centre, or lab as one research community. You can see its people, leading themes, and topics with recent momentum.",
+      examples: ["Grantham Institute for Climate Change", "Department of Mechanical Engineering"],
     },
     {
       title: "Saved",
@@ -911,10 +819,19 @@ function ResearcherProfileView({
         </div>
 
         <div className="rounded-lg border border-primary/15 bg-card p-4">
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
-            <p className="text-sm font-semibold text-foreground">Profile Summary</p>
+            <p className="text-sm font-semibold text-foreground">AI-generated overview</p>
+            <span
+              title="Generated from the Imperial profile, position, research fields, research description, and up to 80 stored paper titles."
+              className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+            >
+              AI generated
+            </span>
           </div>
+          <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
+            Synthesised from the Imperial profile, position, research fields, research description, and stored paper titles.
+          </p>
           <p className="text-sm leading-relaxed text-foreground/75">{profile.summary || "No profile summary available."}</p>
         </div>
 
@@ -962,7 +879,15 @@ function ResearcherProfileView({
 
       <section className="min-w-0 space-y-4">
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Profile</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Original Imperial profile</p>
+            <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              Source text
+            </span>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            Kept separate from the AI-generated overview above.
+          </p>
           <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/80">
             {profile.profile || profile.research || "No profile text available."}
           </p>
@@ -1030,6 +955,7 @@ function ResearcherProfileView({
 
 export default function Index() {
   const searchRunIdRef = useRef(0);
+  const profileRequestIdRef = useRef(0);
   const highlightTimeoutRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
@@ -1043,7 +969,6 @@ export default function Index() {
   const [currentOriginalMission, setCurrentOriginalMission] = useState("");
   const [currentSearchMode, setCurrentSearchMode] = useState<SearchMode>("semantic");
   const [searchSeconds, setSearchSeconds] = useState(0);
-  const [rewriteSeconds, setRewriteSeconds] = useState(0);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [savedResearchers, setSavedResearchers] = useState<Researcher[]>([]);
   const [isCheckingMissions, setIsCheckingMissions] = useState(false);
@@ -1054,17 +979,16 @@ export default function Index() {
   const [poolSummaryError, setPoolSummaryError] = useState("");
   const [poolSummaryDone, setPoolSummaryDone] = useState(false);
   const [highlightedResearcherId, setHighlightedResearcherId] = useState<string | null>(null);
-  const [pendingRewriteSearch, setPendingRewriteSearch] = useState<PendingRewriteSearch | null>(null);
   const [pendingProfileLookup, setPendingProfileLookup] = useState<PendingProfileLookup | null>(null);
-  const [editableRewrite, setEditableRewrite] = useState("");
-  const [isRewritingMission, setIsRewritingMission] = useState(false);
   const [profileQuery, setProfileQuery] = useState("");
   const [profileSuggestions, setProfileSuggestions] = useState<ResearcherSuggestion[]>([]);
   const [isLoadingProfileSuggestions, setIsLoadingProfileSuggestions] = useState(false);
   const [profileSuggestionError, setProfileSuggestionError] = useState("");
+  const [selectedResearcherSuggestion, setSelectedResearcherSuggestion] = useState<ResearcherSuggestion | null>(null);
   const [selectedResearcherProfile, setSelectedResearcherProfile] = useState<ResearcherProfile | null>(null);
   const [isLoadingResearcherProfile, setIsLoadingResearcherProfile] = useState(false);
   const [researcherProfileError, setResearcherProfileError] = useState("");
+  const [researcherWorkspaceView, setResearcherWorkspaceView] = useState<ResearcherWorkspaceView>("profile");
   const [profilePaperPage, setProfilePaperPage] = useState(0);
   const [profileQuestion, setProfileQuestion] = useState("");
   const [profileQuestionAnswer, setProfileQuestionAnswer] = useState<ResearcherProfileQuestionAnswer | null>(null);
@@ -1150,20 +1074,6 @@ export default function Index() {
   }, [isSearching]);
 
   useEffect(() => {
-    if (!isRewritingMission) {
-      setRewriteSeconds(0);
-      return;
-    }
-
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      setRewriteSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 500);
-
-    return () => window.clearInterval(timer);
-  }, [isRewritingMission]);
-
-  useEffect(() => {
     let cancelled = false;
 
     getKeywordSuggestions()
@@ -1189,8 +1099,8 @@ export default function Index() {
     }
 
     if (
-      selectedResearcherProfile
-      && normaliseResearcherName(trimmedQuery) === normaliseResearcherName(selectedResearcherProfile.name)
+      selectedResearcherSuggestion
+      && normaliseResearcherName(trimmedQuery) === normaliseResearcherName(selectedResearcherSuggestion.name)
     ) {
       setProfileSuggestions([]);
       setProfileSuggestionError("");
@@ -1219,7 +1129,7 @@ export default function Index() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [profileQuery, selectedResearcherProfile, tabMode]);
+  }, [profileQuery, selectedResearcherSuggestion, tabMode]);
 
   const availableDepartments = useMemo(() => {
     if (!hasSearched) return [];
@@ -1404,10 +1314,17 @@ export default function Index() {
     setTabMode("search");
   };
 
-  const loadResearcherProfile = async (suggestion: ResearcherSuggestion) => {
+  const loadResearcherProfile = async (
+    suggestion: ResearcherSuggestion,
+    workspaceView: ResearcherWorkspaceView = "profile",
+  ) => {
+    const requestId = ++profileRequestIdRef.current;
+    setSelectedResearcherSuggestion(suggestion);
     setProfileQuery(suggestion.name);
     setProfileSuggestions([]);
+    setIsLoadingProfileSuggestions(false);
     setTabMode("profile");
+    setResearcherWorkspaceView(workspaceView);
     setIsLoadingResearcherProfile(true);
     setResearcherProfileError("");
     setProfilePaperPage(0);
@@ -1416,12 +1333,14 @@ export default function Index() {
     setProfileQuestionError("");
     try {
       const profile = await getResearcherProfile(suggestion.researcherId);
+      if (requestId !== profileRequestIdRef.current) return;
       setSelectedResearcherProfile(profile);
     } catch (error) {
+      if (requestId !== profileRequestIdRef.current) return;
       setSelectedResearcherProfile(null);
       setResearcherProfileError(error instanceof Error ? error.message : "Could not load researcher profile.");
     } finally {
-      setIsLoadingResearcherProfile(false);
+      if (requestId === profileRequestIdRef.current) setIsLoadingResearcherProfile(false);
     }
   };
 
@@ -1466,14 +1385,12 @@ export default function Index() {
     await handleSearch(trimmedQuery, "semantic", {
       enableRerank: true,
       includeExternalEvidence: false,
-      rewriteMission: false,
     });
   };
 
   const cancelSearch = () => {
     searchRunIdRef.current += 1;
     setIsSearching(false);
-    setIsRewritingMission(false);
     setEmptySearchMessage("");
     setSearchError("Search stopped.");
   };
@@ -1500,7 +1417,7 @@ export default function Index() {
     setPoolSummaryError("");
     setPoolSummaryDone(false);
     try {
-      const results = await searchResearchers({
+      const response = await searchResearchers({
         query: trimmedQuery,
         originalQuery: trimmedOriginalQuery,
         mode,
@@ -1509,17 +1426,20 @@ export default function Index() {
         includeExternalEvidence: false,
       });
       if (searchRunIdRef.current !== searchRunId) return;
+      const results = response.researchers;
+      const expandedQuery = response.expandedQuery.trim() || trimmedQuery;
+      const responseOriginalQuery = response.originalQuery.trim() || trimmedOriginalQuery;
       const nextDepartments = new Set(results.map(researcher => researcher.department).filter(Boolean));
       setActiveFilters(prev => prev.filter(filter =>
         isPersistentFilter(filter) || (!departmentFilters.has(filter) && nextDepartments.has(filter))
       ));
       setSearchResults(results);
-      setCurrentMission(trimmedQuery);
-      setCurrentOriginalMission(trimmedOriginalQuery);
+      setCurrentMission(expandedQuery);
+      setCurrentOriginalMission(responseOriginalQuery);
       setCurrentSearchMode(mode);
       setHasSearched(true);
       setEmptySearchMessage(results.length === 0 ? DEFAULT_EMPTY_SEARCH_MESSAGE : "");
-      saveSearch(trimmedQuery, mode, results, trimmedOriginalQuery);
+      saveSearch(expandedQuery, mode, results, responseOriginalQuery);
     } catch (error) {
       if (searchRunIdRef.current !== searchRunId) return;
       const message = error instanceof Error ? error.message : "";
@@ -1569,34 +1489,6 @@ export default function Index() {
       }
     }
 
-    if (mode === "semantic" && options.rewriteMission) {
-      const searchRunId = searchRunIdRef.current + 1;
-      searchRunIdRef.current = searchRunId;
-      setIsRewritingMission(true);
-      setSearchError("");
-      setEmptySearchMessage("");
-      try {
-        const rewrite = await rewriteMission(trimmedQuery);
-        if (searchRunIdRef.current !== searchRunId) return;
-        const rewrittenQuery = rewrite.rewrittenQuery.trim() || trimmedQuery;
-        setPendingRewriteSearch({
-          originalQuery: trimmedQuery,
-          rewrittenQuery,
-          mode,
-          options,
-        });
-        setEditableRewrite(rewrittenQuery);
-      } catch (error) {
-        if (searchRunIdRef.current !== searchRunId) return;
-        setSearchError(error instanceof Error ? error.message : "Could not rewrite the query.");
-      } finally {
-        if (searchRunIdRef.current === searchRunId) {
-          setIsRewritingMission(false);
-        }
-      }
-      return;
-    }
-
     await executeSearch(trimmedQuery, mode, options);
   };
 
@@ -1612,14 +1504,6 @@ export default function Index() {
     if (!lookup) return;
     setPendingProfileLookup(null);
     await executeSearch(lookup.originalQuery, lookup.mode, lookup.options);
-  };
-
-  const continueRewriteSearch = async (query: string) => {
-    if (!pendingRewriteSearch) return;
-    const search = pendingRewriteSearch;
-    setPendingRewriteSearch(null);
-    setEditableRewrite("");
-    await executeSearch(query, search.mode, search.options, search.originalQuery);
   };
 
   const applySchoolMissionMatches = (matches: Awaited<ReturnType<typeof matchSchoolMissions>>) => {
@@ -1921,67 +1805,6 @@ export default function Index() {
           />
         </div>
       )}
-      {isRewritingMission && (
-        <MissionRewriteOverlay seconds={rewriteSeconds} onCancel={cancelSearch} />
-      )}
-      <Dialog
-        open={Boolean(pendingRewriteSearch)}
-        onOpenChange={open => {
-          if (!open) {
-            setPendingRewriteSearch(null);
-            setEditableRewrite("");
-          }
-        }}
-      >
-        <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Review rewritten query</DialogTitle>
-            <DialogDescription>
-              ITMAP can search with the original query, the rewritten query, or your edited version.
-            </DialogDescription>
-          </DialogHeader>
-          {pendingRewriteSearch && (
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Original query
-                </label>
-                <textarea
-                  value={pendingRewriteSearch.originalQuery}
-                  readOnly
-                  className="h-28 w-full resize-none rounded-lg border border-border bg-secondary/60 px-3 py-2 text-sm leading-relaxed text-foreground focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Rewritten query
-                </label>
-                <textarea
-                  value={editableRewrite}
-                  onChange={event => setEditableRewrite(event.target.value)}
-                  className="h-44 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                />
-              </div>
-              <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => continueRewriteSearch(pendingRewriteSearch.originalQuery)}
-                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
-                >
-                  Use original
-                </button>
-                <button
-                  type="button"
-                  onClick={() => continueRewriteSearch(editableRewrite || pendingRewriteSearch.rewrittenQuery)}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  Continue with rewritten
-                </button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
       <Dialog
         open={Boolean(pendingProfileLookup)}
         onOpenChange={open => {
@@ -2098,26 +1921,15 @@ export default function Index() {
             <span className="hidden lg:inline">Researcher Profile</span>
           </button>
           <button
-            onClick={() => setTabMode("graph")}
+            onClick={() => setTabMode("departments")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
-              tabMode === "graph"
+              tabMode === "departments"
                 ? "bg-card shadow-sm text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <Share2 className="h-3.5 w-3.5" />
-            Graph
-          </button>
-          <button
-            onClick={() => setTabMode("collaborate")}
-            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
-              tabMode === "collaborate"
-                ? "bg-card shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Handshake className="h-3.5 w-3.5" />
-            Collaborate
+            <Building2 className="h-3.5 w-3.5" />
+            Departments
           </button>
           <button
             onClick={() => setTabMode("saved")}
@@ -2167,7 +1979,7 @@ export default function Index() {
               onSearch={handleSearch}
               onCancelSearch={cancelSearch}
               onLoadSavedSearch={loadSavedSearch}
-              isSearching={isSearching || isRewritingMission}
+              isSearching={isSearching}
               departmentOptions={availableDepartments}
               keywordOptions={availableKeywords}
               keywordSearchSuggestions={keywordSearchSuggestions}
@@ -2378,79 +2190,146 @@ export default function Index() {
           </div>
         </main>
       ) : tabMode === "profile" ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row">
-          <aside className="max-h-[42dvh] w-full shrink-0 overflow-y-auto border-b border-border bg-card lg:max-h-none lg:w-[380px] lg:border-b-0 lg:border-r">
-            <div className="space-y-4 p-4 sm:p-5">
-              <div>
-                <p className="text-sm font-semibold text-foreground">Find a researcher</p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Start typing a name and choose the closest Imperial profile from the suggestions.
-                </p>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+          <section className="relative z-30 shrink-0 border-b border-border bg-card px-3 py-3 sm:px-6">
+            <div className="mx-auto flex max-w-7xl flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-semibold text-primary">
+                  {selectedResearcherSuggestion
+                    ? selectedResearcherSuggestion.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()
+                    : <UserRound className="h-5 w-5" />}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Researcher workspace</p>
+                  <p className="mt-0.5 truncate text-base font-semibold text-foreground">
+                    {selectedResearcherSuggestion?.name || "Researcher Profile"}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {selectedResearcherSuggestion
+                      ? [selectedResearcherSuggestion.title, selectedResearcherSuggestion.department].filter(Boolean).join(" · ")
+                      : "Profile · Graph · Collaborate"}
+                  </p>
+                </div>
               </div>
-              <div className="relative">
-                <SearchIcon className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+
+              <div className="relative w-full lg:max-w-xl">
+                <SearchIcon className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
                 <input
                   value={profileQuery}
-                  onChange={event => setProfileQuery(event.target.value)}
+                  onChange={event => {
+                    const value = event.target.value;
+                    setProfileQuery(value);
+                    if (
+                      selectedResearcherSuggestion
+                      && normaliseResearcherName(value) !== normaliseResearcherName(selectedResearcherSuggestion.name)
+                    ) {
+                      setSelectedResearcherSuggestion(null);
+                    }
+                  }}
                   placeholder="Type a researcher name..."
-                  className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  className="h-11 w-full rounded-lg border border-border bg-background pl-9 pr-9 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
-              </div>
-              {profileSuggestionError && (
-                <p className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                  {profileSuggestionError}
-                </p>
-              )}
-              <div className="space-y-2">
                 {isLoadingProfileSuggestions && (
-                  <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    Finding names...
+                  <Loader2 className="absolute right-3 top-3.5 h-4 w-4 animate-spin text-primary" />
+                )}
+
+                {(profileSuggestions.length > 0 || profileSuggestionError || (
+                  !isLoadingProfileSuggestions
+                  && !selectedResearcherSuggestion
+                  && profileQuery.trim().length >= 2
+                )) && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-80 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
+                    {profileSuggestionError ? (
+                      <p className="px-3 py-3 text-xs text-destructive">{profileSuggestionError}</p>
+                    ) : profileSuggestions.length === 0 ? (
+                      <p className="px-3 py-3 text-sm text-muted-foreground">No matching researchers yet.</p>
+                    ) : profileSuggestions.map(suggestion => (
+                      <button
+                        key={suggestion.researcherId}
+                        type="button"
+                        onClick={() => loadResearcherProfile(suggestion, researcherWorkspaceView)}
+                        className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-secondary"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-semibold text-foreground">{suggestion.name}</span>
+                          <span className="mt-0.5 block line-clamp-1 text-xs text-muted-foreground">{suggestion.title}</span>
+                          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{suggestion.department}</span>
+                        </span>
+                        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
+                          {Math.round(suggestion.score * 100)}%
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 )}
-                {!isLoadingProfileSuggestions && !selectedResearcherProfile && profileQuery.trim().length >= 2 && profileSuggestions.length === 0 && !profileSuggestionError && (
-                  <div className="rounded-lg border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-                    No matching researchers yet.
-                  </div>
-                )}
-                {profileSuggestions.map(suggestion => (
-                  <button
-                    key={suggestion.researcherId}
-                    type="button"
-                    onClick={() => loadResearcherProfile(suggestion)}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-secondary"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-foreground">{suggestion.name}</p>
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{suggestion.title}</p>
-                        <p className="mt-1 truncate text-[11px] text-muted-foreground">{suggestion.department}</p>
-                      </div>
-                      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
-                        {Math.round(suggestion.score * 100)}%
-                      </span>
-                    </div>
-                  </button>
-                ))}
               </div>
             </div>
-          </aside>
 
-          <main className="flex min-h-0 flex-1 overflow-hidden">
-            {isLoadingResearcherProfile ? (
+            <div className="mx-auto mt-3 max-w-7xl">
+              <div role="tablist" aria-label="Researcher profile views" className="grid w-full grid-cols-3 gap-1 rounded-lg border border-border bg-secondary/70 p-1 sm:w-fit">
+                {([
+                  { id: "profile", label: "Profile", icon: UserRound },
+                  { id: "graph", label: "Graph", icon: Share2 },
+                  { id: "collaborate", label: "Collaborate", icon: Handshake },
+                ] as const).map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={researcherWorkspaceView === item.id}
+                      aria-controls="researcher-workspace-panel"
+                      disabled={!selectedResearcherSuggestion}
+                      onClick={() => setResearcherWorkspaceView(item.id)}
+                      title={item.id === "profile"
+                        ? "Profile, publications, and timelines"
+                        : item.id === "graph"
+                          ? "Co-author network and connection paths"
+                          : "Potential collaborators with related topics"}
+                      className={`relative inline-flex h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors sm:min-w-28 ${
+                        researcherWorkspaceView === item.id
+                          ? "bg-card text-foreground shadow-sm ring-1 ring-border/70"
+                          : "text-muted-foreground hover:text-foreground"
+                      } disabled:cursor-not-allowed disabled:opacity-45`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {item.label}
+                      {researcherWorkspaceView === item.id && (
+                        <span aria-hidden="true" className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-primary" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+
+          <main id="researcher-workspace-panel" role="tabpanel" className="flex min-h-0 flex-1 overflow-hidden">
+            {!selectedResearcherSuggestion ? (
+              <div className="flex flex-1 items-center justify-center p-3 sm:p-6">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+                    <UserRound className="h-7 w-7 text-primary" />
+                  </div>
+                  <p className="mt-4 text-base font-semibold text-foreground">Select a researcher</p>
+                  <p className="mt-2 text-sm text-muted-foreground">Their profile, network, and collaboration views will appear here.</p>
+                </div>
+              </div>
+            ) : researcherWorkspaceView === "profile" && isLoadingResearcherProfile ? (
               <div className="flex flex-1 items-center justify-center">
                 <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin text-primary" />
                   Loading profile and papers...
                 </div>
               </div>
-            ) : researcherProfileError ? (
+            ) : researcherWorkspaceView === "profile" && researcherProfileError ? (
               <div className="flex flex-1 items-center justify-center p-3 sm:p-6">
                 <div className="max-w-md rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
                   {researcherProfileError}
                 </div>
               </div>
-            ) : selectedResearcherProfile ? (
+            ) : researcherWorkspaceView === "profile" && selectedResearcherProfile ? (
               <ResearcherProfileView
                 profile={selectedResearcherProfile}
                 paperPage={profilePaperPage}
@@ -2462,39 +2341,47 @@ export default function Index() {
                 questionAnswer={profileQuestionAnswer}
                 questionError={profileQuestionError}
               />
-            ) : (
-              <div className="flex flex-1 items-center justify-center p-3 sm:p-6">
-                <div className="max-w-md text-center">
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
-                    <UserRound className="h-7 w-7 text-primary" />
+            ) : researcherWorkspaceView === "graph" ? (
+              <Suspense fallback={(
+                <div className="flex flex-1 items-center justify-center bg-background">
+                  <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    Opening collaboration network...
                   </div>
-                  <p className="mt-4 text-base font-semibold text-foreground">Select a researcher profile</p>
                 </div>
-              </div>
+              )}>
+                <ResearcherNetworkGraph
+                  focalResearcher={selectedResearcherSuggestion}
+                  onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+                />
+              </Suspense>
+            ) : (
+              <Suspense fallback={(
+                <div className="flex flex-1 items-center justify-center bg-background">
+                  <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    Opening collaboration opportunities...
+                  </div>
+                </div>
+              )}>
+                <CollaborationOpportunities
+                  focalResearcher={selectedResearcherSuggestion}
+                  onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+                />
+              </Suspense>
             )}
           </main>
         </div>
-      ) : tabMode === "graph" ? (
+      ) : tabMode === "departments" ? (
         <Suspense fallback={(
-          <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-background">
             <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              Opening collaboration network...
+              Opening departments...
             </div>
-          </main>
+          </div>
         )}>
-          <ResearcherNetworkGraph onOpenProfile={loadResearcherProfile} />
-        </Suspense>
-      ) : tabMode === "collaborate" ? (
-        <Suspense fallback={(
-          <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
-            <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
-              <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              Opening collaboration opportunities...
-            </div>
-          </main>
-        )}>
-          <CollaborationOpportunities onOpenProfile={loadResearcherProfile} />
+          <DepartmentExplorer onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")} />
         </Suspense>
       ) : tabMode === "help" ? (
         <HelpAboutPanel />
