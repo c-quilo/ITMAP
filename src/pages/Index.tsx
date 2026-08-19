@@ -6,7 +6,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -442,6 +442,7 @@ function QuickSearchPanel({
   result,
   error,
   onOpenProfile,
+  onOpenOrganization,
   onRunFullSearch,
 }: {
   query: string;
@@ -451,6 +452,7 @@ function QuickSearchPanel({
   result: QuickSearchResult | null;
   error: string;
   onOpenProfile: (suggestion: ResearcherSuggestion) => void;
+  onOpenOrganization: (organization: OrganizationSuggestion) => void;
   onRunFullSearch: (query: string) => void;
 }) {
   const examples = [
@@ -566,6 +568,18 @@ function QuickSearchPanel({
           {result && (
             <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-4">
               <p className="text-sm leading-relaxed text-foreground/85">{result.answer}</p>
+              {result.organization && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => onOpenOrganization(result.organization!)}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                  >
+                    <Building2 className="h-3.5 w-3.5" />
+                    Open {result.organization.kind}
+                  </button>
+                </div>
+              )}
               {result.researcher && (
                 <div className="mt-3">
                   <button
@@ -846,7 +860,7 @@ function ResearcherProfileView({
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="mb-3 flex items-center gap-2">
               <UsersRound className="h-4 w-4 text-primary" />
-              <p className="text-sm font-semibold text-foreground">Main Co-authors</p>
+              <p className="text-sm font-semibold text-foreground">Recent Co-authors</p>
             </div>
             <div className="space-y-3">
               {profile.coauthors.slice(0, 8).map(coauthor => (
@@ -998,6 +1012,7 @@ export default function Index() {
   const [quickSearchResult, setQuickSearchResult] = useState<QuickSearchResult | null>(null);
   const [isQuickSearching, setIsQuickSearching] = useState(false);
   const [quickSearchError, setQuickSearchError] = useState("");
+  const [departmentInitialOrganization, setDepartmentInitialOrganization] = useState("");
   const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
   const [showIntro, setShowIntro] = useState(() => {
     try {
@@ -1386,6 +1401,11 @@ export default function Index() {
       enableRerank: true,
       includeExternalEvidence: false,
     });
+  };
+
+  const openQuickSearchOrganization = (organization: OrganizationSuggestion) => {
+    setDepartmentInitialOrganization(organization.name);
+    setTabMode("departments");
   };
 
   const cancelSearch = () => {
@@ -1921,7 +1941,10 @@ export default function Index() {
             <span className="hidden lg:inline">Researcher Profile</span>
           </button>
           <button
-            onClick={() => setTabMode("departments")}
+            onClick={() => {
+              setDepartmentInitialOrganization("");
+              setTabMode("departments");
+            }}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "departments"
                 ? "bg-card shadow-sm text-foreground"
@@ -2176,6 +2199,7 @@ export default function Index() {
               result={quickSearchResult}
               error={quickSearchError}
               onOpenProfile={loadResearcherProfile}
+              onOpenOrganization={openQuickSearchOrganization}
               onRunFullSearch={runQuickSearchAsFullSearch}
             />
             {!quickSearchResult && !quickSearchError && (
@@ -2381,7 +2405,10 @@ export default function Index() {
             </div>
           </div>
         )}>
-          <DepartmentExplorer onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")} />
+          <DepartmentExplorer
+            initialOrganizationName={departmentInitialOrganization}
+            onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+          />
         </Suspense>
       ) : tabMode === "help" ? (
         <HelpAboutPanel />

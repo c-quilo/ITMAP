@@ -293,9 +293,10 @@ export interface QuickSearchSuggestion extends ResearcherSuggestion {
 }
 
 export interface QuickSearchResult {
-  kind: "person" | "topic" | "information" | "redirect" | "empty";
+  kind: "person" | "relationship" | "organization" | "topic" | "information" | "redirect" | "empty";
   answer: string;
   researcher?: ResearcherSuggestion;
+  organization?: OrganizationSuggestion;
   suggestions: QuickSearchSuggestion[];
   evidenceTitles: string[];
   caveat: string;
@@ -902,7 +903,12 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
           })).filter((paper: { title: string }) => paper.title).slice(0, 5)
           : [],
       }))
-      .filter((coauthor: { openalexId: string; name: string }) => coauthor.openalexId && coauthor.name),
+      .filter((coauthor: { openalexId: string; name: string }) => coauthor.openalexId && coauthor.name)
+      .sort((first, second) => (
+        Number(second.latestYear || 0) - Number(first.latestYear || 0)
+        || second.sharedPapers - first.sharedPapers
+        || first.name.localeCompare(second.name)
+      )),
     collaborationTimeline: {
       years: collaborationYears
         .map((point: Record<string, unknown>) => ({
@@ -1306,9 +1312,12 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
   const researcher = data?.researcher && typeof data.researcher === "object"
     ? data.researcher as Record<string, unknown>
     : null;
+  const organization = data?.organization && typeof data.organization === "object"
+    ? data.organization as Record<string, unknown>
+    : null;
 
   return {
-    kind: ["person", "topic", "information", "redirect", "empty"].includes(String(data?.kind))
+    kind: ["person", "relationship", "organization", "topic", "information", "redirect", "empty"].includes(String(data?.kind))
       ? String(data?.kind) as QuickSearchResult["kind"]
       : "empty",
     answer: String(data?.answer || ""),
@@ -1322,6 +1331,14 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
         department: normaliseDepartment(String(researcher.department || "")),
         faculty: String(researcher.faculty || "Imperial College London"),
         score: Number(researcher.score || 0),
+      }
+      : undefined,
+    organization: organization
+      ? {
+        name: String(organization.name || ""),
+        kind: String(organization.kind || "unit") as OrganizationKind,
+        researcherCount: Number(organization.researcher_count || 0),
+        score: Number(organization.score || 0),
       }
       : undefined,
     suggestions: suggestions

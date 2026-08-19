@@ -2551,6 +2551,16 @@ function isQuickAffiliationQuery(query: string) {
     || /\b(?:affiliated|affiliation|connected\s+to|associated\s+with|part\s+of|belongs?\s+to|members?|department|institute|school|faculty|centre|center|laboratory|lab)\b/i.test(query);
 }
 
+function isQuickOrganizationPeopleQuery(query: string) {
+  if (/\b(?:co-?directors?|directors?|leadership|who runs|what is|what's|describe|explain)\b/i.test(query)) {
+    return false;
+  }
+
+  const asksForPeople = /\b(?:who|people|researchers?|academics?|staff|members?|working|works?|based|affiliated|belongs?)\b/i.test(query);
+  const namesOrganization = /\b(?:department|institute|school|faculty|centre|center|laboratory|lab|unit|grantham)\b/i.test(query);
+  return asksForPeople && namesOrganization;
+}
+
 function quickAffiliationTerms(query: string) {
   const cleaned = quickTopicSearchQuery(query);
   const terms = new Set<string>();
@@ -3139,7 +3149,7 @@ async function answerQuickRelationship(
   }
 
   return {
-    kind: "person",
+    kind: "relationship",
     answer,
     suggestions: [
       relationshipSuggestion(first, schoolRoleForResearcher(String(first.full_name || "")) || firstAffiliation || "Researcher included in this comparison."),
@@ -3187,6 +3197,20 @@ async function quickSearch(
   const relationshipNames = quickRelationshipNames(trimmedQuery);
   if (relationshipNames) {
     return await answerQuickRelationship(supabase, openAiKey, model, trimmedQuery, relationshipNames);
+  }
+
+  if (isQuickOrganizationPeopleQuery(trimmedQuery)) {
+    const organization = await quickOrganizationMatch(supabase, trimmedQuery);
+    if (organization) {
+      return {
+        kind: "organization",
+        answer: `The Departments area contains the researcher directory, themes, and publication activity for ${organization.name}. Open it there to see who is connected to this ${organization.kind}.`,
+        organization,
+        suggestions: [],
+        evidence_titles: [],
+        caveat: "Organisation membership is based on the Imperial affiliations currently stored in ITMAP.",
+      };
+    }
   }
 
   const isSchoolQuery = isSchoolOfConvergenceScienceQuery(trimmedQuery);
@@ -3509,6 +3533,52 @@ async function suggestOrganizations(
       || Number(second.researcher_count) - Number(first.researcher_count)
       || String(first.name).localeCompare(String(second.name)))
     .slice(0, limit);
+}
+
+function quickOrganizationTokens(value: unknown) {
+  const generic = new Set([
+    "and", "at", "college", "department", "faculty", "for", "imperial", "institute",
+    "laboratory", "lab", "london", "of", "school", "the", "unit", "centre", "center",
+  ]);
+  return organizationIdentityKey(value)
+    .split(/\s+/)
+    .filter(token => token.length >= 3 && !generic.has(token));
+}
+
+async function quickOrganizationMatch(
+  supabase: ReturnType<typeof createClient>,
+  query: string,
+) {
+  const organizations = await listOrganizations(supabase);
+  const normalizedQuery = organizationIdentityKey(query);
+  const queryTokens = new Set(quickOrganizationTokens(query));
+  const ranked = organizations
+    .map(organization => {
+      const normalizedName = organizationIdentityKey(organization.name);
+      const nameTokens = quickOrganizationTokens(organization.name);
+      const matchedTokens = nameTokens.filter(token => queryTokens.has(token)).length;
+      const tokenCoverage = nameTokens.length > 0 ? matchedTokens / nameTokens.length : 0;
+      const explicitName = normalizedQuery.includes(normalizedName);
+      const brandedAlias = normalizedName.includes("grantham") && normalizedQuery.includes("grantham");
+      const score = explicitName ? 1 : brandedAlias ? 0.98 : tokenCoverage;
+      return { ...organization, score, explicitName };
+    })
+    .filter(organization => organization.score >= 0.72)
+    .sort((first, second) => second.score - first.score
+      || Number(second.researcher_count || 0) - Number(first.researcher_count || 0)
+      || String(first.name).localeCompare(String(second.name)));
+
+  const best = ranked[0];
+  const second = ranked[1];
+  if (!best) return null;
+  if (!best.explicitName && second && best.score - second.score < 0.12) return null;
+
+  return {
+    name: best.name,
+    kind: best.kind,
+    researcher_count: best.researcher_count,
+    score: best.score,
+  };
 }
 
 function themeEvidencePapers(row: Record<string, unknown>) {
@@ -4036,6 +4106,10 @@ async function fetchTopCoauthorsForResearcher(
     return [];
   }
 
+  return serializeCoauthorConnections(ranked);
+}
+
+function serializeCoauthorConnections(ranked: CanonicalCoauthorConnection[]) {
   return ranked.map(coauthor => {
     const imperialProfile = coauthor.imperialProfile;
     return {
@@ -4052,6 +4126,38 @@ async function fetchTopCoauthorsForResearcher(
       paper_titles: coauthor.paperTitles.slice(0, 10),
     };
   });
+}
+
+async function fetchRecentCoauthorsForResearcher(
+  supabase: ReturnType<typeof createClient>,
+  researcherId: string,
+  limit = 12,
+) {
+  let coauthors: CanonicalCoauthorConnection[] = [];
+  try {
+    coauthors = await fetchCompleteCanonicalCoauthorsForResearcher(supabase, researcherId);
+    if (coauthors.length === 0) {
+      coauthors = await fetchCanonicalCoauthorsForResearcher(
+        supabase,
+        researcherId,
+        Math.min(100, Math.max(40, limit * 8)),
+      );
+    }
+  } catch (error) {
+    console.warn("Could not load recent researcher co-authors", error);
+    return [];
+  }
+
+  const recent = [...coauthors]
+    .sort((first, second) => (
+      Number(second.latestYear || 0) - Number(first.latestYear || 0)
+      || second.sharedPapers - first.sharedPapers
+      || second.totalCitations - first.totalCitations
+      || first.name.localeCompare(second.name)
+    ))
+    .slice(0, Math.max(1, limit));
+
+  return serializeCoauthorConnections(recent);
 }
 
 async function researcherNetworkById(
@@ -4867,7 +4973,7 @@ async function researcherProfileById(
   if (!researcher) throw new Error("Researcher not found");
 
   const papers = await fetchAllPapersForResearcher(supabase, researcherId);
-  const coauthors = await fetchTopCoauthorsForResearcher(supabase, researcherId, 12);
+  const coauthors = await fetchRecentCoauthorsForResearcher(supabase, researcherId, 12);
   const collaborationTimeline = await fetchStoredCollaborationTimeline(supabase, researcherId)
     || await fetchCollaborationTimelineForResearcher(supabase, researcher);
   const profileSummary = await summarizeResearcherProfileWithLlm(openAiKey, model, researcher, papers);

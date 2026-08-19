@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   BookOpen,
@@ -376,8 +376,10 @@ function ThemePaperTimeline({ themes }: { themes: OrganizationTheme[] }) {
 }
 
 export default function DepartmentExplorer({
+  initialOrganizationName,
   onOpenProfile,
 }: {
+  initialOrganizationName?: string;
   onOpenProfile?: (researcher: ResearcherSuggestion) => void;
 }) {
   const [profile, setProfile] = useState<OrganizationProfile | null>(null);
@@ -415,7 +417,7 @@ export default function DepartmentExplorer({
     };
   }, []);
 
-  const loadOrganization = async (name: string) => {
+  const loadOrganization = useCallback(async (name: string) => {
     setShowDirectory(false);
     setIsLoading(true);
     setError("");
@@ -430,7 +432,13 @@ export default function DepartmentExplorer({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const name = initialOrganizationName?.trim();
+    if (!name) return;
+    void loadOrganization(name);
+  }, [initialOrganizationName, loadOrganization]);
 
   const filteredResearchers = useMemo(() => {
     if (!profile) return [];
