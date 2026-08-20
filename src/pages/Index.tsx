@@ -5,6 +5,7 @@ import ResearcherCard from "@/components/ResearcherCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
+import ViewErrorBoundary from "@/components/ViewErrorBoundary";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
 import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -42,6 +43,13 @@ const MATCH_FILTERS = new Set(["Strong Match", "Moderate", "Weak"]);
 const SCHOOL_MISSION_THEME_PREFIX = "Theme: ";
 const SCHOOL_MISSION_PREFIX = "Mission: ";
 const DEFAULT_EMPTY_SEARCH_MESSAGE = "We couldn't find any results. Try a different search, use fewer words, or make the topic a bit broader.";
+const INCOMPLETE_SEARCH_MESSAGE = "We need a little more detail. Add a researcher name, department, or clear research topic, then try again.";
+const GENERIC_QUERY_TERMS = new Set([
+  "a", "about", "academic", "academics", "afternoon", "an", "and", "anything", "are", "ask", "at", "can", "could", "day", "do", "doing", "evening", "expert", "experts", "for",
+  "find", "give", "hello", "help", "i", "imperial", "in", "information", "is", "list", "looking", "me", "my", "need",
+  "good", "how", "itmap", "morning", "people", "person", "please", "researcher", "researchers", "search", "show", "someone",
+  "something", "staff", "tell", "thanks", "the", "there", "to", "today", "us", "want", "we", "what", "who", "work", "working", "would", "you", "your",
+]);
 const KEYWORD_STOP_WORDS = new Set([
   "about", "after", "also", "analysis", "based", "being", "between", "college", "data", "from",
   "department", "faculty", "imperial", "including", "into", "london", "metadata", "model", "models",
@@ -93,6 +101,20 @@ function normaliseResearcherName(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function needsMoreResearchDetail(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return true;
+  if (/^(?:hi|hello|hey|hiya|hola|good\s+(?:morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?|test(?:ing)?)\b[\s!?.]*$/i.test(text)) {
+    return true;
+  }
+
+  const terms = text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(term => (term.length > 1 || term === "ai") && !GENERIC_QUERY_TERMS.has(term));
+  return terms.length === 0;
 }
 
 function filterByAny(values: string[], filters: string[]) {
@@ -623,13 +645,8 @@ function QuickSearchPanel({
 function HelpAboutPanel() {
   const sections = [
     {
-      title: "Ask ITMAP",
-      text: "Use this for quick questions. It is good when you already know a name, a place, or a simple topic. If ITMAP gives you a name, click it to open Researcher Profile and explore more.",
-      examples: ["Tell me about Benjamin Barratt", "Who is working on photonics?", "Co-directors of the school"],
-    },
-    {
       title: "Search",
-      text: "Use this when you have a bigger query or research need. Search has two modes inside it: Semantic and Keyword.",
+      text: "This is the main expert-finding tool. Use it when you have a research question or need a ranked shortlist. Search has two modes inside it: Semantic and Keyword.",
       examples: ["AI for weather forecasting", "Environmental exposure and air pollution", "Sustainable textiles"],
     },
     {
@@ -661,6 +678,11 @@ function HelpAboutPanel() {
       title: "Departments",
       text: "Use this to explore an Imperial department, institute, school, faculty, centre, or lab as one research community. You can see its people, leading themes, and topics with recent momentum.",
       examples: ["Grantham Institute for Climate Change", "Department of Mechanical Engineering"],
+    },
+    {
+      title: "Ask ITMAP",
+      text: "Use this later for a quick factual question about a known researcher, Imperial unit, or simple topic. It gives a fast pointer, not the full evidence-led ranking from Search. If ITMAP gives you a name, click it to open Researcher Profile.",
+      examples: ["Tell me about Benjamin Barratt", "Who is working on photonics?", "Co-directors of the school"],
     },
     {
       title: "Saved",
@@ -957,6 +979,32 @@ function ResearcherProfileView({
                     {paper.journal && <span>{paper.journal}</span>}
                     {paper.citations > 0 && <span>{paper.citations.toLocaleString()} citations</span>}
                   </div>
+                  {paper.versions && paper.versions.length > 1 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {paper.versions.map((version, versionIndex) => {
+                        const versionUrl = version.url || version.openalexUrl;
+                        if (!versionUrl) return null;
+                        const prefix = version.kind === "preprint"
+                          ? "Preprint"
+                          : version.kind === "published"
+                            ? "Published"
+                            : "Repository";
+                        return (
+                          <a
+                            key={`${versionUrl}-${versionIndex}`}
+                            href={versionUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={`Open ${version.label}`}
+                            className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-secondary px-2 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                          >
+                            <span className="max-w-[240px] truncate">{prefix}: {version.label}</span>
+                            <ExternalLink className="h-3 w-3 shrink-0" />
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -973,7 +1021,7 @@ export default function Index() {
   const highlightTimeoutRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
-  const [tabMode, setTabMode] = useState<TabMode>("quick");
+  const [tabMode, setTabMode] = useState<TabMode>("search");
   const [searchResults, setSearchResults] = useState<Researcher[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -1380,6 +1428,18 @@ export default function Index() {
     const query = quickSearchQuery.trim();
     if (!query || isQuickSearching) return;
 
+    if (needsMoreResearchDetail(query)) {
+      setQuickSearchError("");
+      setQuickSearchResult({
+        kind: "empty",
+        answer: INCOMPLETE_SEARCH_MESSAGE,
+        suggestions: [],
+        evidenceTitles: [],
+        caveat: "",
+      });
+      return;
+    }
+
     setIsQuickSearching(true);
     setQuickSearchError("");
     try {
@@ -1484,6 +1544,17 @@ export default function Index() {
       setEmptySearchMessage("");
       setHasSearched(false);
       setSearchResults([]);
+      return;
+    }
+
+    if (mode === "semantic" && needsMoreResearchDetail(trimmedQuery)) {
+      setSearchResults([]);
+      setCurrentMission(trimmedQuery);
+      setCurrentOriginalMission(trimmedQuery);
+      setCurrentSearchMode(mode);
+      setSearchError("");
+      setEmptySearchMessage(INCOMPLETE_SEARCH_MESSAGE);
+      setHasSearched(true);
       return;
     }
 
@@ -1895,17 +1966,6 @@ export default function Index() {
         {/* Tab Navigation */}
         <nav aria-label="Main navigation" className="itmap-header-tabs relative z-10 order-3 flex w-full min-w-0 flex-none items-center justify-start gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5 lg:order-none lg:w-auto lg:flex-1 lg:justify-center">
           <button
-            onClick={() => setTabMode("quick")}
-            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
-              tabMode === "quick"
-                ? "bg-card shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <MessageSquareText className="h-3.5 w-3.5" />
-            Ask ITMAP
-          </button>
-          <button
             onClick={() => setTabMode("search")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "search"
@@ -1953,6 +2013,17 @@ export default function Index() {
           >
             <Building2 className="h-3.5 w-3.5" />
             Departments
+          </button>
+          <button
+            onClick={() => setTabMode("quick")}
+            className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
+              tabMode === "quick"
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <MessageSquareText className="h-3.5 w-3.5" />
+            Ask ITMAP
           </button>
           <button
             onClick={() => setTabMode("saved")}
@@ -2366,33 +2437,43 @@ export default function Index() {
                 questionError={profileQuestionError}
               />
             ) : researcherWorkspaceView === "graph" ? (
-              <Suspense fallback={(
-                <div className="flex flex-1 items-center justify-center bg-background">
-                  <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    Opening collaboration network...
+              <ViewErrorBoundary
+                key={`graph:${selectedResearcherSuggestion.researcherId}`}
+                viewName="Collaboration network"
+              >
+                <Suspense fallback={(
+                  <div className="flex flex-1 items-center justify-center bg-background">
+                    <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                      Opening collaboration network...
+                    </div>
                   </div>
-                </div>
-              )}>
-                <ResearcherNetworkGraph
-                  focalResearcher={selectedResearcherSuggestion}
-                  onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
-                />
-              </Suspense>
+                )}>
+                  <ResearcherNetworkGraph
+                    focalResearcher={selectedResearcherSuggestion}
+                    onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+                  />
+                </Suspense>
+              </ViewErrorBoundary>
             ) : (
-              <Suspense fallback={(
-                <div className="flex flex-1 items-center justify-center bg-background">
-                  <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    Opening collaboration opportunities...
+              <ViewErrorBoundary
+                key={`collaborate:${selectedResearcherSuggestion.researcherId}`}
+                viewName="Collaboration opportunities"
+              >
+                <Suspense fallback={(
+                  <div className="flex flex-1 items-center justify-center bg-background">
+                    <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                      Opening collaboration opportunities...
+                    </div>
                   </div>
-                </div>
-              )}>
-                <CollaborationOpportunities
-                  focalResearcher={selectedResearcherSuggestion}
-                  onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
-                />
-              </Suspense>
+                )}>
+                  <CollaborationOpportunities
+                    focalResearcher={selectedResearcherSuggestion}
+                    onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+                  />
+                </Suspense>
+              </ViewErrorBoundary>
             )}
           </main>
         </div>

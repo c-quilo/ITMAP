@@ -266,7 +266,6 @@ const collaborationYears = [...yearly.entries()].sort(([a], [b]) => a - b).map((
 
 const coauthorRows = [...coauthors.values()]
   .sort((a, b) => b.workIds.size - a.workIds.size || b.total_citations - a.total_citations)
-  .slice(0, 100)
   .map(coauthor => ({
     researcher_id: researcherId,
     coauthor_openalex_id: coauthor.openalex_id,

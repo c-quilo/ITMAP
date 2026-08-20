@@ -1,12 +1,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
-  BookOpen,
   Building2,
   CalendarRange,
   ChevronDown,
   ChevronUp,
   Loader2,
+  Info,
   Search,
   Sparkles,
   TrendingDown,
@@ -14,8 +14,21 @@ import {
   UsersRound,
   X,
 } from "lucide-react";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip as ChartTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import DepartmentCollaborationGraph from "@/components/DepartmentCollaborationGraph";
+import DepartmentReachGraph from "@/components/DepartmentReachGraph";
+import {
+  getOrganizationConnectionNetworks,
   getOrganizationProfile,
   listOrganizations,
   suggestOrganizations,
@@ -312,20 +325,31 @@ function ThemePaperTimeline({ themes }: { themes: OrganizationTheme[] }) {
     );
   }
 
+  const currentYear = new Date().getFullYear();
   const firstYear = Math.min(...topics.flatMap(theme => theme.yearCounts.map(item => item.year)));
-  const latestYear = Math.max(...topics.flatMap(theme => theme.yearCounts.map(item => item.year)));
+  const latestYear = Math.max(currentYear, ...topics.flatMap(theme => theme.yearCounts.map(item => item.year)));
   const countsByTopic = topics.map(theme => new Map(theme.yearCounts.map(item => [item.year, item.count])));
   const data = Array.from({ length: latestYear - firstYear + 1 }, (_, offset) => {
     const year = firstYear + offset;
     return Object.fromEntries([
       ["year", year],
-      ...topics.map((_, index) => [`topic_${index}`, countsByTopic[index].get(year) || 0]),
+      ...topics.flatMap((_, index) => {
+        const count = countsByTopic[index].get(year) || 0;
+        return year === currentYear
+          ? [[`topic_${index}`, null], [`topic_${index}_partial`, count]]
+          : [[`topic_${index}`, count], [`topic_${index}_partial`, null]];
+      }),
     ]);
   });
 
   return (
-    <div className="mt-5 overflow-x-auto pb-2">
-      <div className="h-[360px] min-w-[700px]">
+    <div className="mt-5">
+      <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
+        <Info className="h-3 w-3" />
+        {currentYear} is incomplete and shown as detached points
+      </div>
+      <div className="overflow-x-auto pb-2">
+        <div className="h-[360px] min-w-[700px]">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 12, right: 14, bottom: 8, left: 4 }}>
             <CartesianGrid stroke="hsl(var(--border))" strokeOpacity={0.6} vertical={false} />
@@ -335,6 +359,7 @@ function ThemePaperTimeline({ themes }: { themes: OrganizationTheme[] }) {
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
               tickLine={false}
               axisLine={false}
+              tickFormatter={year => Number(year) === currentYear ? `${year}*` : String(year)}
             />
             <YAxis
               allowDecimals={false}
@@ -344,7 +369,7 @@ function ThemePaperTimeline({ themes }: { themes: OrganizationTheme[] }) {
               axisLine={false}
               label={{ value: "Papers", angle: -90, position: "insideLeft", fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
             />
-            <Tooltip
+            <ChartTooltip
               formatter={(value, name) => [numberFormatter.format(Number(value)), String(name)]}
               labelFormatter={label => `Year ${label}`}
               contentStyle={{
@@ -368,8 +393,27 @@ function ThemePaperTimeline({ themes }: { themes: OrganizationTheme[] }) {
                 activeDot={{ r: 4 }}
               />
             ))}
+            {topics.map((theme, index) => (
+              <Line
+                key={`${theme.openalexTopicId || theme.label}-partial`}
+                type="linear"
+                dataKey={`topic_${index}_partial`}
+                name={`${theme.label} (${currentYear} partial)`}
+                legendType="none"
+                stroke="none"
+                connectNulls={false}
+                dot={{
+                  r: 3.5,
+                  fill: THEME_LINE_COLORS[index % THEME_LINE_COLORS.length],
+                  stroke: "hsl(var(--background))",
+                  strokeWidth: 1.5,
+                }}
+                activeDot={{ r: 5 }}
+              />
+            ))}
           </LineChart>
         </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
@@ -396,6 +440,11 @@ export default function DepartmentExplorer({
   const [directoryKind, setDirectoryKind] = useState<OrganizationKind | "all">("all");
   const [themeChartView, setThemeChartView] = useState<"span" | "volume">("span");
   const [chartTopicFilter, setChartTopicFilter] = useState("");
+  const [activeView, setActiveView] = useState<"overview" | "connections">("overview");
+  const [connectionView, setConnectionView] = useState<"researchers" | "departments">("researchers");
+  const [isLoadingNetwork, setIsLoadingNetwork] = useState(false);
+  const [networkError, setNetworkError] = useState("");
+  const organizationRequestRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -417,22 +466,59 @@ export default function DepartmentExplorer({
     };
   }, []);
 
+  const loadOrganizationNetwork = useCallback(async (
+    organizationProfile: OrganizationProfile,
+    requestId: number,
+  ) => {
+    const researcherIds = organizationProfile.researchers.map(researcher => researcher.researcherId);
+    setIsLoadingNetwork(true);
+    setNetworkError("");
+    try {
+      const connections = await getOrganizationConnectionNetworks(researcherIds);
+      if (organizationRequestRef.current !== requestId) return;
+      setProfile(currentProfile => (
+        currentProfile?.organization.name === organizationProfile.organization.name
+          ? {
+            ...currentProfile,
+            network: connections.network,
+            departmentReach: connections.departmentReach,
+          }
+          : currentProfile
+      ));
+    } catch (loadError) {
+      if (organizationRequestRef.current !== requestId) return;
+      setNetworkError(loadError instanceof Error ? loadError.message : "Could not load department connections.");
+    } finally {
+      if (organizationRequestRef.current === requestId) setIsLoadingNetwork(false);
+    }
+  }, []);
+
   const loadOrganization = useCallback(async (name: string) => {
+    const requestId = organizationRequestRef.current + 1;
+    organizationRequestRef.current = requestId;
     setShowDirectory(false);
     setIsLoading(true);
+    setIsLoadingNetwork(false);
     setError("");
+    setNetworkError("");
     setSelectedTheme("");
     setResearcherQuery("");
     setResearcherLimit(36);
     setChartTopicFilter("");
+    setActiveView("overview");
+    setConnectionView("researchers");
     try {
-      setProfile(await getOrganizationProfile(name));
+      const nextProfile = await getOrganizationProfile(name);
+      if (organizationRequestRef.current !== requestId) return;
+      setProfile(nextProfile);
+      setIsLoading(false);
+      void loadOrganizationNetwork(nextProfile, requestId);
     } catch (loadError) {
+      if (organizationRequestRef.current !== requestId) return;
       setError(loadError instanceof Error ? loadError.message : "Could not load this Imperial unit.");
-    } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [loadOrganizationNetwork]);
 
   useEffect(() => {
     const name = initialOrganizationName?.trim();
@@ -626,31 +712,126 @@ export default function DepartmentExplorer({
                 <h3 className="mt-3 text-xl font-semibold text-foreground sm:text-2xl">{profile.organization.name}</h3>
                 <p className="mt-3 max-w-4xl text-sm leading-relaxed text-muted-foreground">{profile.summary}</p>
               </div>
+              <div className="grid shrink-0 grid-cols-2 rounded-lg bg-secondary p-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveView("overview")}
+                  className={`h-9 rounded-md px-4 text-xs font-semibold transition-colors ${activeView === "overview" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView("connections")}
+                  className={`inline-flex h-9 items-center justify-center gap-2 rounded-md px-4 text-xs font-semibold transition-colors ${activeView === "connections" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  Connections
+                  {isLoadingNetwork && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+                </button>
+              </div>
             </div>
 
-            <div className="mt-6 grid grid-cols-2 border-y border-border sm:grid-cols-4">
+            <TooltipProvider delayDuration={180}>
+              <div className="mt-6 grid grid-cols-3 border-y border-border">
               {[
                 { label: "Researchers", value: profile.organization.researcherCount, Icon: UsersRound },
-                { label: "Profiles with topics", value: profile.organization.researchersWithTopics, Icon: BookOpen },
                 { label: "Distinct themes", value: profile.organization.distinctTopicCount, Icon: CalendarRange },
-                { label: "Emerging signals", value: profile.organization.emergingTopicCount, Icon: Sparkles },
+                {
+                  label: "Emerging signals",
+                  value: profile.organization.emergingTopicCount,
+                  Icon: Sparkles,
+                  help: "Topics whose publication activity in the latest five years is rising compared with the preceding five years, with evidence across several researchers. They indicate recent momentum, not a forecast.",
+                },
               ].map((stat, index) => {
                 const Icon = stat.Icon;
                 return (
                   <div
                     key={stat.label}
-                    className={`px-3 py-4 sm:px-5 ${index % 2 === 1 ? "border-l border-border" : ""} ${index > 1 ? "border-t border-border sm:border-t-0" : ""} ${index > 0 ? "sm:border-l sm:border-border" : ""}`}
+                    className={`min-w-0 px-3 py-4 sm:px-5 ${index > 0 ? "border-l border-border" : ""}`}
                   >
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Icon className="h-3.5 w-3.5" />
-                      <span className="text-[10px] font-semibold uppercase">{stat.label}</span>
+                      <span className="truncate text-[10px] font-semibold uppercase">{stat.label}</span>
+                      {stat.help && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="How emerging signals are calculated"
+                              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            >
+                              <Info className="h-3.5 w-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+                            {stat.help}
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </div>
                     <p className="mt-2 text-xl font-semibold tabular-nums text-foreground">{numberFormatter.format(stat.value)}</p>
                   </div>
                 );
               })}
-            </div>
+              </div>
+            </TooltipProvider>
           </section>
+
+          {activeView === "connections" && (
+            <section className="py-5 sm:px-6 sm:py-7">
+              {isLoadingNetwork ? (
+                <div className="flex min-h-[360px] items-center justify-center border-y border-border bg-card px-5 text-center sm:rounded-lg sm:border">
+                  <div>
+                    <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
+                    <p className="mt-4 text-sm font-semibold text-foreground">Loading co-authorship connections</p>
+                    <p className="mt-1 text-xs text-muted-foreground">The department overview is already available while ITMAP builds this network.</p>
+                  </div>
+                </div>
+              ) : networkError ? (
+                <div className="border-y border-destructive/20 bg-destructive/5 p-5 text-sm sm:rounded-lg sm:border">
+                  <p className="font-semibold text-destructive">Connections could not be loaded.</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{networkError}</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadOrganizationNetwork(profile, organizationRequestRef.current)}
+                    className="mt-4 inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div className="mx-auto mb-4 grid w-full max-w-md grid-cols-2 rounded-lg bg-secondary p-1">
+                    <button
+                      type="button"
+                      onClick={() => setConnectionView("researchers")}
+                      className={`h-9 rounded-md px-3 text-xs font-semibold transition-colors ${connectionView === "researchers" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      Researchers
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConnectionView("departments")}
+                      className={`h-9 rounded-md px-3 text-xs font-semibold transition-colors ${connectionView === "departments" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      Department reach
+                    </button>
+                  </div>
+                  {connectionView === "researchers" ? (
+                    <DepartmentCollaborationGraph profile={profile} onOpenProfile={onOpenProfile} />
+                  ) : (
+                    <DepartmentReachGraph
+                      organizationName={profile.organization.name}
+                      reach={profile.departmentReach}
+                      onOpenOrganization={loadOrganization}
+                    />
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          <div className={activeView === "overview" ? "block" : "hidden"}>
 
           <section className="border-b border-border px-3 py-5 sm:px-6 sm:py-7">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -882,6 +1063,7 @@ export default function DepartmentExplorer({
               </p>
             </section>
           )}
+          </div>
         </div>
       )}
     </main>

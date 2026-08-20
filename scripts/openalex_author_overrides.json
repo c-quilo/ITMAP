@@ -1,0 +1,154 @@
+{
+  "386fa8af-5b87-4641-b868-c5e6a6cfed27": {
+    "full_name": "Nigel Brandon",
+    "primary_openalex_id": "A5035580795",
+    "paper_source_ids": [
+      "A5035580795"
+    ],
+    "identity_aliases": [
+      "A5025813347",
+      "A5028882819",
+      "A5035580795",
+      "A5086617223",
+      "A5122548412",
+      "A5128077186",
+      "A5128170840",
+      "A5129215871",
+      "A5130227804",
+      "A5133239809",
+      "A5141340577",
+      "A5143554212"
+    ],
+    "replace_existing": true,
+    "evidence": "Primary OpenAlex energy researcher record has 529 works and Imperial affiliation from 1985 to 2026. Smaller records are retained as identity aliases only."
+  },
+  "71e26e1b-1553-4609-9842-e79e1d70f784": {
+    "full_name": "Fangxin Fang",
+    "primary_openalex_id": "A5025725014",
+    "paper_source_ids": [
+      "A5025725014",
+      "A5115743359"
+    ],
+    "identity_aliases": [
+      "A5025725014",
+      "A5115743359"
+    ],
+    "replace_existing": true,
+    "evidence": "Both records have Imperial affiliation and matching reduced-order modelling, data assimilation, weather, and air-quality research."
+  },
+  "9317784d-4933-43e9-97ce-85c2dc751954": {
+    "full_name": "Cesar Quilodran Casas",
+    "primary_openalex_id": "A5066699579",
+    "paper_source_ids": [
+      "A5066699579",
+      "A5075331632",
+      "A5114729984"
+    ],
+    "identity_aliases": [
+      "A5066699579",
+      "A5075331632",
+      "A5114729984"
+    ],
+    "replace_existing": true,
+    "evidence": "User-confirmed split records with matching name, Imperial affiliation, ORCID evidence, and climate/weather modelling topics."
+  },
+  "1705ab48-5326-4e8e-90c8-ac90e881bff4": {
+    "full_name": "Guo Li",
+    "primary_openalex_id": "A5133942808",
+    "paper_source_ids": [],
+    "manual_work_ids": [
+      "W7154865133",
+      "W4404400583",
+      "W3194847309",
+      "W3205139033",
+      "W3097108668",
+      "W3039712636",
+      "W2964374138"
+    ],
+    "identity_aliases": [
+      "A5133942808"
+    ],
+    "replace_existing": true,
+    "evidence": "Seven exact Guo Li or Li Guo bylines with Imperial affiliation and verified distributed machine-learning collaborators. Broad OpenAlex name records were excluded."
+  },
+  "74244ac1-cc20-45de-8c68-f17a3f5d9caa": {
+    "full_name": "Emma Lawrance",
+    "primary_openalex_id": "A5053780405",
+    "paper_source_ids": [
+      "A5053780405"
+    ],
+    "manual_work_ids": [
+      "W7161757558",
+      "W7167735161",
+      "W7171915581"
+    ],
+    "identity_aliases": [
+      "A5053780405",
+      "A5098226855",
+      "A5130325684",
+      "A5130572785"
+    ],
+    "replace_existing": true,
+    "evidence": "Split Emma Lawrance records verified through Imperial affiliation and climate-mental-health topics. The unrelated 2006 carbon-surface work W2148920389 is explicitly excluded."
+  },
+  "bb59314f-2636-44df-81a0-41cf1332aa5b": {
+    "full_name": "Neil Jennings",
+    "primary_openalex_id": "A5047290012",
+    "paper_source_ids": [
+      "A5047290012"
+    ],
+    "manual_work_ids": [
+      "W7166132190",
+      "W7167735161"
+    ],
+    "identity_aliases": [
+      "A5047290012",
+      "A5139444865"
+    ],
+    "replace_existing": true,
+    "evidence": "Split Neil Jennings records verified through Imperial affiliation and climate-policy topics. The unrelated prostate-cancer trial update W7172525571 is explicitly excluded."
+  },
+  "cdb96e92-801a-40dc-abd4-2c4483d6c4e5": {
+    "full_name": "Elizabeth Phillips",
+    "primary_openalex_id": "A5137295800",
+    "paper_source_ids": [
+      "A5137295800"
+    ],
+    "manual_work_ids": [
+      "W7162665185",
+      "W4401031488",
+      "W4401912326",
+      "W4400898809",
+      "W4284991173",
+      "W4282833553",
+      "W3123599507",
+      "W2993649926",
+      "W2997746741",
+      "W2952559194",
+      "W2913727043",
+      "W2824815857"
+    ],
+    "identity_aliases": [
+      "A5137295800"
+    ],
+    "replace_existing": true,
+    "evidence": "User-confirmed OpenAlex ID and 12 exact DOI matches from Elizabeth Phillips's Imperial publications page. The broad namesake record A5102890171 is excluded because it conflates unrelated medical and environmental researchers."
+  },
+  "d60df847-fd0c-4fe3-a775-4cb57d8dbaad": {
+    "full_name": "Oliver Street",
+    "primary_openalex_id": "A5069519185",
+    "paper_source_ids": [
+      "A5069519185"
+    ],
+    "excluded_work_ids": [
+      "W2203219248",
+      "W4394776125",
+      "W4407091410"
+    ],
+    "identity_aliases": [
+      "A5069519185"
+    ],
+    "replace_existing": true,
+    "evidence": "User-confirmed OpenAlex record with matching Imperial affiliation, ORCID 0000-0002-2330-0300, and fluid, wave, ocean, and atmospheric dynamics topics. The unrelated 1980 Korean-language defence paper W2203219248 is excluded. Preprints W4394776125 and W4407091410 are excluded in favour of their published article versions."
+  }
+}

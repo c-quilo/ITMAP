@@ -354,12 +354,53 @@ export interface OrganizationResearcher {
   }>;
 }
 
+export interface OrganizationNetworkEdge {
+  sourceResearcherId: string;
+  targetResearcherId: string;
+  sharedPapers: number;
+  latestYear?: number | null;
+  totalCitations: number;
+}
+
+export interface OrganizationNetwork {
+  edgeCount: number;
+  returnedEdgeCount: number;
+  connectedResearcherCount: number;
+  edges: OrganizationNetworkEdge[];
+}
+
+export interface OrganizationDepartmentEvidencePaper {
+  openalexWorkId?: string;
+  title: string;
+  year?: number | null;
+  citations: number;
+}
+
+export interface OrganizationDepartmentConnection {
+  department: string;
+  faculty: string;
+  sharedPapers: number;
+  latestYear?: number | null;
+  totalCitations: number;
+  sourceResearcherCount: number;
+  collaboratorCount: number;
+  evidencePapers: OrganizationDepartmentEvidencePaper[];
+}
+
+export interface OrganizationDepartmentReach {
+  departmentCount: number;
+  returnedDepartmentCount: number;
+  sharedPapers: number;
+  departments: OrganizationDepartmentConnection[];
+}
+
 export interface OrganizationProfile {
   organization: {
     name: string;
     kind: OrganizationKind;
     researcherCount: number;
     researchersWithTopics: number;
+    uniquePaperCount: number;
     distinctTopicCount: number;
     emergingTopicCount: number;
     firstYear?: number | null;
@@ -369,7 +410,90 @@ export interface OrganizationProfile {
   themes: OrganizationTheme[];
   emergingThemes: OrganizationTheme[];
   researchers: OrganizationResearcher[];
+  network: OrganizationNetwork;
+  departmentReach: OrganizationDepartmentReach;
   coverageNote: string;
+}
+
+const EMPTY_ORGANIZATION_NETWORK: OrganizationNetwork = {
+  edgeCount: 0,
+  returnedEdgeCount: 0,
+  connectedResearcherCount: 0,
+  edges: [],
+};
+
+const EMPTY_ORGANIZATION_DEPARTMENT_REACH: OrganizationDepartmentReach = {
+  departmentCount: 0,
+  returnedDepartmentCount: 0,
+  sharedPapers: 0,
+  departments: [],
+};
+
+function toOrganizationNetwork(value: unknown): OrganizationNetwork {
+  const network = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const networkEdges = Array.isArray(network.edges) ? network.edges : [];
+
+  return {
+    edgeCount: Number(network.edge_count || 0),
+    returnedEdgeCount: Number(network.returned_edge_count || networkEdges.length || 0),
+    connectedResearcherCount: Number(network.connected_researcher_count || 0),
+    edges: networkEdges
+      .map((row: Record<string, unknown>) => ({
+        sourceResearcherId: String(row.source_researcher_id || ""),
+        targetResearcherId: String(row.target_researcher_id || ""),
+        sharedPapers: Math.max(0, Number(row.shared_papers || 0)),
+        latestYear: row.latest_year === null || row.latest_year === undefined
+          ? null
+          : Number(row.latest_year),
+        totalCitations: Math.max(0, Number(row.total_citations || 0)),
+      }))
+      .filter((edge: OrganizationNetworkEdge) => (
+        edge.sourceResearcherId
+        && edge.targetResearcherId
+        && edge.sharedPapers > 0
+      )),
+  };
+}
+
+function toOrganizationDepartmentReach(value: unknown): OrganizationDepartmentReach {
+  const reach = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const departments = Array.isArray(reach.departments) ? reach.departments : [];
+
+  return {
+    departmentCount: Number(reach.department_count || departments.length || 0),
+    returnedDepartmentCount: Number(reach.returned_department_count || departments.length || 0),
+    sharedPapers: Number(reach.shared_papers || 0),
+    departments: departments
+      .map((row: Record<string, unknown>) => {
+        const evidencePapers = Array.isArray(row.evidence_papers) ? row.evidence_papers : [];
+        return {
+          department: normaliseDepartment(String(row.department || "")),
+          faculty: String(row.faculty || "Imperial College London"),
+          sharedPapers: Math.max(0, Number(row.shared_papers || 0)),
+          latestYear: row.latest_year === null || row.latest_year === undefined
+            ? null
+            : Number(row.latest_year),
+          totalCitations: Math.max(0, Number(row.total_citations || 0)),
+          sourceResearcherCount: Math.max(0, Number(row.source_researcher_count || 0)),
+          collaboratorCount: Math.max(0, Number(row.collaborator_count || 0)),
+          evidencePapers: evidencePapers
+            .map((paper: Record<string, unknown>) => ({
+              openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+              title: String(paper.title || ""),
+              year: paper.publication_year === null || paper.publication_year === undefined
+                ? null
+                : Number(paper.publication_year),
+              citations: Math.max(0, Number(paper.cited_by_count || 0)),
+            }))
+            .filter((paper: OrganizationDepartmentEvidencePaper) => paper.title),
+        } satisfies OrganizationDepartmentConnection;
+      })
+      .filter((row: OrganizationDepartmentConnection) => row.department && row.sharedPapers > 0),
+  };
 }
 
 export interface SearchAuditLog {
@@ -407,6 +531,15 @@ interface SupabasePublication {
   openalex_work_id?: string | null;
   doi?: string | null;
   abstract?: string | null;
+  versions?: Array<{
+    label?: string | null;
+    kind?: string | null;
+    url?: string | null;
+    openalex_url?: string | null;
+    openalex_work_id?: string | null;
+    doi?: string | null;
+    publication_year?: number | null;
+  }> | null;
 }
 
 interface SupabaseExternalEvidence {
@@ -465,6 +598,15 @@ function normaliseDepartment(value?: string | null) {
   if (department.toLowerCase() === "institute for climate change") {
     return "Grantham Institute for Climate Change";
   }
+  const departmentKey = department
+    .toLowerCase()
+    .replace(/&(?:amp;)?/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/\bnational heart and lung institute\b/.test(departmentKey)) {
+    return "National Heart & Lung Institute";
+  }
   return department || "Imperial College London";
 }
 
@@ -486,6 +628,17 @@ function toPublication(pub: SupabasePublication): Publication {
     openalexWorkId: pub.openalex_work_id || undefined,
     doi: doi || undefined,
     doiUrl,
+    versions: Array.isArray(pub.versions)
+      ? pub.versions.map(version => ({
+        label: version.label || "Publication version",
+        kind: version.kind || "repository",
+        url: version.url || undefined,
+        openalexUrl: version.openalex_url || undefined,
+        openalexWorkId: version.openalex_work_id || undefined,
+        doi: version.doi || undefined,
+        year: version.publication_year ?? null,
+      }))
+      : undefined,
   };
 }
 
@@ -782,13 +935,13 @@ export async function getOrganizationProfile(organizationName: string): Promise<
   const themes = Array.isArray(data?.themes) ? data.themes : [];
   const emergingThemes = Array.isArray(data?.emerging_themes) ? data.emerging_themes : [];
   const researchers = Array.isArray(data?.researchers) ? data.researchers : [];
-
   return {
     organization: {
       name: String(organization.name || organizationName),
       kind: String(organization.kind || "unit") as OrganizationKind,
       researcherCount: Number(organization.researcher_count || researchers.length || 0),
       researchersWithTopics: Number(organization.researchers_with_topics || 0),
+      uniquePaperCount: Number(organization.paper_count || 0),
       distinctTopicCount: Number(organization.distinct_topic_count || 0),
       emergingTopicCount: Number(organization.emerging_topic_count || 0),
       firstYear: organization.first_year === null || organization.first_year === undefined
@@ -821,8 +974,48 @@ export async function getOrganizationProfile(organizationName: string): Promise<
           : [],
       }))
       .filter((row: OrganizationResearcher) => row.researcherId && row.name),
+    network: data?.network
+      ? toOrganizationNetwork(data.network)
+      : { ...EMPTY_ORGANIZATION_NETWORK, edges: [] },
+    departmentReach: data?.department_reach
+      ? toOrganizationDepartmentReach(data.department_reach)
+      : { ...EMPTY_ORGANIZATION_DEPARTMENT_REACH, departments: [] },
     coverageNote: String(data?.coverage_note || ""),
   };
+}
+
+export async function getOrganizationConnectionNetworks(researcherIds: string[]): Promise<{
+  network: OrganizationNetwork;
+  departmentReach: OrganizationDepartmentReach;
+}> {
+  if (!hasSupabaseConfig || !supabase) {
+    throw new Error("The live ITMAP database connection is needed for department connections.");
+  }
+
+  const uniqueResearcherIds = [...new Set(researcherIds.map(value => value.trim()).filter(Boolean))];
+  if (uniqueResearcherIds.length === 0) {
+    return {
+      network: { ...EMPTY_ORGANIZATION_NETWORK, edges: [] },
+      departmentReach: { ...EMPTY_ORGANIZATION_DEPARTMENT_REACH, departments: [] },
+    };
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "organization_network",
+      researcher_ids: uniqueResearcherIds,
+    },
+  });
+
+  if (error) throw new Error(error.message);
+  return {
+    network: toOrganizationNetwork(data?.network ?? data),
+    departmentReach: toOrganizationDepartmentReach(data?.department_reach),
+  };
+}
+
+export async function getOrganizationNetwork(researcherIds: string[]): Promise<OrganizationNetwork> {
+  return (await getOrganizationConnectionNetworks(researcherIds)).network;
 }
 
 export async function getResearcherProfile(researcherId: string): Promise<ResearcherProfile> {

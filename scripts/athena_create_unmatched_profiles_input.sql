@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS imperial_unmatched_profiles_input

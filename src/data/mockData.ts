@@ -8,6 +8,15 @@ export interface Publication {
   openalexWorkId?: string;
   doi?: string;
   doiUrl?: string;
+  versions?: Array<{
+    label: string;
+    kind: "published" | "preprint" | "repository" | string;
+    url?: string;
+    openalexUrl?: string;
+    openalexWorkId?: string;
+    doi?: string;
+    year?: number | null;
+  }>;
 }
 
 export interface ExternalEvidence {
