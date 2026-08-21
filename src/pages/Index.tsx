@@ -2478,19 +2478,21 @@ export default function Index() {
           </main>
         </div>
       ) : tabMode === "departments" ? (
-        <Suspense fallback={(
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-background">
-            <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
-              <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              Opening departments...
+        <ViewErrorBoundary key="departments" viewName="Departments">
+          <Suspense fallback={(
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-background">
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                Opening departments...
+              </div>
             </div>
-          </div>
-        )}>
-          <DepartmentExplorer
-            initialOrganizationName={departmentInitialOrganization}
-            onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
-          />
-        </Suspense>
+          )}>
+            <DepartmentExplorer
+              initialOrganizationName={departmentInitialOrganization}
+              onOpenProfile={suggestion => loadResearcherProfile(suggestion, "profile")}
+            />
+          </Suspense>
+        </ViewErrorBoundary>
       ) : tabMode === "help" ? (
         <HelpAboutPanel />
       ) : (
