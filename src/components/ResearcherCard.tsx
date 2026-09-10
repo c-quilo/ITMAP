@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronUp, Bookmark, BookmarkCheck, Sparkles, FileText, ExternalLink, Radio, Rocket, Newspaper, BadgePoundSterling, PlayCircle, Target } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ExternalEvidence, Researcher, Publication } from "@/data/mockData";
+import { researcherMatchLabel, researcherMatchStrength } from "@/lib/matchStrength";
 
 interface ResearcherCardProps {
   researcher: Researcher;
@@ -11,15 +12,15 @@ interface ResearcherCardProps {
   showMatchExplanation?: boolean;
 }
 
-function RelevanceBadge({ score }: { score: number }) {
-  const level = score >= 80 ? "high" : score >= 60 ? "medium" : "low";
-  const labels = { high: "Strong Match", medium: "Moderate", low: "Weak" };
+function RelevanceBadge({ researcher }: { researcher: Researcher }) {
+  const strength = researcherMatchStrength(researcher);
+  const level = strength === "strong" ? "high" : strength === "moderate" ? "medium" : "low";
   return (
     <span className={`relevance-badge relevance-${level}`}>
       <span className={`inline-block h-2 w-2 rounded-full ${
         level === "high" ? "bg-relevance-high" : level === "medium" ? "bg-relevance-medium" : "bg-relevance-low"
       }`} />
-      {labels[level]}
+      {researcherMatchLabel(researcher)}
     </span>
   );
 }
@@ -190,7 +191,7 @@ export default function ResearcherCard({
 
         {/* Score + Actions */}
         <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
-          <RelevanceBadge score={researcher.relevanceScore} />
+          <RelevanceBadge researcher={researcher} />
           <button
             onClick={() => onToggleBookmark?.(researcher)}
             className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary"

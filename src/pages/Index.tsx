@@ -8,6 +8,7 @@ import CollaborationTimeline from "@/components/CollaborationTimeline";
 import ViewErrorBoundary from "@/components/ViewErrorBoundary";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
 import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { researcherMatchLabel } from "@/lib/matchStrength";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -133,14 +134,8 @@ function filterByAny(values: string[], filters: string[]) {
   return filters.some(filter => haystack.includes(filter.toLowerCase()));
 }
 
-function matchLabel(score: number) {
-  if (score >= 80) return "Strong Match";
-  if (score >= 60) return "Moderate";
-  return "Weak";
-}
-
 function defaultFinalResultCount(results: Researcher[]) {
-  return results.filter(researcher => matchLabel(researcher.relevanceScore) !== "Weak").length;
+  return results.filter(researcher => researcherMatchLabel(researcher) !== "Weak").length;
 }
 
 function roleGroupForTitle(title: string) {
@@ -1514,7 +1509,7 @@ export default function Index() {
       researcher.title,
       researcher.department,
       researcher.faculty,
-      matchLabel(researcher.relevanceScore),
+      researcherMatchLabel(researcher),
       researcher.savedFromMission || "",
       researcher.savedAt || "",
       researcher.profileUrl || "",
@@ -1932,10 +1927,10 @@ export default function Index() {
       const departmentMatch = selectedDepartments.length === 0
         || selectedDepartments.includes(researcher.department);
       const gradeMatch = filterByAny([researcher.title], selectedGrades);
-      const researcherMatchLabel = matchLabel(researcher.relevanceScore);
+      const matchLabel = researcherMatchLabel(researcher);
       const matchStrengthMatch = selectedMatches.length === 0
-        ? researcherMatchLabel !== "Weak"
-        : selectedMatches.includes(researcherMatchLabel);
+        ? matchLabel !== "Weak"
+        : selectedMatches.includes(matchLabel);
       const schoolMissionThemeMatch = selectedSchoolMissionThemes.length === 0
         || (researcher.schoolMissionMatch && selectedSchoolMissionThemes.includes(researcher.schoolMissionMatch.school));
       const schoolMissionMatch = selectedSchoolMissions.length === 0
@@ -2105,7 +2100,7 @@ export default function Index() {
       researcher.title,
       researcher.department,
       researcher.faculty,
-      matchLabel(researcher.relevanceScore),
+      researcherMatchLabel(researcher),
       researcher.semanticExplanation || researcher.summary,
       researcher.profileUrl || "",
       researcher.email || "",

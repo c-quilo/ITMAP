@@ -736,6 +736,25 @@ function topicalLexicalQueries(query: string, mission: MissionExpansion) {
   };
 }
 
+function deterministicTopicalMission(query: string): MissionExpansion {
+  const topic = implicitResearchTopic(query);
+  const terms = queryTerms(topic);
+  const groups = conceptGroups(topic, terms);
+  return {
+    expanded_query: topic,
+    must_have: terms.slice(0, 10),
+    nice_to_have: [],
+    method_terms: [
+      ...groups.methodPhrases,
+      ...terms.filter(term => METHOD_TERMS.has(singularise(term))),
+    ].slice(0, 8),
+    domain_terms: groups.domainTerms
+      .filter(term => !["foundation"].includes(term))
+      .slice(0, 10),
+    search_strategy: "topic",
+  };
+}
+
 function openAlexTopicRelevance(query: string, row: Record<string, unknown>) {
   const topic = implicitResearchTopic(query).toLowerCase().replace(/\s+/g, " ").trim();
   const terms = [...new Set(queryTerms(topic).map(singularise))];
@@ -1529,6 +1548,65 @@ function matchTypeForScore(score: number): "strong" | "adjacent" | "weak" {
   if (score >= 72) return "strong";
   if (score >= 48) return "adjacent";
   return "weak";
+}
+
+function isStatementTimeoutError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const rpcError = error as { code?: unknown; message?: unknown };
+  return String(rpcError.code || "") === "57014"
+    || /statement timeout/i.test(String(rpcError.message || ""));
+}
+
+async function searchRpcWithStatementTimeoutRetry<T extends { error: unknown }>(
+  label: string,
+  operation: () => PromiseLike<T>,
+) {
+  let response = await operation();
+  if (!isStatementTimeoutError(response.error)) return response;
+
+  console.warn(`Search retrieval ${label} timed out; retrying once`);
+  response = await operation();
+  return response;
+}
+
+function searchRpcRows(
+  label: string,
+  response: { data: unknown; error: unknown },
+  warnings: string[],
+) {
+  if (!response.error) {
+    return Array.isArray(response.data)
+      ? response.data as Record<string, unknown>[]
+      : [];
+  }
+  if (isStatementTimeoutError(response.error)) {
+    warnings.push(label);
+    console.warn(`Search retrieval ${label} was omitted after a second statement timeout`);
+    return [];
+  }
+  throw response.error;
+}
+
+function retrievalMatchType(
+  row: Record<string, unknown>,
+  score: number,
+  strategy: SearchStrategy,
+): "strong" | "adjacent" | "weak" {
+  if (strategy !== "topic") return matchTypeForScore(score);
+
+  const combined = Number(row.combined_similarity || 0);
+  const topical = Number(row.topical_retrieval_score || 0);
+  const topic = Number(row.topic_similarity || 0);
+  const paper = Number(row.paper_similarity || 0);
+  const exactProfile = Number(row.exact_profile_evidence_score || 0);
+  const hasDirectTopicEvidence = topical >= 0.4
+    || topic >= 0.18
+    || paper >= 0.55
+    || exactProfile >= 0.55;
+
+  if (!hasDirectTopicEvidence || combined < 0.45) return "weak";
+  if (combined >= 0.55 && score >= 72) return "strong";
+  return "adjacent";
 }
 
 function exactEvidenceRerankFloor(row: Record<string, unknown>) {
@@ -2504,11 +2582,12 @@ async function rerankCandidateChunkWithLlm(
       const researcherId = String(item.researcher_id || "");
       const score = Number(item.score);
       if (!researcherId || !Number.isFinite(score)) continue;
+      const clampedScore = Math.max(0, Math.min(100, score));
       byId.set(researcherId, {
         researcher_id: researcherId,
-        score: Math.max(0, Math.min(100, score)),
+        score: clampedScore,
         reason: truncateText(item.reason, 650),
-        match_type: item.match_type,
+        match_type: matchTypeForScore(clampedScore),
         best_paper_titles: Array.isArray(item.best_paper_titles) ? item.best_paper_titles.slice(0, 10).map(String) : [],
         best_paper_ids: Array.isArray(item.best_paper_ids) ? item.best_paper_ids.slice(0, 10).map(String) : [],
       });
@@ -6668,6 +6747,7 @@ Deno.serve(async req => {
     const isTopicalSearch = mode === "semantic" && searchStrategy === "topic";
     if (isTopicalSearch) {
       searchQuery = implicitResearchTopic(originalQuery || query) || searchQuery;
+      mission = deterministicTopicalMission(searchQuery);
     }
     mission.expanded_query = searchQuery;
     const filters = body.filters || [];
@@ -6803,7 +6883,7 @@ Deno.serve(async req => {
     const openAlexTopicMatchCount = Math.min(500, Math.max(300, limit * 2));
 
     const [researcherResponse, paperResponse, topicalResponse, topicalLexicalResponse, openAlexTopicResponse] = await Promise.all([
-      isTopicalSearch
+      searchRpcWithStatementTimeoutRetry("researcher profiles", () => isTopicalSearch
         ? supabase.rpc("match_topic_researcher_profiles", {
           query_embedding: embedding,
           match_count: candidateCount,
@@ -6815,63 +6895,70 @@ Deno.serve(async req => {
           match_count: candidateCount,
           faculty_filters: facultyFilters,
           role_filters: roleFilters,
-        }),
+        })),
       isTopicalSearch
         ? Promise.resolve({ data: [], error: null })
-        : supabase.rpc("match_researcher_paper_documents", {
+        : searchRpcWithStatementTimeoutRetry("paper vectors", () => supabase.rpc("match_researcher_paper_documents", {
           query_embedding: embedding,
           match_count: paperMatchCount,
           faculty_filters: facultyFilters,
           role_filters: roleFilters,
-        }),
+        })),
       isTopicalSearch
-        ? supabase.rpc("match_topical_researchers", {
+        ? searchRpcWithStatementTimeoutRetry("topical paper vectors", () => supabase.rpc("match_topical_researchers", {
           query_embedding: embedding,
           topic_query: searchQuery,
           match_count: topicalMatchCount,
           nearest_paper_count: nearestTopicalPaperCount,
           faculty_filters: facultyFilters,
           role_filters: roleFilters,
-        })
+        }))
         : Promise.resolve({ data: [], error: null }),
       isTopicalSearch
-        ? supabase.rpc("match_topic_profile_terms", {
+        ? searchRpcWithStatementTimeoutRetry("profile topic terms", () => supabase.rpc("match_topic_profile_terms", {
           method_query: lexicalTopicQueries.methodQuery,
           domain_query: lexicalTopicQueries.domainQuery,
           match_count: 200,
           faculty_filters: facultyFilters,
           role_filters: roleFilters,
-        })
+        }))
         : Promise.resolve({ data: [], error: null }),
       isTopicalSearch
-        ? supabase.rpc("match_openalex_topic_researchers", {
+        ? searchRpcWithStatementTimeoutRetry("OpenAlex topics", () => supabase.rpc("match_openalex_topic_researchers", {
           topic_query: searchQuery,
           match_count: openAlexTopicMatchCount,
           faculty_filters: facultyFilters,
           role_filters: roleFilters,
-        })
+        }))
         : Promise.resolve({ data: [], error: null }),
     ]);
 
-    if (researcherResponse.error) throw researcherResponse.error;
-    if (paperResponse.error) throw paperResponse.error;
-    if (topicalResponse.error) throw topicalResponse.error;
-    if (topicalLexicalResponse.error) throw topicalLexicalResponse.error;
-    if (openAlexTopicResponse.error) throw openAlexTopicResponse.error;
-
-    const researcherMatches = researcherResponse.data || [];
-    const paperMatches = paperResponse.data || [];
+    const retrievalWarnings: string[] = [];
+    const researcherMatches = searchRpcRows("researcher profiles", researcherResponse, retrievalWarnings);
+    const paperMatches = searchRpcRows("paper vectors", paperResponse, retrievalWarnings);
+    const topicalVectorMatches = searchRpcRows("topical paper vectors", topicalResponse, retrievalWarnings);
+    const topicalLexicalMatches = searchRpcRows("profile topic terms", topicalLexicalResponse, retrievalWarnings);
+    const openAlexTopicMatches = searchRpcRows("OpenAlex topics", openAlexTopicResponse, retrievalWarnings);
     const topicalMatches = [
-      ...(topicalResponse.data || []).map((row: Record<string, unknown>) => ({
+      ...topicalVectorMatches.map((row: Record<string, unknown>) => ({
         ...row,
         topical_source: "paper_vector",
       })),
-      ...(openAlexTopicResponse.data || []).map((row: Record<string, unknown>) => ({
+      ...openAlexTopicMatches.map((row: Record<string, unknown>) => ({
         ...row,
         topical_source: "openalex_topic",
       })),
     ];
-    const topicalLexicalMatches = topicalLexicalResponse.data || [];
+
+    if (
+      retrievalWarnings.length > 0
+      && researcherMatches.length === 0
+      && paperMatches.length === 0
+      && topicalMatches.length === 0
+      && topicalLexicalMatches.length === 0
+    ) {
+      throw new Error("Search retrieval timed out after retrying. Please try again.");
+    }
 
     const profileKeywordMatches = isTopicalSearch
       ? topicalLexicalMatches
@@ -7370,7 +7457,7 @@ Deno.serve(async req => {
               ...row,
               papers: selectedPapers,
               llm_rerank_score: cappedFallbackScore,
-              llm_match_type: matchTypeForScore(cappedFallbackScore),
+              llm_match_type: retrievalMatchType(row, cappedFallbackScore, searchStrategy),
               llm_rank_index: index + 1000,
               match_reason: isSuppressedDuplicate
                 ? buildMatchReason({ ...row, papers: selectedPapers }, ((row.profile_evidence as string[]) || []))
@@ -7392,7 +7479,7 @@ Deno.serve(async req => {
               rerank.best_paper_ids || [],
             ),
             llm_rerank_score: finalRerankScore,
-            llm_match_type: matchTypeForScore(finalRerankScore),
+            llm_match_type: retrievalMatchType(row, finalRerankScore, searchStrategy),
             llm_rank_index: index,
             match_reason: hasDuplicateRerankLanguage(rerank.reason || "")
               ? buildMatchReason({
@@ -7430,7 +7517,7 @@ Deno.serve(async req => {
           return {
             ...row,
             retrieval_rank_score: retrievalScore,
-            llm_match_type: matchTypeForScore(retrievalScore),
+            llm_match_type: retrievalMatchType(row, retrievalScore, searchStrategy),
             llm_rank_index: llmPoolSize + index,
             similarity: retrievalScore / 100,
           };
@@ -7446,7 +7533,24 @@ Deno.serve(async req => {
       })
       : sortedCandidates;
 
-    const results = rankedCandidates
+    const categorisedCandidates = isTopicalSearch
+      ? rankedCandidates.map(row => {
+        const finalScore = Number(row.llm_rerank_score ?? row.retrieval_rank_score ?? 0);
+        return {
+          ...row,
+          llm_match_type: retrievalMatchType(row, finalScore, searchStrategy),
+        };
+      })
+      : rankedCandidates;
+    const resultCandidates = isTopicalSearch
+      ? [...categorisedCandidates].sort((a, b) => {
+        const aVisible = a.llm_match_type !== "weak" ? 1 : 0;
+        const bVisible = b.llm_match_type !== "weak" ? 1 : 0;
+        return bVisible - aVisible;
+      })
+      : categorisedCandidates;
+
+    const results = resultCandidates
       .map((row, index) => {
         const publicRow: Record<string, unknown> = { ...row };
         delete publicRow.all_paper_records;
@@ -7497,8 +7601,10 @@ Deno.serve(async req => {
         rerank_returned: llmReranks.size,
         search_strategy: searchStrategy,
         topical_candidate_count: topicalMatches.length,
-        openalex_topic_candidate_count: (openAlexTopicResponse.data || []).length,
+        openalex_topic_candidate_count: openAlexTopicMatches.length,
         retrieval_tail_count: retrievalTail.length,
+        retrieval_warnings: retrievalWarnings,
+        default_visible_result_count: results.filter(row => row.llm_match_type !== "weak").length,
       },
     });
 
