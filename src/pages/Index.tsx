@@ -7,7 +7,7 @@ import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
 import ViewErrorBoundary from "@/components/ViewErrorBoundary";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchPaper, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { researcherMatchLabel } from "@/lib/matchStrength";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
@@ -690,6 +690,7 @@ function QuickSearchPanel({
 }) {
   const examples = [
     "Who is working on photonics?",
+    "Has anyone worked on pesticide exposure in children?",
     "Who's affiliated to the Grantham Institute",
     "What's the school of convergence science?",
   ];
@@ -729,6 +730,74 @@ function QuickSearchPanel({
     </div>
   );
 
+  const renderPaper = (paper: QuickSearchPaper) => {
+    const doi = paper.doi?.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").replace(/^doi:\s*/i, "");
+    const workId = paper.openalexWorkId?.replace(/^https?:\/\/openalex\.org\//i, "");
+    const href = doi ? `https://doi.org/${doi}` : workId ? `https://openalex.org/${workId}` : "";
+    const imperialNames = new Set(paper.imperialAuthors.map(author => author.name.toLocaleLowerCase()));
+    const otherAuthors = paper.authors.filter(author => !imperialNames.has(author.name.toLocaleLowerCase()));
+    const visibleOtherAuthors = otherAuthors.slice(0, 8);
+    const hiddenAuthorCount = Math.max(0, paper.authorCount - paper.imperialAuthors.length - visibleOtherAuthors.length);
+
+    return (
+      <article key={paper.paperId} className="py-4 first:pt-2 last:pb-1">
+        <div className="flex items-start gap-3">
+          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-start gap-1.5 text-sm font-semibold leading-snug text-foreground underline-offset-2 transition-colors hover:text-primary hover:underline"
+              >
+                <span>{paper.title}</span>
+                <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+              </a>
+            ) : (
+              <p className="text-sm font-semibold leading-snug text-foreground">{paper.title}</p>
+            )}
+
+            {(paper.year || paper.journal) && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {[paper.year, paper.journal].filter(Boolean).join(" · ")}
+              </p>
+            )}
+
+            {paper.reason && (
+              <p className="mt-2 text-xs leading-relaxed text-foreground/75">{paper.reason}</p>
+            )}
+
+            {paper.imperialAuthors.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-xs">
+                <span className="text-muted-foreground">Imperial researcher{paper.imperialAuthors.length === 1 ? "" : "s"}:</span>
+                {paper.imperialAuthors.map((author, index) => (
+                  <span key={author.researcherId} className="inline-flex items-baseline gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onOpenProfile(author)}
+                      className="font-medium text-foreground underline-offset-2 transition-colors hover:text-primary hover:underline"
+                    >
+                      {author.name}
+                    </button>
+                    {index < paper.imperialAuthors.length - 1 && <span className="text-muted-foreground">·</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {visibleOtherAuthors.length > 0 && (
+              <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                Other listed authors: {visibleOtherAuthors.map(author => author.name).join(", ")}
+                {hiddenAuthorCount > 0 ? `, and ${hiddenAuthorCount} more` : ""}
+              </p>
+            )}
+          </div>
+        </div>
+      </article>
+    );
+  };
+
   return (
     <section className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4 shadow-sm sm:p-5">
       <div className="flex items-start gap-3">
@@ -743,7 +812,7 @@ function QuickSearchPanel({
                 Ask about a known researcher, an Imperial research topic, or the School of Convergence Science. If ITMAP shows a name, click it to explore more in Researcher Profile.
               </p>
             </div>
-            {result?.kind === "topic" && (
+            {(result?.kind === "topic" || result?.kind === "papers") && (
               <button
                 type="button"
                 onClick={() => onRunFullSearch(query)}
@@ -828,6 +897,14 @@ function QuickSearchPanel({
               {result.suggestions.length > 0 && (
                 <div className="mt-4 grid gap-2 md:grid-cols-2">
                   {result.suggestions.map(renderSuggestion)}
+                </div>
+              )}
+              {result.papers.length > 0 && (
+                <div className="mt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Relevant publications</p>
+                  <div className="mt-2 divide-y divide-border border-y border-border">
+                    {result.papers.map(renderPaper)}
+                  </div>
                 </div>
               )}
               {result.evidenceTitles.length > 0 && (
@@ -1651,6 +1728,7 @@ export default function Index() {
         kind: "empty",
         answer: INCOMPLETE_SEARCH_MESSAGE,
         suggestions: [],
+        papers: [],
         evidenceTitles: [],
         caveat: "",
       });

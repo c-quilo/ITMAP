@@ -314,12 +314,32 @@ export interface QuickSearchSuggestion extends ResearcherSuggestion {
   reason: string;
 }
 
+export interface QuickSearchPaperAuthor {
+  name: string;
+  openalexId?: string;
+}
+
+export interface QuickSearchPaper {
+  paperId: string;
+  openalexWorkId?: string;
+  title: string;
+  abstract?: string;
+  year?: number;
+  journal?: string;
+  doi?: string;
+  reason: string;
+  authors: QuickSearchPaperAuthor[];
+  authorCount: number;
+  imperialAuthors: QuickSearchSuggestion[];
+}
+
 export interface QuickSearchResult {
-  kind: "person" | "relationship" | "organization" | "topic" | "information" | "redirect" | "empty";
+  kind: "person" | "relationship" | "organization" | "topic" | "papers" | "information" | "redirect" | "empty";
   answer: string;
   researcher?: ResearcherSuggestion;
   organization?: OrganizationSuggestion;
   suggestions: QuickSearchSuggestion[];
+  papers: QuickSearchPaper[];
   evidenceTitles: string[];
   caveat: string;
 }
@@ -1612,6 +1632,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
       kind: "empty",
       answer: "Type a researcher name or a short topic to use Quick Search.",
       suggestions: [],
+      papers: [],
       evidenceTitles: [],
       caveat: "",
     };
@@ -1622,6 +1643,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
       kind: "empty",
       answer: "Quick Search needs the live ITMAP database connection.",
       suggestions: [],
+      papers: [],
       evidenceTitles: [],
       caveat: "",
     };
@@ -1639,6 +1661,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
   }
 
   const suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  const papers = Array.isArray(data?.papers) ? data.papers : [];
   const researcher = data?.researcher && typeof data.researcher === "object"
     ? data.researcher as Record<string, unknown>
     : null;
@@ -1647,7 +1670,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
     : null;
 
   return {
-    kind: ["person", "relationship", "organization", "topic", "information", "redirect", "empty"].includes(String(data?.kind))
+    kind: ["person", "relationship", "organization", "topic", "papers", "information", "redirect", "empty"].includes(String(data?.kind))
       ? String(data?.kind) as QuickSearchResult["kind"]
       : "empty",
     answer: String(data?.answer || ""),
@@ -1679,6 +1702,44 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
         reason: String(row.reason || ""),
       }))
       .filter((row: QuickSearchSuggestion) => row.researcherId && row.name),
+    papers: papers
+      .map((paper: Record<string, unknown>) => {
+        const authors = Array.isArray(paper.authors) ? paper.authors : [];
+        const imperialAuthors = Array.isArray(paper.imperial_authors) ? paper.imperial_authors : [];
+        return {
+          paperId: String(paper.paper_id || paper.openalex_work_id || paper.doi || paper.title || ""),
+          openalexWorkId: paper.openalex_work_id ? String(paper.openalex_work_id) : undefined,
+          title: String(paper.title || ""),
+          abstract: paper.abstract ? String(paper.abstract) : undefined,
+          year: paper.publication_year === null || paper.publication_year === undefined
+            ? undefined
+            : Number(paper.publication_year),
+          journal: paper.source_display_name ? String(paper.source_display_name) : undefined,
+          doi: paper.doi ? String(paper.doi) : undefined,
+          reason: String(paper.reason || ""),
+          authors: authors
+            .map((author: Record<string, unknown>) => ({
+              name: String(author.name || author.full_name || ""),
+              openalexId: author.openalex_id ? String(author.openalex_id) : undefined,
+            }))
+            .filter((author: { name: string }) => author.name),
+          authorCount: Number(paper.author_count || authors.length || 0),
+          imperialAuthors: imperialAuthors
+            .map((author: Record<string, unknown>) => ({
+              researcherId: String(author.researcher_id || ""),
+              openalexId: author.openalex_id ? String(author.openalex_id) : undefined,
+              profileUrl: author.profile_url ? String(author.profile_url) : undefined,
+              name: String(author.full_name || ""),
+              title: cleanResearcherTitle(author.title) || "Imperial researcher",
+              department: normaliseDepartment(String(author.department || "")),
+              faculty: String(author.faculty || "Imperial College London"),
+              score: Number(author.score || 0),
+              reason: String(author.reason || "Author of this publication."),
+            }))
+            .filter((author: QuickSearchSuggestion) => author.researcherId && author.name),
+        };
+      })
+      .filter((paper: { paperId: string; title: string }) => paper.paperId && paper.title),
     evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
     caveat: String(data?.caveat || ""),
   };

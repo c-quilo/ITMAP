@@ -1934,6 +1934,37 @@ async function openAiJson(
   return parseJsonObject(content);
 }
 
+async function createSearchEmbedding(
+  openAiKey: string,
+  input: string,
+  metrics?: UsageMetrics,
+) {
+  const response = await fetch("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openAiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "text-embedding-3-small",
+      input,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Embedding request failed: ${detail}`);
+  }
+
+  const json = await response.json();
+  recordOpenAiUsage(metrics, "embedding", "text-embedding-3-small", json.usage);
+  const embedding = json.data?.[0]?.embedding;
+  if (!Array.isArray(embedding)) {
+    throw new Error("Embedding response did not include a vector");
+  }
+  return embedding;
+}
+
 async function openAiWebSearchJson(
   openAiKey: string,
   model: string,
@@ -3325,6 +3356,289 @@ function schoolPersonRelationAnswer(researcher: Record<string, unknown>) {
   };
 }
 
+function isQuickPaperQuestion(query: string) {
+  return /\b(?:has|have|did)\s+(?:anyone|anybody|any\s+(?:people|researchers?|academics?|experts?))\s+(?:at\s+imperial\s+)?(?:worked|published|written|studied|researched|investigated)\s+(?:on|about|in|into)\b/i.test(query)
+    || /\b(?:who|which\s+(?:people|researchers?|academics?|experts?))\s+(?:at\s+imperial\s+)?(?:has|have)\s+(?:worked|published|written|studied|researched|investigated)\s+(?:on|about|in|into)\b/i.test(query)
+    || /\b(?:find|show|list|give\s+me|what|which|any|relevant)\s+(?:me\s+)?(?:papers?|publications?|studies|works)\s+(?:on|about|into|covering|related\s+to)\b/i.test(query)
+    || /\b(?:papers?|publications?|studies)\s+(?:on|about|into|covering|related\s+to)\b/i.test(query);
+}
+
+type QuickPaperGroup = {
+  id: string;
+  rows: Record<string, unknown>[];
+  paperIds: Set<string>;
+  maxSimilarity: number;
+  imperialAuthors: Map<string, Record<string, unknown>>;
+};
+
+function quickPaperGroupKey(row: Record<string, unknown>) {
+  const title = normalizedPublicationTitle(row.title);
+  if (isSubstantivePublicationTitle(title)) return `title:${title}`;
+  const workId = String(row.openalex_work_id || "").trim().toLowerCase();
+  if (workId) return `work:${workId.split("/").filter(Boolean).pop()}`;
+  return `paper:${String(row.paper_id || row.id || "")}`;
+}
+
+function quickPaperRepresentative(group: QuickPaperGroup) {
+  const canonical = canonicalizePublicationRows(group.rows)[0];
+  return canonical || group.rows[0];
+}
+
+function quickPaperResearcher(row: Record<string, unknown>) {
+  return {
+    researcher_id: row.researcher_id,
+    openalex_id: row.openalex_id,
+    profile_url: row.profile_url,
+    full_name: row.full_name,
+    title: row.position_name || row.position,
+    department: row.affiliation,
+    faculty: row.faculty,
+    score: Number(row.similarity || 0),
+    reason: "Author of this publication.",
+  };
+}
+
+async function quickPaperSearch(
+  supabase: ReturnType<typeof createClient>,
+  openAiKey: string,
+  model: string,
+  originalQuery: string,
+  topicQuery: string,
+) {
+  const embedding = await createSearchEmbedding(openAiKey, topicQuery);
+  const response = await searchRpcWithStatementTimeoutRetry("quick paper evidence", () =>
+    supabase.rpc("match_researcher_paper_documents", {
+      query_embedding: embedding,
+      match_count: 240,
+      faculty_filters: [],
+      role_filters: [],
+    })
+  );
+  const warnings: string[] = [];
+  const vectorRows = searchRpcRows("quick paper evidence", response, warnings)
+    .filter(row => !isVisitingResearcher(row))
+    .filter(row => String(row.paper_id || "") && String(row.title || "").trim())
+    .sort((first, second) => Number(second.similarity || 0) - Number(first.similarity || 0));
+
+  if (vectorRows.length === 0) {
+    return {
+      kind: "empty",
+      answer: `I could not find a publication that clearly addresses "${truncateText(topicQuery, 180)}". Try a more specific phrase or use the full Search.`,
+      suggestions: [],
+      papers: [],
+      evidence_titles: [],
+      caveat: warnings.length > 0
+        ? "The paper search took too long, so no reliable quick answer was available."
+        : "This quick answer searches the paper titles and abstracts currently stored in ITMAP.",
+    };
+  }
+
+  const bestSimilarity = Number(vectorRows[0]?.similarity || 0);
+  const similarityFloor = Math.max(0.32, bestSimilarity - 0.22);
+  const nearestRows = vectorRows
+    .filter(row => Number(row.similarity || 0) >= similarityFloor)
+    .slice(0, 140);
+  const paperIds = [...new Set(nearestRows.map(row => String(row.paper_id || "")).filter(Boolean))];
+  const { data: paperDetails, error: paperError } = await supabase
+    .from("researcher_papers")
+    .select("id,openalex_work_id,title,abstract,publication_year,cited_by_count,source_display_name,doi")
+    .in("id", paperIds);
+  if (paperError) throw paperError;
+
+  const detailsById = new Map(
+    (paperDetails || []).map((paper: Record<string, unknown>) => [String(paper.id || ""), paper]),
+  );
+  const grouped = new Map<string, QuickPaperGroup>();
+  for (const vectorRow of nearestRows) {
+    const paperId = String(vectorRow.paper_id || "");
+    const row = {
+      ...vectorRow,
+      ...(detailsById.get(paperId) || {}),
+      paper_id: paperId,
+    };
+    const key = quickPaperGroupKey(row);
+    const group = grouped.get(key) || {
+      id: "",
+      rows: [],
+      paperIds: new Set<string>(),
+      maxSimilarity: 0,
+      imperialAuthors: new Map<string, Record<string, unknown>>(),
+    };
+    group.rows.push(row);
+    group.paperIds.add(paperId);
+    group.maxSimilarity = Math.max(group.maxSimilarity, Number(row.similarity || 0));
+    const researcherId = String(row.researcher_id || "");
+    if (researcherId) group.imperialAuthors.set(researcherId, quickPaperResearcher(row));
+    grouped.set(key, group);
+  }
+
+  const candidates = [...grouped.values()]
+    .sort((first, second) => second.maxSimilarity - first.maxSimilarity)
+    .slice(0, 36)
+    .map((group, index) => {
+      group.id = `P${index + 1}`;
+      return group;
+    });
+
+  let rerankSucceeded = false;
+  let selectedMatches: Array<{ key: string; reason: string }> = [];
+  try {
+    const reranked = await openAiJson(
+      openAiKey,
+      model,
+      [
+        {
+          role: "system",
+          content: [
+            "You select publication evidence for a serious Imperial College London research question.",
+            "Choose only papers that substantively address the requested topic, method, population, or application.",
+            "Give the title and abstract equal evidential weight; a keyword appearing incidentally is not enough.",
+            "Reject broad lexical coincidences, papers that only mention one half of a combined topic, and unrelated applications.",
+            "Return between 3 and 10 matches when that many are genuinely relevant; otherwise return fewer, including none.",
+            "Preserve the supplied paper_key exactly and rank strongest evidence first.",
+            "For every match, write one natural sentence explaining the specific relevance without mentioning embeddings, vectors, databases, retrieval, candidates, or supplied evidence.",
+            "Return JSON only: {\"matches\":[{\"paper_key\":\"P1\",\"reason\":\"...\"}]}",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            original_question: originalQuery,
+            research_topic: topicQuery,
+            publications: candidates.map(group => {
+              const paper = quickPaperRepresentative(group);
+              return {
+                paper_key: group.id,
+                title: truncateText(paper.title, 300),
+                abstract: truncateText(paper.abstract, 950),
+                year: paper.publication_year || null,
+                journal: truncateText(paper.source_display_name, 140),
+                imperial_authors: [...group.imperialAuthors.values()].map(author => author.full_name),
+              };
+            }),
+          }),
+        },
+      ],
+      1100,
+    ) as { matches?: Array<{ paper_key?: unknown; key?: unknown; reason?: unknown }> };
+    rerankSucceeded = true;
+    const validKeys = new Set(candidates.map(group => group.id));
+    selectedMatches = (Array.isArray(reranked.matches) ? reranked.matches : [])
+      .map(match => ({
+        key: String(match.paper_key || match.key || ""),
+        reason: truncateText(match.reason, 360),
+      }))
+      .filter(match => validKeys.has(match.key))
+      .slice(0, 10);
+  } catch (error) {
+    console.warn("Could not rerank quick paper evidence", error);
+  }
+
+  if (!rerankSucceeded) {
+    selectedMatches = candidates
+      .filter(group => group.maxSimilarity >= Math.max(0.42, bestSimilarity - 0.08))
+      .slice(0, 8)
+      .map(group => ({
+        key: group.id,
+        reason: "This publication is closely related in meaning to the requested research topic.",
+      }));
+  }
+
+  const candidateById = new Map(candidates.map(group => [group.id, group]));
+  const selected: Array<{ group: QuickPaperGroup; reason: string; paper: Record<string, unknown> }> = [];
+  for (const match of selectedMatches) {
+    const group = candidateById.get(match.key);
+    if (!group) continue;
+    const paper = quickPaperRepresentative(group);
+    const normalizedTitle = normalizedPublicationTitle(paper.title);
+    const year = Number(paper.publication_year || 0);
+    const duplicate = selected.some(existing => {
+      const existingTitle = normalizedPublicationTitle(existing.paper.title);
+      const existingYear = Number(existing.paper.publication_year || 0);
+      return normalizedTitle === existingTitle
+        || (Math.abs(year - existingYear) <= 3
+          && publicationTitleTokenSimilarity(normalizedTitle, existingTitle) >= 0.88);
+    });
+    if (!duplicate) selected.push({ group, reason: match.reason, paper });
+  }
+
+  if (selected.length === 0) {
+    return {
+      kind: "empty",
+      answer: `I could not find a publication that clearly addresses "${truncateText(topicQuery, 180)}". Try a more specific phrase or use the full Search.`,
+      suggestions: [],
+      papers: [],
+      evidence_titles: [],
+      caveat: "ITMAP checked the closest stored titles and abstracts but did not find strong enough paper evidence.",
+    };
+  }
+
+  const selectedPaperIds = [...new Set(selected.flatMap(item => [...item.group.paperIds]))];
+  const { data: authorshipRows, error: authorshipError } = await supabase
+    .from("researcher_paper_authors")
+    .select("paper_id,coauthor_openalex_id,coauthor_name")
+    .in("paper_id", selectedPaperIds);
+  if (authorshipError) console.warn("Could not load quick paper authors", authorshipError);
+
+  const groupByPaperId = new Map<string, QuickPaperGroup>();
+  for (const item of selected) {
+    for (const paperId of item.group.paperIds) groupByPaperId.set(paperId, item.group);
+  }
+  const authorsByGroup = new Map<string, Map<string, { name: string; openalex_id: string }>>();
+  for (const authorship of (authorshipRows || []) as Record<string, unknown>[]) {
+    const group = groupByPaperId.get(String(authorship.paper_id || ""));
+    const name = String(authorship.coauthor_name || "").trim();
+    if (!group || !name) continue;
+    const openAlexId = String(authorship.coauthor_openalex_id || "").trim();
+    const authorKey = openAlexAuthorKey(openAlexId) || normalizeName(name);
+    const groupAuthors = authorsByGroup.get(group.id) || new Map();
+    if (!groupAuthors.has(authorKey)) {
+      groupAuthors.set(authorKey, { name, openalex_id: openAlexId });
+    }
+    authorsByGroup.set(group.id, groupAuthors);
+  }
+
+  const papers = selected.map(({ group, paper, reason }) => {
+    const imperialAuthors = [...group.imperialAuthors.values()]
+      .sort((first, second) => String(first.full_name || "").localeCompare(String(second.full_name || "")));
+    const listedAuthors = [...(authorsByGroup.get(group.id)?.values() || [])];
+    if (listedAuthors.length === 0) {
+      for (const author of imperialAuthors) {
+        listedAuthors.push({
+          name: String(author.full_name || ""),
+          openalex_id: String(author.openalex_id || ""),
+        });
+      }
+    }
+    return {
+      paper_id: String(paper.paper_id || paper.id || [...group.paperIds][0] || ""),
+      openalex_work_id: paper.openalex_work_id,
+      title: paper.title,
+      abstract: truncateText(paper.abstract, 700),
+      publication_year: paper.publication_year,
+      cited_by_count: paper.cited_by_count,
+      source_display_name: paper.source_display_name,
+      doi: paper.doi,
+      reason,
+      authors: listedAuthors,
+      author_count: listedAuthors.length,
+      imperial_authors: imperialAuthors,
+    };
+  });
+  const imperialResearcherCount = new Set(
+    selected.flatMap(item => [...item.group.imperialAuthors.keys()]),
+  ).size;
+
+  return {
+    kind: "papers",
+    answer: `Yes. I found ${papers.length} relevant publication${papers.length === 1 ? "" : "s"} involving ${imperialResearcherCount} Imperial researcher${imperialResearcherCount === 1 ? "" : "s"}. The strongest paper evidence is shown below.`,
+    suggestions: [],
+    papers,
+    evidence_titles: [],
+    caveat: "This quick answer searches stored paper titles and abstracts. It may miss publications that do not yet have a usable embedding.",
+  };
+}
+
 async function quickTopicSuggestions(
   supabase: ReturnType<typeof createClient>,
   query: string,
@@ -3841,6 +4155,24 @@ async function quickSearch(
       evidence_titles: answer.evidence_titles,
       caveat: answer.caveat,
     };
+  }
+
+  if (isQuickPaperQuestion(trimmedQuery)) {
+    const paperMission = await expandMission(
+      openAiKey,
+      model,
+      truncateText(redactSensitiveSearchText(trimmedQuery), 20000),
+    );
+    const paperTopic = paperMission.expanded_query?.trim()
+      || implicitResearchTopic(trimmedQuery)
+      || trimmedQuery;
+    return await quickPaperSearch(
+      supabase,
+      openAiKey,
+      model,
+      trimmedQuery,
+      paperTopic,
+    );
   }
 
   const topicMission: MissionExpansion = standaloneTopic
@@ -6846,29 +7178,7 @@ Deno.serve(async req => {
       }, { headers: corsHeaders });
     }
 
-    const embeddingResponse = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openAiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "text-embedding-3-small",
-        input: searchQuery,
-      }),
-    });
-
-    if (!embeddingResponse.ok) {
-      const detail = await embeddingResponse.text();
-      throw new Error(`Embedding request failed: ${detail}`);
-    }
-
-    const embeddingJson = await embeddingResponse.json();
-    recordOpenAiUsage(searchUsage, "embedding", "text-embedding-3-small", embeddingJson.usage);
-    const embedding = embeddingJson.data?.[0]?.embedding;
-    if (!Array.isArray(embedding)) {
-      throw new Error("Embedding response did not include a vector");
-    }
+    const embedding = await createSearchEmbedding(openAiKey, searchQuery, searchUsage);
 
     const candidateCount = isTopicalSearch
       ? Math.min(300, Math.max(180, limit + 50))
