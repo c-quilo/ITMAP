@@ -1206,7 +1206,7 @@ export default function ResearcherNetworkGraph({
                     >
                       <p className="text-sm font-semibold text-foreground">{suggestion.name}</p>
                       <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">{suggestion.title}</p>
-                      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{suggestion.department}</p>
+                      <p className="mt-0.5 break-words text-[10px] leading-snug text-muted-foreground">{suggestion.department}</p>
                     </button>
                   ))}
                 </div>
@@ -1272,7 +1272,7 @@ export default function ResearcherNetworkGraph({
                         >
                           <p className="text-xs font-semibold text-foreground">{suggestion.name}</p>
                           <p className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground">{suggestion.title}</p>
-                          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{suggestion.department}</p>
+                          <p className="mt-0.5 break-words text-[10px] leading-snug text-muted-foreground">{suggestion.department}</p>
                         </button>
                       ))}
                     </div>

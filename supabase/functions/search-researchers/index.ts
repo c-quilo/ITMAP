@@ -6,7 +6,7 @@ const corsHeaders = {
 };
 
 type SearchRequest = {
-  action?: "search" | "rewrite_mission" | "suggest_researchers" | "suggest_organizations" | "list_organizations" | "organization_profile" | "organization_network" | "researcher_profile" | "researcher_network" | "researcher_connection" | "collaboration_opportunities" | "researcher_profile_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
+  action?: "search" | "rewrite_mission" | "suggest_researchers" | "suggest_organizations" | "list_organizations" | "organization_profile" | "organization_network" | "researcher_profile" | "researcher_network" | "researcher_connection" | "collaboration_opportunities" | "researcher_profile_question" | "research_pool_question" | "quick_search" | "keyword_suggestions" | "match_school_missions" | "summarize_pool" | "admin_search_logs";
   query?: string;
   original_query?: string;
   researcher_id?: string;
@@ -23,7 +23,11 @@ type SearchRequest = {
   include_external_evidence?: boolean;
   admin_password?: string;
   researchers?: SchoolMissionResearcher[];
+  pool_summary?: ResearchPoolSummary;
+  conversation?: ResearchPoolChatMessage[];
 };
+
+type SearchStrategy = "topic" | "brief";
 
 type MissionExpansion = {
   expanded_query: string;
@@ -31,6 +35,7 @@ type MissionExpansion = {
   nice_to_have?: string[];
   method_terms?: string[];
   domain_terms?: string[];
+  search_strategy?: SearchStrategy;
 };
 
 type RerankedCandidate = {
@@ -60,6 +65,7 @@ type SchoolMissionResearcher = {
   keywords?: string[];
   match_reason?: string;
   publications?: string[];
+  openalex_topics?: string[];
   external_evidence?: Array<Record<string, unknown>>;
 };
 
@@ -80,6 +86,27 @@ type ResearchPoolSummary = {
     reason: string;
   }>;
   gaps: string[];
+};
+
+type ResearchPoolChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type OpenAlexTopicEvidence = {
+  openalex_topic_id: string;
+  label: string;
+  description: string;
+  keywords: string[];
+  domain_name: string;
+  field_name: string;
+  subfield_name: string;
+  topic_strength: number;
+  paper_count: number;
+  recent_paper_count: number;
+  latest_year: number | null;
+  trend: string;
+  relevance: number;
 };
 
 type UsageCall = {
@@ -370,6 +397,18 @@ function queryTerms(query: string) {
     .filter(term => (term.length > 2 || term === "ai" || term === "ml") && !STOP_WORDS.has(term));
 }
 
+function expandResearchAbbreviations(value: string) {
+  return value.replace(/\bai\b/gi, "artificial intelligence");
+}
+
+function isStandaloneResearchAbbreviation(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  return normalized === "ai";
+}
+
 const ADMIN_FORM_HINTS = [
   /\bpermission\s+slip\b/i,
   /\bparent\s*\/?\s*carer\b/i,
@@ -531,6 +570,8 @@ function expandedTermVariants(term: string) {
   const singular = singularise(term);
   const variants = new Set([term, singular]);
   if (!singular.endsWith("s") && singular.length > 3) variants.add(`${singular}s`);
+  if (singular === "ai") variants.add("artificial intelligence");
+  if (singular === "artificial" || singular === "intelligence") variants.add("ai");
   if (singular === "wildfire") {
     variants.add("wild fire");
     variants.add("forest fire");
@@ -638,6 +679,194 @@ function conceptGroups(query: string, terms: string[]) {
   };
 }
 
+const COMPLEX_BRIEF_HINTS = [
+  /\b(?:convene|convening|event|workshop|panel|roundtable|conference|symposium)\b/i,
+  /\b(?:team|consortium|partnership|collaboration|collaborative|stakeholder|speaker|speakers)\b/i,
+  /\b(?:mission|challenge|programme|program|initiative|proposal|bid|grant)\b/i,
+  /\b(?:interdisciplinary|multidisciplinary|cross[-\s]?faculty|across departments)\b/i,
+  /\b(?:bring|work)\s+together\b/i,
+];
+
+function inferSearchStrategy(query: string, mission?: MissionExpansion): SearchStrategy {
+  const topicText = implicitResearchTopic(query);
+  const terms = queryTerms(topicText);
+  const hasBriefIntent = COMPLEX_BRIEF_HINTS.some(pattern => pattern.test(query));
+  const hasSeveralRequirements = (mission?.must_have?.length || 0) >= 4
+    || (mission?.nice_to_have?.length || 0) >= 4;
+
+  if (hasBriefIntent) return "brief";
+  if (terms.length <= 8 && topicText.length <= 160) return "topic";
+  if (terms.length > 12 || hasSeveralRequirements) return "brief";
+  return mission?.search_strategy === "topic" ? "topic" : "brief";
+}
+
+function websearchOrTerms(values: string[], limit = 14) {
+  return [...new Set(values
+    .map(value => value.toLowerCase().replace(/[^a-z0-9\s-]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter(value => value.length >= 2))]
+    .slice(0, limit)
+    .map(value => value.includes(" ") ? `"${value}"` : value)
+    .join(" OR ");
+}
+
+function topicalLexicalQueries(query: string, mission: MissionExpansion) {
+  const topic = implicitResearchTopic(query).toLowerCase();
+  const terms = queryTerms(topic);
+  const groups = conceptGroups(topic, terms);
+  const methodTerms = [
+    ...(mission.method_terms || []),
+    ...groups.methodPhrases,
+    ...terms.filter(term => METHOD_TERMS.has(singularise(term))),
+  ];
+  const domainTerms = [
+    ...(mission.domain_terms || []),
+    ...groups.domainTerms.filter(term => !["foundation"].includes(term)),
+  ];
+
+  if (/\b(?:foundation models?|large language models?|llms?|generative ai)\b/i.test(topic)) {
+    methodTerms.push("artificial intelligence", "machine learning", "deep learning");
+  }
+  if (/\bhealth(?:care)?\b|\bclinical\b|\bmedical\b/i.test(topic)) {
+    domainTerms.push("health", "healthcare", "clinical", "medical", "medicine", "digital health");
+  }
+
+  return {
+    methodQuery: groups.hasMethodIntent ? websearchOrTerms(methodTerms) : "",
+    domainQuery: websearchOrTerms(domainTerms),
+  };
+}
+
+function openAlexTopicRelevance(query: string, row: Record<string, unknown>) {
+  const topic = implicitResearchTopic(query).toLowerCase().replace(/\s+/g, " ").trim();
+  const terms = [...new Set(queryTerms(topic).map(singularise))];
+  if (!topic || terms.length === 0) return 0;
+
+  const label = String(row.label || "").toLowerCase();
+  const text = [
+    label,
+    row.description,
+    Array.isArray(row.keywords) ? row.keywords.join(" ") : "",
+    row.domain_name,
+    row.field_name,
+    row.subfield_name,
+  ].join(" ").toLowerCase();
+  const hasTerm = (term: string, value: string) => expandedTermVariants(term)
+    .some(variant => value.includes(variant));
+  const matchedTerms = terms.filter(term => hasTerm(term, text)).length;
+  const labelMatches = terms.filter(term => hasTerm(term, label)).length;
+  const coverage = matchedTerms / terms.length;
+  const labelCoverage = labelMatches / terms.length;
+  const exactPhrase = text.includes(topic) || label.includes(topic) ? 1 : 0;
+  const suppliedRelevance = Number(row.relevance || 0);
+
+  return Math.max(
+    suppliedRelevance,
+    Math.min(1, coverage * 0.68 + labelCoverage * 0.22 + exactPhrase * 0.1),
+  );
+}
+
+function openAlexTopicFromRow(query: string, row: Record<string, unknown>): OpenAlexTopicEvidence | null {
+  const label = String(row.label || "").trim();
+  if (!label) return null;
+  return {
+    openalex_topic_id: String(row.openalex_topic_id || ""),
+    label,
+    description: truncateText(row.description, 500),
+    keywords: Array.isArray(row.keywords) ? row.keywords.map(String).filter(Boolean).slice(0, 12) : [],
+    domain_name: String(row.domain_name || ""),
+    field_name: String(row.field_name || ""),
+    subfield_name: String(row.subfield_name || ""),
+    topic_strength: Math.max(0, Number(row.topic_strength || 0)),
+    paper_count: Math.max(0, Number(row.paper_count || 0)),
+    recent_paper_count: Math.max(0, Number(row.recent_paper_count || 0)),
+    latest_year: row.latest_year === null || row.latest_year === undefined
+      ? null
+      : Number(row.latest_year),
+    trend: String(row.trend || "stable"),
+    relevance: openAlexTopicRelevance(query, row),
+  };
+}
+
+function mergeOpenAlexTopics(...collections: unknown[]) {
+  const byKey = new Map<string, OpenAlexTopicEvidence>();
+  for (const collection of collections) {
+    if (!Array.isArray(collection)) continue;
+    for (const item of collection) {
+      if (!item || typeof item !== "object") continue;
+      const topic = item as OpenAlexTopicEvidence;
+      const label = String(topic.label || "").trim();
+      if (!label) continue;
+      const key = String(topic.openalex_topic_id || label).toLowerCase();
+      const existing = byKey.get(key);
+      if (!existing || Number(topic.relevance || 0) > Number(existing.relevance || 0)) {
+        byKey.set(key, topic);
+      }
+    }
+  }
+  return [...byKey.values()]
+    .sort((a, b) =>
+      Number(b.relevance || 0) - Number(a.relevance || 0)
+      || Number(b.topic_strength || 0) - Number(a.topic_strength || 0)
+      || Number(b.paper_count || 0) - Number(a.paper_count || 0)
+    )
+    .slice(0, 8);
+}
+
+async function fetchOpenAlexTopicsForResearchers(
+  supabase: ReturnType<typeof createClient>,
+  researcherIds: string[],
+  query: string,
+) {
+  const byResearcher = new Map<string, OpenAlexTopicEvidence[]>();
+  const uniqueIds = [...new Set(researcherIds.filter(Boolean))];
+
+  for (const ids of chunkItems(uniqueIds, 100)) {
+    const { data, error } = await supabase
+      .from("researcher_themes")
+      .select("researcher_id,openalex_topic_id,label,description,keywords,domain_name,field_name,subfield_name,topic_strength,paper_count,recent_paper_count,latest_year,trend")
+      .eq("source_type", "openalex_topic")
+      .in("researcher_id", ids)
+      .limit(1600);
+
+    if (error) {
+      console.error("OpenAlex topic evidence lookup failed", error);
+      continue;
+    }
+
+    for (const rawRow of data || []) {
+      const row = rawRow as Record<string, unknown>;
+      const researcherId = String(row.researcher_id || "");
+      const topic = openAlexTopicFromRow(query, row);
+      if (!researcherId || !topic) continue;
+      const bucket = byResearcher.get(researcherId) || [];
+      bucket.push(topic);
+      byResearcher.set(researcherId, bucket);
+    }
+  }
+
+  for (const [researcherId, topics] of byResearcher.entries()) {
+    const relevant = topics
+      .filter(topic => topic.relevance >= 0.18)
+      .sort((a, b) =>
+        b.relevance - a.relevance
+        || b.topic_strength - a.topic_strength
+        || b.paper_count - a.paper_count
+        || a.label.localeCompare(b.label)
+      );
+    const context = topics
+      .filter(topic => !relevant.includes(topic))
+      .sort((a, b) =>
+        b.topic_strength - a.topic_strength
+        || b.paper_count - a.paper_count
+        || a.label.localeCompare(b.label)
+      )
+      .slice(0, relevant.length > 0 ? 2 : 3);
+    byResearcher.set(researcherId, [...relevant, ...context].slice(0, 8));
+  }
+
+  return byResearcher;
+}
+
 function textHasAny(text: string, terms: string[]) {
   return terms.some(term => {
     if (term.includes(" ") || term.includes("-")) return text.includes(term);
@@ -715,6 +944,7 @@ function keywordBooleanTermMatches(text: string, token: Extract<KeywordBooleanTo
   const normalizedText = text.toLowerCase();
   const value = token.value.toLowerCase().replace(/\s+/g, " ").trim();
   if (!value) return false;
+  if (value === "ai") return textHasAny(normalizedText, ["ai", "artificial intelligence"]);
   if (token.exact || value.includes(" ")) {
     return normalizedText.includes(value);
   }
@@ -903,6 +1133,9 @@ function matchedProfileEvidence(query: string, terms: string[], row: Record<stri
 
   const evidence: string[] = [];
   const phrases = directQueryPhrases(query);
+  const termEvidence = /\bfoundation models?\b/i.test(query)
+    ? terms.filter(term => !["foundation", "model", "models"].includes(term))
+    : terms;
 
   for (const field of fields) {
     const value = String(field.value || "").replace(/\s+/g, " ").trim();
@@ -916,7 +1149,7 @@ function matchedProfileEvidence(query: string, terms: string[], row: Record<stri
     }
 
     const hits = new Set<string>();
-    for (const term of terms) {
+    for (const term of termEvidence) {
       if (textHasAny(lowerValue, expandedTermVariants(term))) hits.add(singularise(term));
     }
     if (hits.size >= Math.min(2, Math.max(1, terms.length))) {
@@ -1154,6 +1387,8 @@ function describePaper(paper: Record<string, unknown>) {
 function buildMatchReason(row: Record<string, unknown>, profileEvidence: string[]) {
   const name = String(row.full_name || "This researcher");
   const title = String(row.position_name || row.position || "Imperial researcher");
+  const rawTopicEvidence = String(row.topic_evidence || "").trim();
+  const paperTheme = rawTopicEvidence.match(/^paper theme:\s*(.+)$/i)?.[1]?.trim() || "";
   const papers = ((row.papers as Record<string, unknown>[]) || [])
     .slice(0, 2)
     .map(describePaper)
@@ -1162,12 +1397,17 @@ function buildMatchReason(row: Record<string, unknown>, profileEvidence: string[
   const profileSentence = profileEvidence.length > 0
     ? `${name} matches through their profile evidence: ${profileEvidence.join("; ")}.`
     : `${name} matches through their ${title.toLowerCase()} profile and research description.`;
+  const topicSentence = paperTheme
+    ? ` Their paper theme, ${paperTheme}, also aligns with the query.`
+    : rawTopicEvidence
+      ? ` ${rawTopicEvidence.replace(/[.!?]+$/, "")}.`
+      : "";
 
   if (papers.length > 0) {
-    return `${profileSentence} Relevant publication evidence includes ${papers.join("; ")}, which supports the query topic.`;
+    return `${profileSentence}${topicSentence} Relevant publication evidence includes ${papers.join("; ")}, which supports the query topic.`;
   }
 
-  return `${profileSentence} No highly ranked paper evidence was needed for this match, so the score is driven mainly by profile, title, and field alignment.`;
+  return `${profileSentence}${topicSentence} No highly ranked paper evidence was needed for this match, so the score is driven mainly by profile, title, and field alignment.`;
 }
 
 function reorderPapersByTitles(papers: Record<string, unknown>[], titles: string[]) {
@@ -1345,6 +1585,34 @@ function normalise(value: number, min: number, max: number, floor = 0.35, ceilin
 function average(values: number[]) {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function retrievalCandidateScore(
+  row: Record<string, unknown>,
+  index: number,
+  minScore: number,
+  maxScore: number,
+  groups: ReturnType<typeof conceptGroups>,
+  strategy: SearchStrategy,
+) {
+  const topicSearch = strategy === "topic";
+  const evidenceScore = normalise(
+    Number(row.combined_similarity || 0),
+    minScore,
+    maxScore,
+    topicSearch ? 0.4 : 0.35,
+    topicSearch ? 0.88 : 0.72,
+  );
+  const rankPenalty = Math.min(
+    topicSearch ? 0.09 : 0.12,
+    Math.log2(index + 1) * (topicSearch ? 0.009 : 0.012),
+  );
+  const externalBoost = Math.min(0.025, (((row.external_evidence as ExternalEvidence[]) || []).length) * 0.005);
+  const score = Math.max(
+    Math.round(Math.max(0.3, evidenceScore - rankPenalty + externalBoost) * 100),
+    exactEvidenceRerankFloor(row),
+  );
+  return Math.min(score, methodDomainRerankCap(row, groups));
 }
 
 function truncateText(value: unknown, maxLength = 1200) {
@@ -1637,12 +1905,15 @@ function implicitResearchTopic(query: string) {
     .replace(/\s+/g, " ")
     .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, "")
     .trim();
-  return cleaned || query.trim();
+  return expandResearchAbbreviations(cleaned || query.trim());
 }
 
 async function expandMission(openAiKey: string, model: string, query: string, metrics?: UsageMetrics): Promise<MissionExpansion> {
   const implicitTopic = implicitResearchTopic(query);
-  const fallback = { expanded_query: implicitTopic || query };
+  const fallback: MissionExpansion = {
+    expanded_query: implicitTopic || query,
+    search_strategy: inferSearchStrategy(query),
+  };
   try {
     const result = await openAiJson(
       openAiKey,
@@ -1655,12 +1926,15 @@ async function expandMission(openAiKey: string, model: string, query: string, me
             "The system always searches for Imperial College London researchers, so finding people at Imperial is implicit.",
             "Remove interface instructions such as find, list, show or recommend people, researchers or experts at Imperial.",
             "Extract the actual research theme, problem, method, application domain, population and outcome the user cares about.",
+            "Always interpret the standalone abbreviation AI as artificial intelligence.",
             "Preserve conjunctions and relationships between central requirements. For example, climate change impacts on health must retain both climate change and health as must-have concepts.",
             "Do not turn a precise topic into a broad wishlist and do not add unrelated synonyms, sectors, methods or outcomes.",
             "For a long brief, retain its concrete requirements while producing a concise, evidence-oriented search query.",
             "Do not name or suggest researchers.",
             "Put only indispensable concepts in must_have. Put methods in method_terms and research/application domains in domain_terms.",
-            "Return JSON only with keys: expanded_query, must_have, nice_to_have, method_terms, domain_terms.",
+            "Classify the request as topic when it is primarily a subject, field, method, or concise method+domain combination, such as pesticides, atmospheric physics, or foundation models for health.",
+            "Classify it as brief when it asks to assemble a team, event, panel, programme, collaboration, mission, or satisfy several distinct requirements.",
+            "Return JSON only with keys: expanded_query, must_have, nice_to_have, method_terms, domain_terms, search_strategy.",
           ].join(" "),
         },
         {
@@ -1675,13 +1949,16 @@ async function expandMission(openAiKey: string, model: string, query: string, me
       metrics,
     ) as MissionExpansion;
 
-    const expanded = truncateText(result.expanded_query || implicitTopic || query, 900);
+    const expanded = expandResearchAbbreviations(truncateText(result.expanded_query || implicitTopic || query, 900));
     return {
       expanded_query: expanded || implicitTopic || query,
-      must_have: Array.isArray(result.must_have) ? result.must_have.slice(0, 8).map(String) : [],
-      nice_to_have: Array.isArray(result.nice_to_have) ? result.nice_to_have.slice(0, 8).map(String) : [],
-      method_terms: Array.isArray(result.method_terms) ? result.method_terms.slice(0, 8).map(String) : [],
-      domain_terms: Array.isArray(result.domain_terms) ? result.domain_terms.slice(0, 10).map(String) : [],
+      must_have: Array.isArray(result.must_have) ? result.must_have.slice(0, 8).map(item => expandResearchAbbreviations(String(item))) : [],
+      nice_to_have: Array.isArray(result.nice_to_have) ? result.nice_to_have.slice(0, 8).map(item => expandResearchAbbreviations(String(item))) : [],
+      method_terms: Array.isArray(result.method_terms) ? result.method_terms.slice(0, 8).map(item => expandResearchAbbreviations(String(item))) : [],
+      domain_terms: Array.isArray(result.domain_terms) ? result.domain_terms.slice(0, 10).map(item => expandResearchAbbreviations(String(item))) : [],
+      search_strategy: result.search_strategy === "topic" || result.search_strategy === "brief"
+        ? result.search_strategy
+        : inferSearchStrategy(query, result),
     };
   } catch (error) {
     console.error("Mission expansion failed", error);
@@ -1911,6 +2188,23 @@ function candidateEvidence(row: Record<string, unknown>) {
     profile_authority_score: row.profile_authority_score || 0,
     profile_concept_score: row.profile_concept_score || 0,
     paper_similarity: row.paper_similarity || 0,
+    paper_depth_score: row.paper_depth_score || 0,
+    topical_retrieval_score: row.topical_retrieval_score || 0,
+    topic_similarity: row.topic_similarity || 0,
+    topic_evidence: row.topic_evidence || "",
+    openalex_topics: ((row.openalex_topics as OpenAlexTopicEvidence[]) || []).slice(0, 8).map(topic => ({
+      openalex_topic_id: topic.openalex_topic_id,
+      label: truncateText(topic.label, 180),
+      description: truncateText(topic.description, 320),
+      keywords: topic.keywords.slice(0, 8),
+      field: topic.field_name,
+      subfield: topic.subfield_name,
+      relevance: topic.relevance,
+      topic_strength: topic.topic_strength,
+      paper_count: topic.paper_count,
+      recent_paper_count: topic.recent_paper_count,
+      trend: topic.trend,
+    })),
     exact_profile_evidence_score: row.exact_profile_evidence_score || 0,
     papers,
     all_paper_evidence: allPaperEvidence,
@@ -1945,6 +2239,25 @@ function schoolMissionEvidence(researcher: SchoolMissionResearcher) {
         title: truncateText(item.title, 160),
         snippet: truncateText(item.snippet, 220),
       }))
+      : [],
+  };
+}
+
+function poolSummaryEvidence(researcher: SchoolMissionResearcher) {
+  return {
+    researcher_id: String(researcher.id || researcher.name || ""),
+    name: truncateText(researcher.name, 120),
+    title: truncateText(researcher.title, 160),
+    department: truncateText(researcher.department, 160),
+    faculty: truncateText(researcher.faculty, 160),
+    profile: truncateText(researcher.summary, 700),
+    keywords: Array.isArray(researcher.keywords) ? researcher.keywords.slice(0, 10).map(String) : [],
+    match_reason: truncateText(researcher.match_reason, 420),
+    openalex_topics: Array.isArray(researcher.openalex_topics)
+      ? researcher.openalex_topics.slice(0, 8).map(item => truncateText(item, 160))
+      : [],
+    paper_titles: Array.isArray(researcher.publications)
+      ? researcher.publications.map(title => truncateText(title, 180)).slice(0, 10)
       : [],
   };
 }
@@ -2024,8 +2337,8 @@ async function summarizePoolWithLlm(
         content: [
           "You summarise the pool of relevant Imperial College London researchers returned by an expert-finding search.",
           "Use only the supplied researcher evidence. Do not invent publications, grants, affiliations, or capabilities.",
-          "Explain the main expertise patterns in the pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
-          "Write the summary field as about 300 words, useful for a user deciding who to contact.",
+          "Use positions, profiles, match reasons, publication titles, and OpenAlex paper topics to explain the main expertise patterns in the full supplied pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
+          "Write the summary field as a very concise 50-70 word overview. State only the strongest overall finding and the main spread of expertise, avoid repeating the notable-researcher list, and keep all detail for follow-up questions.",
           "Return JSON only: {\"headline\":\"...\",\"summary\":\"...\",\"themes\":[\"...\"],\"notable_researchers\":[{\"name\":\"...\",\"reason\":\"...\"}],\"gaps\":[\"...\"]}",
         ].join(" "),
       },
@@ -2033,16 +2346,16 @@ async function summarizePoolWithLlm(
         role: "user",
         content: JSON.stringify({
           user_search: query,
-          researchers: researchers.slice(0, 20).map(schoolMissionEvidence),
+          researchers: researchers.slice(0, 80).map(poolSummaryEvidence),
         }),
       },
     ],
-    6500,
+    4200,
   ) as ResearchPoolSummary;
 
   return {
     headline: truncateText(result.headline || "What ITMAP found", 140),
-    summary: truncateText(result.summary || "", 2600),
+    summary: truncateText(result.summary || "", 650),
     themes: Array.isArray(result.themes) ? result.themes.map(item => truncateText(item, 120)).filter(Boolean).slice(0, 6) : [],
     notable_researchers: Array.isArray(result.notable_researchers)
       ? result.notable_researchers
@@ -2054,6 +2367,78 @@ async function summarizePoolWithLlm(
         .slice(0, 6)
       : [],
     gaps: Array.isArray(result.gaps) ? result.gaps.map(item => truncateText(item, 160)).filter(Boolean).slice(0, 4) : [],
+  };
+}
+
+function researchPoolChatRefusal() {
+  return {
+    answer: "I can help you interpret these search results, compare researchers, identify expertise and publication themes, or discuss gaps in the returned pool. Try asking which researchers best cover a particular part of the query, how two candidates differ, or which departments are represented.",
+    evidence_titles: [],
+    caveat: "",
+  };
+}
+
+async function answerResearchPoolQuestion(
+  openAiKey: string,
+  model: string,
+  searchQuery: string,
+  question: string,
+  researchers: SchoolMissionResearcher[],
+  poolSummary?: ResearchPoolSummary,
+  conversation: ResearchPoolChatMessage[] = [],
+) {
+  const trimmedQuestion = truncateText(question, 1200);
+  if (!trimmedQuestion) throw new Error("Missing question");
+  if (isOffTopicProfileQuestion(trimmedQuestion)) return researchPoolChatRefusal();
+
+  const result = await openAiJson(
+    openAiKey,
+    model,
+    [
+      {
+        role: "system",
+        content: [
+          "You answer serious follow-up questions about a completed ITMAP researcher search at Imperial College London.",
+          "Use only the supplied search query, generated overview, researcher profiles, positions, departments, match reasons, publication titles, and OpenAlex topics.",
+          "You may compare researchers, explain coverage across the pool, identify relevant expertise or papers, and point out gaps.",
+          "Do not invent publications, affiliations, relationships, grants, or capabilities. If the evidence is insufficient, say so plainly.",
+          "Politely refuse poems, recipes, jokes, roleplay, entertainment, personal advice, or requests unrelated to interpreting these search results.",
+          "Write naturally. Do not mention databases, datasets, JSON, supplied evidence, prompts, models, or internal system details.",
+          "Answer directly in 90-180 words unless a short list is clearly more useful.",
+          "Return JSON only: {\"answer\":\"...\",\"evidence_titles\":[\"...\"],\"caveat\":\"...\"}",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          search_query: truncateText(searchQuery, 1200),
+          question: trimmedQuestion,
+          generated_overview: poolSummary ? {
+            headline: truncateText(poolSummary.headline, 160),
+            summary: truncateText(poolSummary.summary, 1200),
+            themes: Array.isArray(poolSummary.themes) ? poolSummary.themes.slice(0, 8) : [],
+            gaps: Array.isArray(poolSummary.gaps) ? poolSummary.gaps.slice(0, 5) : [],
+          } : null,
+          recent_conversation: conversation
+            .filter(message => message?.role === "user" || message?.role === "assistant")
+            .slice(-6)
+            .map(message => ({
+              role: message.role,
+              content: truncateText(message.content, 900),
+            })),
+          researchers: researchers.slice(0, 80).map(poolSummaryEvidence),
+        }),
+      },
+    ],
+    2200,
+  ) as { answer?: string; evidence_titles?: string[]; caveat?: string };
+
+  return {
+    answer: truncateText(naturaliseProfileAnswer(result.answer || "I could not answer that from the current search results."), 2200),
+    evidence_titles: Array.isArray(result.evidence_titles)
+      ? result.evidence_titles.map(String).filter(Boolean).slice(0, 8)
+      : [],
+    caveat: truncateText(naturaliseProfileAnswer(result.caveat || ""), 600),
   };
 }
 
@@ -2087,6 +2472,7 @@ async function rerankCandidateChunkWithLlm(
             "Use only the supplied position, profile, fields, shortlisted papers, and all_paper_evidence. Do not invent papers, affiliations, or expertise.",
             "Candidate researcher_id values are already deduplicated by the system. Do not mark anyone as a duplicate, do not suppress anyone because they seem represented elsewhere, and never give score 0 for duplicate reasons.",
             "The all_paper_evidence list was selected after scanning every fetched paper title and abstract for that candidate. Use these title+abstract snippets to detect whether the person has a substantial publication pattern relevant to the query.",
+            "OpenAlex paper topics summarise recurring themes across the candidate's publications. Use relevant topics as supporting breadth evidence, but verify them against the profile and paper titles/abstracts rather than treating one topic label as proof.",
             "When selecting best papers, prefer items from all_paper_evidence and return their paper_id values in best_paper_ids. The best papers should be specifically relevant to the query, not merely famous or highly cited.",
             "External evidence may include media appearances, startup/spinout signals, company activity, and UKRI grant/project records. Treat it as a small supporting signal only.",
             "Only give a small boost for external evidence when it is clearly relevant to the query or shows translational impact. Do not let generic publicity override weak research/profile evidence.",
@@ -3323,7 +3709,12 @@ async function quickSearch(
   }
 
   const isSchoolQuery = isSchoolOfConvergenceScienceQuery(trimmedQuery);
-  const nameSuggestions = await quickNameSuggestions(supabase, trimmedQuery);
+  const standaloneTopic = isStandaloneResearchAbbreviation(trimmedQuery)
+    ? expandResearchAbbreviations(trimmedQuery)
+    : "";
+  const nameSuggestions = standaloneTopic
+    ? []
+    : await quickNameSuggestions(supabase, trimmedQuery);
   const bestPerson = nameSuggestions[0];
 
   if (
@@ -3373,11 +3764,18 @@ async function quickSearch(
     };
   }
 
-  const topicMission = await expandMission(
-    openAiKey,
-    model,
-    truncateText(redactSensitiveSearchText(trimmedQuery), 20000),
-  );
+  const topicMission: MissionExpansion = standaloneTopic
+    ? {
+      expanded_query: standaloneTopic,
+      must_have: [standaloneTopic],
+      method_terms: [standaloneTopic],
+      search_strategy: "topic",
+    }
+    : await expandMission(
+      openAiKey,
+      model,
+      truncateText(redactSensitiveSearchText(trimmedQuery), 20000),
+    );
   const topicQuery = topicMission.expanded_query?.trim()
     || implicitResearchTopic(trimmedQuery)
     || trimmedQuery;
@@ -3421,6 +3819,16 @@ async function quickSearch(
 }
 
 type OrganizationKind = "department" | "institute" | "school" | "faculty" | "centre" | "laboratory" | "unit";
+type OrganizationGroupKey = "engineering" | "medicine" | "natural-sciences" | "business-school" | "education" | "cross-college" | "other";
+type OrganizationScope = "faculty" | "department-hosted" | "cross-college" | "education" | "top-level-school" | "unclassified";
+
+type OrganizationHierarchyMetadata = {
+  group_key: OrganizationGroupKey;
+  group_name: string;
+  parent_name: string;
+  scope: OrganizationScope;
+  official_url: string;
+};
 
 function organizationIdentityKey(value: unknown) {
   return String(value || "")
@@ -3435,15 +3843,224 @@ function organizationIdentityKey(value: unknown) {
     .trim();
 }
 
+const ORGANIZATION_DIRECTORY_MIN_RESEARCHERS = 3;
+
 const CANONICAL_ORGANIZATION_NAMES = new Map<string, string>([
+  ["business", "Imperial College Business School"],
+  ["business school", "Imperial College Business School"],
+  ["imperial business school", "Imperial College Business School"],
+  ["imperial college business school", "Imperial College Business School"],
+  ["department of analytics marketing and operations", "Imperial College Business School"],
+  ["department of economics and public policy", "Imperial College Business School"],
+  ["department of finance", "Imperial College Business School"],
+  ["department of management and entrepreneurship", "Imperial College Business School"],
+  ["of entrepreneurship business school", "Imperial College Business School"],
+  ["of practice business school", "Imperial College Business School"],
+  ["centre for en", "Centre for Engagement and Simulation Science"],
+  ["centre for he", "Centre for Health Economics and Policy Innovation"],
+  ["centre for hi", "Centre for Higher Education Research and Scholarship"],
+  ["centre for la", "Centre for Languages, Culture and Communication"],
+  ["centre for po", "Centre for Population Biology"],
   ["department of earth science and engineering", "Department of Earth Science & Engineering"],
+  ["department of life sciences silwood park", "Department of Life Sciences"],
   ["department of surgery and cancer", "Department of Surgery & Cancer"],
-  ["department of analytics marketing and operations", "Department of Analytics, Marketing and Operations"],
   ["national heart and lung institute", "National Heart & Lung Institute"],
   ["institute for security science and technology", "Institute for Security Science & Technology"],
   ["grantham institute for climate change", "Grantham Institute for Climate Change"],
   ["institute for climate change", "Grantham Institute for Climate Change"],
+  ["uk bioengineering dyson school", "School of Design Engineering"],
+  ["hall shared the uk institute", "Department of Physics"],
 ]);
+
+const ORGANIZATION_QUERY_ALIASES = new Map<string, string[]>([
+  ["imperial college business school", [
+    "Business",
+    "Business School",
+    "Imperial Business School",
+    "Imperial College Business School",
+    "Department of Analytics, Marketing and Operations",
+    "Department of Economics and Public Policy",
+    "Department of Finance",
+    "Department of Management and Entrepreneurship",
+  ]],
+  ["centre for engagement and simulation science", ["Centre for Engagement and Simulation Science", "Centre for En"]],
+  ["centre for health economics and policy innovation", ["Centre for Health Economics and Policy Innovation", "Centre for He"]],
+  ["centre for higher education research and scholarship", ["Centre for Higher Education Research and Scholarship", "Centre for Hi"]],
+  ["centre for languages culture and communication", ["Centre for Languages, Culture and Communication", "Centre for La"]],
+  ["centre for population biology", ["Centre for Population Biology", "Centre for Po"]],
+  ["department of life sciences", ["Department of Life Sciences", "Department of Life Sciences (Silwood Park)"]],
+  ["school of design engineering", ["School of Design Engineering", "uk Bioengineering Dyson School"]],
+  ["department of physics", ["Department of Physics", "Hall shared the UK Institute"]],
+]);
+
+const ORGANIZATION_GROUPS: Record<OrganizationGroupKey, {
+  name: string;
+  parentName: string;
+  scope: OrganizationScope;
+  officialUrl: string;
+  order: number;
+}> = {
+  engineering: {
+    name: "Faculty of Engineering",
+    parentName: "Faculty of Engineering",
+    scope: "faculty",
+    officialUrl: "https://www.imperial.ac.uk/engineering/departments/",
+    order: 0,
+  },
+  medicine: {
+    name: "Faculty of Medicine",
+    parentName: "Faculty of Medicine",
+    scope: "faculty",
+    officialUrl: "https://www.imperial.ac.uk/medicine/",
+    order: 1,
+  },
+  "natural-sciences": {
+    name: "Faculty of Natural Sciences",
+    parentName: "Faculty of Natural Sciences",
+    scope: "faculty",
+    officialUrl: "https://www.imperial.ac.uk/natural-sciences/departments/",
+    order: 2,
+  },
+  "business-school": {
+    name: "Imperial College Business School",
+    parentName: "Imperial College London",
+    scope: "top-level-school",
+    officialUrl: "https://www.imperial.ac.uk/faculties-and-departments/",
+    order: 3,
+  },
+  education: {
+    name: "Education centres & schools",
+    parentName: "Imperial College London",
+    scope: "education",
+    officialUrl: "https://www.imperial.ac.uk/faculties-and-departments/",
+    order: 4,
+  },
+  "cross-college": {
+    name: "Cross-College institutes & centres",
+    parentName: "Imperial College London",
+    scope: "cross-college",
+    officialUrl: "https://www.imperial.ac.uk/multidisciplinary-research/",
+    order: 5,
+  },
+  other: {
+    name: "Other Imperial units",
+    parentName: "Imperial College London",
+    scope: "unclassified",
+    officialUrl: "https://www.imperial.ac.uk/faculties-and-departments/",
+    order: 6,
+  },
+};
+
+function organizationKeySet(names: string[]) {
+  return new Set(names.map(organizationIdentityKey));
+}
+
+const ENGINEERING_ORGANIZATIONS = organizationKeySet([
+  "Department of Aeronautics",
+  "Department of Bioengineering",
+  "Department of Chemical Engineering",
+  "Department of Civil and Environmental Engineering",
+  "Department of Computing",
+  "School of Design Engineering",
+  "Dyson School of Design Engineering",
+  "Department of Earth Science & Engineering",
+  "Department of Electrical and Electronic Engineering",
+  "Department of Materials",
+  "Department of Mechanical Engineering",
+]);
+
+const MEDICINE_ORGANIZATIONS = organizationKeySet([
+  "Department of Brain Sciences",
+  "Department of Immunology and Inflammation",
+  "Department of Infectious Disease",
+  "Institute of Clinical Sciences",
+  "Department of Medicine",
+  "Department of Metabolism, Digestion and Reproduction",
+  "National Heart & Lung Institute",
+  "School of Public Health",
+  "Department of Surgery & Cancer",
+]);
+
+const NATURAL_SCIENCES_ORGANIZATIONS = organizationKeySet([
+  "Department of Chemistry",
+  "Department of Life Sciences",
+  "Division of Cell & Molecular Biology",
+  "Department of Mathematics",
+  "Department of Physics",
+  "Centre for Environmental Policy",
+]);
+
+const CROSS_COLLEGE_ORGANIZATIONS = organizationKeySet([
+  "Centre for Advanced Therapeutics",
+  "Centre for Paediatrics and Child Health",
+  "Centre for Translational Nutrition and Food Research",
+  "Data Science Institute",
+  "Grantham Institute for Climate Change",
+  "Institute for Security Science & Technology",
+  "Institute of Chemical Biology",
+  "Institute of Global Health Innovation",
+  "Institute of Infection",
+]);
+
+const EDUCATION_ORGANIZATIONS = organizationKeySet([
+  "Centre for Higher Education Research and Scholarship",
+  "Centre for Languages, Culture and Communication",
+  "School of Convergence Science",
+]);
+
+const DEPARTMENT_HOSTED_ORGANIZATIONS = new Map<string, {
+  groupKey: OrganizationGroupKey;
+  parentName: string;
+  officialUrl: string;
+}>([
+  [organizationIdentityKey("Centre for Engagement and Simulation Science"), {
+    groupKey: "medicine",
+    parentName: "Department of Surgery & Cancer",
+    officialUrl: "https://www.imperial.ac.uk/engagement-and-simulation-science/about-iccess/history/",
+  }],
+  [organizationIdentityKey("Centre for Population Biology"), {
+    groupKey: "natural-sciences",
+    parentName: "Department of Life Sciences",
+    officialUrl: "https://www.imperial.ac.uk/silwood-park/",
+  }],
+  [organizationIdentityKey("Centre for Health Economics and Policy Innovation"), {
+    groupKey: "business-school",
+    parentName: "Imperial College Business School",
+    officialUrl: "https://www.imperial.ac.uk/business-school/faculty-research/research-centres/centre-health-economics-policy-innovation/",
+  }],
+]);
+
+function organizationHierarchy(name: string): OrganizationHierarchyMetadata {
+  const key = organizationIdentityKey(name);
+  const hosted = DEPARTMENT_HOSTED_ORGANIZATIONS.get(key);
+  if (hosted) {
+    const group = ORGANIZATION_GROUPS[hosted.groupKey];
+    return {
+      group_key: hosted.groupKey,
+      group_name: group.name,
+      parent_name: hosted.parentName,
+      scope: "department-hosted",
+      official_url: hosted.officialUrl,
+    };
+  }
+
+  let groupKey: OrganizationGroupKey = "other";
+  if (ENGINEERING_ORGANIZATIONS.has(key)) groupKey = "engineering";
+  else if (MEDICINE_ORGANIZATIONS.has(key)) groupKey = "medicine";
+  else if (NATURAL_SCIENCES_ORGANIZATIONS.has(key)) groupKey = "natural-sciences";
+  else if (key === organizationIdentityKey("Imperial College Business School")) groupKey = "business-school";
+  else if (EDUCATION_ORGANIZATIONS.has(key)) groupKey = "education";
+  else if (CROSS_COLLEGE_ORGANIZATIONS.has(key)) groupKey = "cross-college";
+
+  const group = ORGANIZATION_GROUPS[groupKey];
+  return {
+    group_key: groupKey,
+    group_name: group.name,
+    parent_name: group.parentName,
+    scope: group.scope,
+    official_url: group.officialUrl,
+  };
+}
 
 function canonicalOrganizationName(value: unknown) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -3512,8 +4129,19 @@ function organizationQueryAliases(query: string) {
     return ["National Heart & Lung Institute", "National Heart and Lung Institute"];
   }
   const trimmed = query.trim();
+  const normalizedQuery = organizationIdentityKey(trimmed);
+  const canonicalQuery = canonicalOrganizationName(trimmed);
+  const directAliases = ORGANIZATION_QUERY_ALIASES.get(organizationIdentityKey(canonicalQuery)) || [];
+  const partialAliases = normalizedQuery.length >= 6
+    ? [...ORGANIZATION_QUERY_ALIASES.entries()]
+      .filter(([canonicalName, aliases]) => canonicalName.includes(normalizedQuery)
+        || aliases.some(alias => organizationIdentityKey(alias).includes(normalizedQuery)))
+      .flatMap(([, aliases]) => aliases)
+    : [];
   return [...new Set([
     trimmed,
+    ...directAliases,
+    ...partialAliases,
     trimmed.includes("&") ? trimmed.replace(/\s*&\s*/g, " and ") : "",
     /\band\b/i.test(trimmed) ? trimmed.replace(/\band\b/gi, "&") : "",
     /\bcentre\b/i.test(trimmed) ? trimmed.replace(/\bcentre\b/gi, "Center") : "",
@@ -3528,6 +4156,13 @@ let organizationDirectoryCache: {
     kind: OrganizationKind;
     researcher_count: number;
     score: number;
+    group_key: OrganizationGroupKey;
+    group_name: string;
+    group_researcher_count: number;
+    group_unit_count: number;
+    parent_name: string;
+    scope: OrganizationScope;
+    official_url: string;
   }>;
 } | null = null;
 
@@ -3581,19 +4216,39 @@ async function listOrganizations(supabase: ReturnType<typeof createClient>) {
     department: 0,
     institute: 1,
     school: 2,
-    faculty: 3,
-    centre: 4,
-    laboratory: 5,
-    unit: 6,
+    centre: 3,
+    laboratory: 4,
+    unit: 5,
+    faculty: 6,
   };
-  const rows = [...organizations.values()]
-    .map(organization => ({
-      name: organization.name,
-      kind: organization.kind,
-      researcher_count: organization.researcherIds.size,
-      score: 1,
-    }))
-    .sort((first, second) => kindOrder[first.kind] - kindOrder[second.kind]
+  const visibleOrganizations = [...organizations.values()]
+    .filter(organization => organization.kind !== "faculty"
+      && organization.researcherIds.size >= ORGANIZATION_DIRECTORY_MIN_RESEARCHERS);
+  const groupResearcherIds = new Map<OrganizationGroupKey, Set<string>>();
+  const groupUnitCounts = new Map<OrganizationGroupKey, number>();
+  for (const organization of visibleOrganizations) {
+    const hierarchy = organizationHierarchy(organization.name);
+    const researcherIds = groupResearcherIds.get(hierarchy.group_key) || new Set<string>();
+    organization.researcherIds.forEach(researcherId => researcherIds.add(researcherId));
+    groupResearcherIds.set(hierarchy.group_key, researcherIds);
+    groupUnitCounts.set(hierarchy.group_key, (groupUnitCounts.get(hierarchy.group_key) || 0) + 1);
+  }
+
+  const rows = visibleOrganizations
+    .map(organization => {
+      const hierarchy = organizationHierarchy(organization.name);
+      return {
+        name: organization.name,
+        kind: organization.kind,
+        researcher_count: organization.researcherIds.size,
+        score: 1,
+        ...hierarchy,
+        group_researcher_count: groupResearcherIds.get(hierarchy.group_key)?.size || 0,
+        group_unit_count: groupUnitCounts.get(hierarchy.group_key) || 0,
+      };
+    })
+    .sort((first, second) => ORGANIZATION_GROUPS[first.group_key].order - ORGANIZATION_GROUPS[second.group_key].order
+      || kindOrder[first.kind] - kindOrder[second.kind]
       || second.researcher_count - first.researcher_count
       || first.name.localeCompare(second.name));
 
@@ -3632,10 +4287,14 @@ async function suggestOrganizations(
     for (const name of organizationNamesForResearcher(row)) {
       const normalizedName = organizationIdentityKey(name);
       const normalizedQuery = organizationIdentityKey(trimmed);
+      const normalizedAliases = organizationQueryAliases(name).map(organizationIdentityKey);
+      const isGranthamAlias = name === "Grantham Institute for Climate Change"
+        && normalizedQuery.includes("grantham");
       if (
-        name !== "Grantham Institute for Climate Change"
+        !isGranthamAlias
         && !normalizedName.includes(normalizedQuery)
         && !normalizedQuery.includes(normalizedName)
+        && !normalizedAliases.some(alias => alias.includes(normalizedQuery) || normalizedQuery.includes(alias))
       ) continue;
       const organization = organizations.get(normalizedName) || {
         name,
@@ -3650,11 +4309,12 @@ async function suggestOrganizations(
   return [...organizations.values()]
     .map(({ name, researcherIds }) => {
       const normalizedName = organizationIdentityKey(name);
-      const score = normalizedName === normalizedQuery
+      const normalizedAliases = organizationQueryAliases(name).map(organizationIdentityKey);
+      const score = normalizedName === normalizedQuery || normalizedAliases.includes(normalizedQuery)
         ? 1
-        : normalizedName.startsWith(normalizedQuery)
+        : normalizedName.startsWith(normalizedQuery) || normalizedAliases.some(alias => alias.startsWith(normalizedQuery))
           ? 0.94
-          : normalizedName.includes(normalizedQuery)
+          : normalizedName.includes(normalizedQuery) || normalizedAliases.some(alias => alias.includes(normalizedQuery))
             ? 0.88
             : name === "Grantham Institute for Climate Change" && normalizedQuery.includes("grantham")
               ? 0.98
@@ -3664,6 +4324,7 @@ async function suggestOrganizations(
         kind: organizationKind(name),
         researcher_count: researcherIds.size,
         score,
+        ...organizationHierarchy(name),
       };
     })
     .sort((first, second) => Number(second.score) - Number(first.score)
@@ -3692,10 +4353,15 @@ async function quickOrganizationMatch(
   const ranked = organizations
     .map(organization => {
       const normalizedName = organizationIdentityKey(organization.name);
-      const nameTokens = quickOrganizationTokens(organization.name);
-      const matchedTokens = nameTokens.filter(token => queryTokens.has(token)).length;
-      const tokenCoverage = nameTokens.length > 0 ? matchedTokens / nameTokens.length : 0;
-      const explicitName = normalizedQuery.includes(normalizedName);
+      const aliases = organizationQueryAliases(organization.name);
+      const aliasKeys = aliases.map(organizationIdentityKey);
+      const tokenCoverage = Math.max(...aliases.map(alias => {
+        const nameTokens = quickOrganizationTokens(alias);
+        const matchedTokens = nameTokens.filter(token => queryTokens.has(token)).length;
+        return nameTokens.length > 0 ? matchedTokens / nameTokens.length : 0;
+      }));
+      const explicitName = normalizedQuery.includes(normalizedName)
+        || aliasKeys.some(alias => normalizedQuery.includes(alias));
       const brandedAlias = normalizedName.includes("grantham") && normalizedQuery.includes("grantham");
       const score = explicitName ? 1 : brandedAlias ? 0.98 : tokenCoverage;
       return { ...organization, score, explicitName };
@@ -3715,6 +4381,7 @@ async function quickOrganizationMatch(
     kind: best.kind,
     researcher_count: best.researcher_count,
     score: best.score,
+    ...organizationHierarchy(best.name),
   };
 }
 
@@ -4077,6 +4744,7 @@ async function organizationProfile(
     organization: {
       name,
       kind: organizationKind(name),
+      ...organizationHierarchy(name),
       researcher_count: researcherRows.length,
       researchers_with_topics: themesByResearcher.size,
       paper_count: uniqueOrganizationPaperCount,
@@ -5674,7 +6342,7 @@ Deno.serve(async req => {
     const redactedQueryForAudit = redactSensitiveSearchText(query);
     const redactedOriginalQueryForAudit = redactSensitiveSearchText(originalQuery || query);
     const administrativeFormInput = isLikelyAdministrativeForm(query);
-    const limit = Math.max(1, Math.min(body.limit || 30, 50));
+    const limit = Math.max(1, Math.min(body.limit || 100, 250));
 
     const openAiKey = Deno.env.get("OPENAI_API_KEY");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -5720,6 +6388,7 @@ Deno.serve(async req => {
         nice_to_have: rewritten.nice_to_have || [],
         method_terms: rewritten.method_terms || [],
         domain_terms: rewritten.domain_terms || [],
+        search_strategy: inferSearchStrategy(query, rewritten),
       }, { headers: corsHeaders });
     }
 
@@ -5887,6 +6556,21 @@ Deno.serve(async req => {
       return Response.json({ summary }, { headers: corsHeaders });
     }
 
+    if (body.action === "research_pool_question") {
+      const researchers = Array.isArray(body.researchers) ? body.researchers : [];
+      const conversation = Array.isArray(body.conversation) ? body.conversation : [];
+      const answer = await answerResearchPoolQuestion(
+        openAiKey,
+        rankingModel,
+        originalQuery,
+        query,
+        researchers,
+        body.pool_summary,
+        conversation,
+      );
+      return Response.json(answer, { headers: corsHeaders });
+    }
+
     if (!query) {
       return Response.json({ results: [], original_query: "", expanded_query: "" }, { headers: corsHeaders });
     }
@@ -5963,26 +6647,38 @@ Deno.serve(async req => {
         truncateText(redactSensitiveSearchText(query), 20000),
         searchUsage,
       );
-      searchQuery = mission.expanded_query?.trim()
-        || implicitResearchTopic(query)
-        || query;
-      mission.expanded_query = searchQuery;
+      searchQuery = mission.expanded_query?.trim() || implicitResearchTopic(query) || query;
     } else {
-      const rawKeywordTerms = queryTerms(query);
+      searchQuery = expandResearchAbbreviations(query);
+      const rawKeywordTerms = queryTerms(searchQuery);
       mission = {
-        expanded_query: query,
+        expanded_query: searchQuery,
         must_have: rawKeywordTerms.slice(0, 10),
         nice_to_have: [],
         method_terms: rawKeywordTerms.filter(term => METHOD_TERMS.has(singularise(term))).slice(0, 8),
         domain_terms: rawKeywordTerms.filter(term => !METHOD_TERMS.has(singularise(term))).slice(0, 10),
+        search_strategy: "brief",
       };
     }
 
+    const searchStrategy: SearchStrategy = mode === "semantic"
+      ? inferSearchStrategy(originalQuery || query, mission)
+      : "brief";
+    mission.search_strategy = searchStrategy;
+    const isTopicalSearch = mode === "semantic" && searchStrategy === "topic";
+    if (isTopicalSearch) {
+      searchQuery = implicitResearchTopic(originalQuery || query) || searchQuery;
+    }
+    mission.expanded_query = searchQuery;
     const filters = body.filters || [];
-    const terms = queryTerms(searchQuery);
-    const groups = conceptGroups(searchQuery, terms);
-    const keywordBooleanQuery = parseKeywordBooleanQuery(searchQuery);
-    const isLongMission = terms.length > 10;
+    const lexicalTopicQueries = topicalLexicalQueries(originalQuery || query, mission);
+    const scoringQuery = isTopicalSearch
+      ? `${searchQuery} ${lexicalTopicQueries.methodQuery.replace(/\bOR\b/g, " ")} ${lexicalTopicQueries.domainQuery.replace(/\bOR\b/g, " ")}`
+      : searchQuery;
+    const terms = queryTerms(scoringQuery);
+    const groups = conceptGroups(scoringQuery, terms);
+    const keywordBooleanQuery = parseKeywordBooleanQuery(mode === "keyword" ? query : searchQuery);
+    const isLongMission = searchStrategy === "brief" && terms.length > 10;
     const facultyFilters = filters
       .filter(filter => filter.startsWith("Faculty of") || filter === "Imperial College Business School")
       .map(normaliseFaculty);
@@ -5990,18 +6686,33 @@ Deno.serve(async req => {
 
     if (mode === "keyword") {
       const keywordMatchCount = Math.min(150, Math.max(60, limit * 4));
-      const { data: keywordMatches, error: keywordError } = await supabase.rpc("match_keyword_researchers", {
-        search_query: searchQuery,
-        match_count: keywordMatchCount,
-        faculty_filters: facultyFilters,
-        role_filters: roleFilters,
-      });
+      const keywordQueries = [...new Set([query, searchQuery].map(value => value.trim()).filter(Boolean))];
+      const keywordResponses = await Promise.all(keywordQueries.map(keywordQuery => (
+        supabase.rpc("match_keyword_researchers", {
+          search_query: keywordQuery,
+          match_count: keywordMatchCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        })
+      )));
+      const keywordFailure = keywordResponses.find(response => response.error)?.error;
+      if (keywordFailure) throw keywordFailure;
 
-      if (keywordError) {
-        throw keywordError;
+      const keywordMatchesByResearcher = new Map<string, Record<string, unknown>>();
+      for (const response of keywordResponses) {
+        for (const rawRow of response.data || []) {
+          const row = rawRow as Record<string, unknown>;
+          const researcherId = String(row.researcher_id || "");
+          if (!researcherId) continue;
+          const existing = keywordMatchesByResearcher.get(researcherId);
+          if (!existing || Number(row.similarity || 0) > Number(existing.similarity || 0)) {
+            keywordMatchesByResearcher.set(researcherId, row);
+          }
+        }
       }
+      const keywordMatches = [...keywordMatchesByResearcher.values()];
 
-      const filteredKeywordMatches = (keywordMatches || [])
+      const filteredKeywordMatches = keywordMatches
         .filter((row: Record<string, unknown>) => !isVisitingResearcher(row))
         .filter((row: Record<string, unknown>) => {
           if (!keywordBooleanQuery.hasBooleanSyntax) return true;
@@ -6079,47 +6790,127 @@ Deno.serve(async req => {
       throw new Error("Embedding response did not include a vector");
     }
 
-    const candidateCount = Math.min(220, Math.max(90, limit * 5));
-    const { data: researcherMatches, error: researcherError } = await supabase.rpc("match_researcher_documents", {
-      query_embedding: embedding,
-      match_count: candidateCount,
-      faculty_filters: facultyFilters,
-      role_filters: roleFilters,
-    });
+    const candidateCount = isTopicalSearch
+      ? Math.min(300, Math.max(180, limit + 50))
+      : Math.min(220, Math.max(90, limit * 2));
+    const paperMatchCount = isLongMission
+      ? Math.min(160, Math.max(80, limit * 2))
+      : isTopicalSearch
+        ? Math.min(1000, Math.max(500, limit * 5))
+        : Math.min(500, Math.max(150, limit * 5));
+    const topicalMatchCount = Math.min(300, Math.max(200, limit + 50));
+    const nearestTopicalPaperCount = Math.min(450, Math.max(350, limit * 2));
+    const openAlexTopicMatchCount = Math.min(500, Math.max(300, limit * 2));
 
-    if (researcherError) {
-      throw researcherError;
-    }
+    const [researcherResponse, paperResponse, topicalResponse, topicalLexicalResponse, openAlexTopicResponse] = await Promise.all([
+      isTopicalSearch
+        ? supabase.rpc("match_topic_researcher_profiles", {
+          query_embedding: embedding,
+          match_count: candidateCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        })
+        : supabase.rpc("match_researcher_documents", {
+          query_embedding: embedding,
+          match_count: candidateCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        }),
+      isTopicalSearch
+        ? Promise.resolve({ data: [], error: null })
+        : supabase.rpc("match_researcher_paper_documents", {
+          query_embedding: embedding,
+          match_count: paperMatchCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        }),
+      isTopicalSearch
+        ? supabase.rpc("match_topical_researchers", {
+          query_embedding: embedding,
+          topic_query: searchQuery,
+          match_count: topicalMatchCount,
+          nearest_paper_count: nearestTopicalPaperCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        })
+        : Promise.resolve({ data: [], error: null }),
+      isTopicalSearch
+        ? supabase.rpc("match_topic_profile_terms", {
+          method_query: lexicalTopicQueries.methodQuery,
+          domain_query: lexicalTopicQueries.domainQuery,
+          match_count: 200,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        })
+        : Promise.resolve({ data: [], error: null }),
+      isTopicalSearch
+        ? supabase.rpc("match_openalex_topic_researchers", {
+          topic_query: searchQuery,
+          match_count: openAlexTopicMatchCount,
+          faculty_filters: facultyFilters,
+          role_filters: roleFilters,
+        })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
 
-    const profileKeywordMatches = (mode !== "keyword" && isLongMission)
-      ? []
-      : await fetchProfileKeywordCandidates(
+    if (researcherResponse.error) throw researcherResponse.error;
+    if (paperResponse.error) throw paperResponse.error;
+    if (topicalResponse.error) throw topicalResponse.error;
+    if (topicalLexicalResponse.error) throw topicalLexicalResponse.error;
+    if (openAlexTopicResponse.error) throw openAlexTopicResponse.error;
+
+    const researcherMatches = researcherResponse.data || [];
+    const paperMatches = paperResponse.data || [];
+    const topicalMatches = [
+      ...(topicalResponse.data || []).map((row: Record<string, unknown>) => ({
+        ...row,
+        topical_source: "paper_vector",
+      })),
+      ...(openAlexTopicResponse.data || []).map((row: Record<string, unknown>) => ({
+        ...row,
+        topical_source: "openalex_topic",
+      })),
+    ];
+    const topicalLexicalMatches = topicalLexicalResponse.data || [];
+
+    const profileKeywordMatches = isTopicalSearch
+      ? topicalLexicalMatches
+      : mode !== "keyword" && isLongMission
+        ? []
+        : await fetchProfileKeywordCandidates(
         supabase,
         searchQuery,
         terms,
         facultyFilters,
-        roleFilters,
-      );
-
-    const paperMatchCount = isLongMission
-      ? Math.min(120, Math.max(60, limit * 8))
-      : Math.min(500, Math.max(150, limit * 25));
-    const { data: paperMatches, error: paperError } = await supabase.rpc("match_researcher_paper_documents", {
-      query_embedding: embedding,
-      match_count: paperMatchCount,
-      faculty_filters: facultyFilters,
-      role_filters: roleFilters,
-    });
-
-    if (paperError) {
-      throw paperError;
-    }
+          roleFilters,
+        );
+    const topicalLexicalScores = topicalLexicalMatches
+      .map((row: Record<string, unknown>) => Number(row.similarity || 0))
+      .filter(score => Number.isFinite(score) && score > 0);
+    const minTopicalLexicalScore = topicalLexicalScores.length > 0 ? Math.min(...topicalLexicalScores) : 0;
+    const maxTopicalLexicalScore = topicalLexicalScores.length > 0 ? Math.max(...topicalLexicalScores) : 1;
 
     const allPaperSimilarities = (paperMatches || [])
       .map((paper: Record<string, unknown>) => Number(paper.similarity || 0))
       .filter(Boolean);
     const minPaperSimilarity = allPaperSimilarities.length > 0 ? Math.min(...allPaperSimilarities) : 0;
     const maxPaperSimilarity = allPaperSimilarities.length > 0 ? Math.max(...allPaperSimilarities) : 1;
+    const topicalRetrievalScores = topicalMatches
+      .map((row: Record<string, unknown>) => Number(row.similarity || 0))
+      .filter(Number.isFinite);
+    const minTopicalRetrievalScore = topicalRetrievalScores.length > 0 ? Math.min(...topicalRetrievalScores) : 0;
+    const maxTopicalRetrievalScore = topicalRetrievalScores.length > 0 ? Math.max(...topicalRetrievalScores) : 1;
+    const topicalThemeScores = topicalMatches
+      .map((row: Record<string, unknown>) => Number(row.topic_similarity || 0))
+      .filter(score => Number.isFinite(score) && score > 0);
+    const minTopicalThemeScore = topicalThemeScores.length > 0 ? Math.min(...topicalThemeScores) : 0;
+    const maxTopicalThemeScore = topicalThemeScores.length > 0 ? Math.max(...topicalThemeScores) : 1;
+    const topicalPaperScores = topicalMatches
+      .flatMap((row: Record<string, unknown>) => Array.isArray(row.papers) ? row.papers : [])
+      .map((paper: Record<string, unknown>) => Number(paper.similarity || 0))
+      .filter(Number.isFinite);
+    const minTopicalPaperScore = topicalPaperScores.length > 0 ? Math.min(...topicalPaperScores) : 0;
+    const maxTopicalPaperScore = topicalPaperScores.length > 0 ? Math.max(...topicalPaperScores) : 1;
 
     const paperMatchesByResearcher = new Map<string, Record<string, unknown>[]>();
     for (const paper of paperMatches || []) {
@@ -6174,6 +6965,15 @@ Deno.serve(async req => {
       const profileAuthority = profileAuthorityScore(searchQuery, terms, row);
       const exactProfileEvidence = exactProfileEvidenceScore(searchQuery, terms, row);
       const profileEvidence = matchedProfileEvidence(searchQuery, terms, row);
+      const topicalLexicalScore = isTopicalSearch
+        ? normalise(
+          Number(row.similarity || 0),
+          minTopicalLexicalScore,
+          maxTopicalLexicalScore,
+          0.52,
+          0.96,
+        )
+        : 0;
       if (existing) {
         existing.profile_concept_score = Math.max(Number(existing.profile_concept_score || 0), profileConcept);
         existing.profile_authority_score = Math.max(Number(existing.profile_authority_score || 0), profileAuthority);
@@ -6184,6 +6984,13 @@ Deno.serve(async req => {
             ...profileEvidence,
           ]),
         ].slice(0, 3);
+        if (isTopicalSearch) {
+          existing.topical_retrieval_score = Math.max(
+            Number(existing.topical_retrieval_score || 0),
+            topicalLexicalScore,
+          );
+          existing.topic_evidence = "Profile terminology aligns with both sides of the topic";
+        }
         existing.match_reason = "Matched from this researcher's profile, domain terms, and publication evidence.";
       } else {
         merged.set(row.researcher_id, {
@@ -6194,8 +7001,112 @@ Deno.serve(async req => {
           exact_profile_evidence_score: exactProfileEvidence,
           profile_evidence: profileEvidence,
           paper_similarity: 0,
+          topical_retrieval_score: topicalLexicalScore,
+          topic_evidence: isTopicalSearch
+            ? "Profile terminology aligns with both sides of the topic"
+            : "",
           papers: [],
           match_reason: "Matched from this researcher's profile and domain-specific query terms.",
+        });
+      }
+    }
+
+    for (const row of topicalMatches) {
+      const researcherId = String(row.researcher_id || "");
+      if (!researcherId) continue;
+      const rawRetrievalScore = Number(row.similarity || 0);
+      const rawThemeScore = Number(row.topic_similarity || 0);
+      const topicalRetrievalScore = normalise(
+        rawRetrievalScore,
+        minTopicalRetrievalScore,
+        maxTopicalRetrievalScore,
+        0.42,
+        0.99,
+      );
+      const topicSimilarity = rawThemeScore > 0
+        ? normalise(rawThemeScore, minTopicalThemeScore, maxTopicalThemeScore, 0.35, 0.96)
+        : 0;
+      const topicalPapers = (Array.isArray(row.papers) ? row.papers : [])
+        .map((paper: Record<string, unknown>) => {
+          const rawSimilarity = Number(paper.similarity || 0);
+          const relevance = normalise(
+            rawSimilarity,
+            minTopicalPaperScore,
+            maxTopicalPaperScore,
+            0.42,
+            0.99,
+          );
+          return paperSummary(paper, relevance, relevance);
+        });
+      const profileConcept = profileConceptScore(searchQuery, terms, row);
+      const profileAuthority = profileAuthorityScore(searchQuery, terms, row);
+      const exactProfileEvidence = exactProfileEvidenceScore(searchQuery, terms, row);
+      const profileEvidence = matchedProfileEvidence(searchQuery, terms, row);
+      const existing = merged.get(researcherId);
+      const topicLabel = String(row.topic_label || "").trim();
+      const topicEvidence = topicLabel
+        ? `Paper theme: ${topicLabel}`
+        : "Individual publications align with the topic";
+
+      if (existing) {
+        existing.profile_similarity = Math.max(
+          Number(existing.profile_similarity || 0),
+          Number(row.profile_similarity || 0),
+        );
+        existing.profile_concept_score = Math.max(Number(existing.profile_concept_score || 0), profileConcept);
+        existing.profile_authority_score = Math.max(Number(existing.profile_authority_score || 0), profileAuthority);
+        existing.exact_profile_evidence_score = Math.max(Number(existing.exact_profile_evidence_score || 0), exactProfileEvidence);
+        existing.paper_similarity = Math.max(
+          Number(existing.paper_similarity || 0),
+          ...topicalPapers.map(paper => Number(paper.raw_similarity || 0)),
+          0,
+        );
+        existing.paper_depth_score = Math.max(
+          Number(existing.paper_depth_score || 0),
+          Number(row.paper_depth_score || 0),
+        );
+        existing.topical_retrieval_score = Math.max(
+          Number(existing.topical_retrieval_score || 0),
+          topicalRetrievalScore,
+        );
+        existing.topic_similarity = Math.max(Number(existing.topic_similarity || 0), topicSimilarity);
+        existing.topic_evidence = topicLabel
+          ? topicEvidence
+          : existing.topic_evidence || topicEvidence;
+        existing.openalex_topics = mergeOpenAlexTopics(existing.openalex_topics, row.openalex_topics);
+        existing.papers = mergePaperSummaries(
+          topicalPapers,
+          ((existing.papers as Record<string, unknown>[]) || []),
+        );
+        existing.profile_evidence = [
+          ...new Set([
+            ...(((existing.profile_evidence as string[]) || [])),
+            ...profileEvidence,
+          ]),
+        ].slice(0, 3);
+        existing.match_reason = topicLabel
+          ? `Matched through the ${topicLabel} paper theme, individual publications, and profile evidence.`
+          : "Matched through individual publications and profile evidence for this topic.";
+      } else {
+        merged.set(researcherId, {
+          ...row,
+          similarity: topicalRetrievalScore,
+          profile_similarity: Number(row.profile_similarity || 0),
+          profile_concept_score: profileConcept,
+          profile_authority_score: profileAuthority,
+          exact_profile_evidence_score: exactProfileEvidence,
+          current_query: searchQuery,
+          profile_evidence: profileEvidence,
+          paper_similarity: Math.max(...topicalPapers.map(paper => Number(paper.raw_similarity || 0)), 0),
+          paper_depth_score: Number(row.paper_depth_score || 0),
+          topical_retrieval_score: topicalRetrievalScore,
+          topic_similarity: topicSimilarity,
+          topic_evidence: topicEvidence,
+          openalex_topics: mergeOpenAlexTopics(row.openalex_topics),
+          papers: topicalPapers,
+          match_reason: topicLabel
+            ? `Matched through the ${topicLabel} paper theme and individual publications.`
+            : "Matched through individual publications for this topic.",
         });
       }
     }
@@ -6247,9 +7158,35 @@ Deno.serve(async req => {
       }
     }
 
-    const researcherIds = [...merged.keys()];
-    if (researcherIds.length > 0) {
-      const paperRows = await fetchPapersForResearchers(supabase, researcherIds);
+    if (isTopicalSearch && merged.size > 0) {
+      const openAlexTopicsByResearcher = await fetchOpenAlexTopicsForResearchers(
+        supabase,
+        [...merged.keys()],
+        searchQuery,
+      );
+      for (const [researcherId, row] of merged.entries()) {
+        const topics = mergeOpenAlexTopics(
+          row.openalex_topics,
+          openAlexTopicsByResearcher.get(researcherId) || [],
+        );
+        row.openalex_topics = topics;
+        const bestRelevantTopic = topics.find(topic => Number(topic.relevance || 0) >= 0.18);
+        if (!bestRelevantTopic) continue;
+        row.topic_similarity = Math.max(
+          Number(row.topic_similarity || 0),
+          Number(bestRelevantTopic.relevance || 0),
+        );
+        row.topic_evidence = `OpenAlex paper topic: ${bestRelevantTopic.label}`;
+      }
+    }
+
+    const researcherIdsNeedingPapers = isTopicalSearch
+      ? []
+      : [...merged.entries()]
+        .filter(([, row]) => (((row.papers as Record<string, unknown>[]) || []).length === 0))
+        .map(([researcherId]) => researcherId);
+    if (researcherIdsNeedingPapers.length > 0) {
+      const paperRows = await fetchPapersForResearchers(supabase, researcherIdsNeedingPapers);
       const papersByResearcher = new Map<string, Record<string, unknown>[]>();
 
       for (const paper of paperRows) {
@@ -6291,10 +7228,12 @@ Deno.serve(async req => {
     }
 
     const candidates = [...merged.values()].map(row => {
-      const profileSimilarity = Number(row.profile_similarity || row.similarity || 0);
+      const profileSimilarity = Number(row.profile_similarity ?? row.similarity ?? 0);
       const profileConcept = Number(row.profile_concept_score || 0);
       const profileAuthority = Number(row.profile_authority_score || 0);
       const exactProfileEvidence = Number(row.exact_profile_evidence_score || 0);
+      const topicalRetrievalScore = Number(row.topical_retrieval_score || 0);
+      const topicSimilarity = Number(row.topic_similarity || 0);
       const paperSimilarities = ((row.papers as Record<string, unknown>[]) || [])
         .map(paper => Number(paper.raw_similarity || 0))
         .filter(Boolean)
@@ -6304,7 +7243,10 @@ Deno.serve(async req => {
       const paperEvidenceCount = ((row.papers as Record<string, unknown>[]) || [])
         .filter(paper => Number(paper.relevance_score || 0) >= 0.55)
         .length;
-      const paperDepthScore = Math.min(1, paperEvidenceCount / 4);
+      const paperDepthScore = Math.max(
+        Number(row.paper_depth_score || 0),
+        Math.min(1, paperEvidenceCount / 4),
+      );
       const methodDomainScore = methodDomainEvidenceScore(row, groups);
       const profileDrivenScore = (
         profileAuthority * 0.62
@@ -6324,6 +7266,14 @@ Deno.serve(async req => {
       const exactEvidenceRescueScore = exactProfileEvidence > 0
         ? exactProfileEvidence * 0.72 + profileAuthority * 0.16 + profileConcept * 0.12
         : 0;
+      const topicalEvidenceScore = topicalRetrievalScore > 0
+        ? topicalRetrievalScore * 0.48
+          + bestPaperSimilarity * 0.2
+          + topPaperAverage * 0.08
+          + paperDepthScore * 0.1
+          + topicSimilarity * 0.1
+          + Math.max(profileAuthority, profileConcept) * 0.04
+        : 0;
       const methodDomainCap = groups.hasMethodIntent && groups.domainTerms.length > 0
         ? methodDomainScore >= 1
           ? 1
@@ -6332,7 +7282,7 @@ Deno.serve(async req => {
             : 0.36
         : 1;
       const combinedSimilarity = Math.min(
-        Math.max(profileDrivenScore, balancedEvidenceScore, exactEvidenceRescueScore),
+        Math.max(profileDrivenScore, balancedEvidenceScore, exactEvidenceRescueScore, topicalEvidenceScore),
         methodDomainCap,
       );
       const profileEvidence = ((row.profile_evidence as string[]) || []).slice(0, 3);
@@ -6348,6 +7298,8 @@ Deno.serve(async req => {
         profile_evidence: profileEvidence,
         paper_similarity: bestPaperSimilarity,
         paper_depth_score: paperDepthScore,
+        topical_retrieval_score: topicalRetrievalScore,
+        topic_similarity: topicSimilarity,
         method_domain_evidence_score: methodDomainScore,
         match_reason: buildMatchReason(row, profileEvidence),
       };
@@ -6360,7 +7312,7 @@ Deno.serve(async req => {
     const sortedCandidates = candidates
       .sort((a, b) => Number(b.combined_similarity || 0) - Number(a.combined_similarity || 0));
 
-    const llmPoolSize = 50;
+    const llmPoolSize = isTopicalSearch ? 75 : 50;
     const llmPool = sortedCandidates.slice(0, llmPoolSize);
     const llmPoolIds = llmPool
       .map(row => String(row.researcher_id || ""))
@@ -6385,7 +7337,7 @@ Deno.serve(async req => {
     const llmReranks = enableRerank
       ? await rerankCandidatesWithLlm(openAiKey, rankingModel, originalQuery || query, mission, llmPool, searchUsage)
       : new Map<string, RerankedCandidate>();
-    const rankedCandidates = enableRerank && llmReranks.size > 0
+    const rerankedPool = enableRerank && llmReranks.size > 0
       ? llmPool
         .map((row, index) => {
           const returnedRerank = llmReranks.get(String(row.researcher_id || ""));
@@ -6461,22 +7413,61 @@ Deno.serve(async req => {
           if (scoreDiff !== 0) return scoreDiff;
           return Number(a.llm_rank_index || 0) - Number(b.llm_rank_index || 0);
         })
+      : [];
+    const llmPoolIdSet = new Set(llmPoolIds);
+    const retrievalTail = enableRerank && llmReranks.size > 0
+      ? sortedCandidates
+        .filter(row => !llmPoolIdSet.has(String(row.researcher_id || "")))
+        .map((row, index) => {
+          const retrievalScore = retrievalCandidateScore(
+            row,
+            llmPoolSize + index,
+            minCombinedScore,
+            maxCombinedScore,
+            groups,
+            searchStrategy,
+          );
+          return {
+            ...row,
+            retrieval_rank_score: retrievalScore,
+            llm_match_type: matchTypeForScore(retrievalScore),
+            llm_rank_index: llmPoolSize + index,
+            similarity: retrievalScore / 100,
+          };
+        })
+      : [];
+    const rankedCandidates = enableRerank && llmReranks.size > 0
+      ? [...rerankedPool, ...retrievalTail].sort((a, b) => {
+        const scoreA = Number(a.llm_rerank_score ?? a.retrieval_rank_score ?? 0);
+        const scoreB = Number(b.llm_rerank_score ?? b.retrieval_rank_score ?? 0);
+        const scoreDiff = scoreB - scoreA;
+        if (scoreDiff !== 0) return scoreDiff;
+        return Number(a.llm_rank_index || 0) - Number(b.llm_rank_index || 0);
+      })
       : sortedCandidates;
 
     const results = rankedCandidates
       .map((row, index) => {
+        const publicRow: Record<string, unknown> = { ...row };
+        delete publicRow.all_paper_records;
+        delete publicRow.all_paper_evidence;
+        delete publicRow.all_paper_titles;
+        delete publicRow.all_paper_total_count;
+        delete publicRow.document_text;
+        delete publicRow.current_query;
         if (enableRerank && llmReranks.size > 0) {
+          const finalScore = Number(row.llm_rerank_score ?? row.retrieval_rank_score ?? 0);
           return {
-            ...row,
-            similarity: Math.max(0.01, Math.min(0.99, Number(row.llm_rerank_score || 0) / 100)),
+            ...publicRow,
+            similarity: Math.max(0.01, Math.min(0.99, finalScore / 100)),
           };
         }
         const evidenceScore = normalise(Number(row.combined_similarity || 0), minCombinedScore, maxCombinedScore, 0.45, 0.98);
         const rankScore = Math.max(0.45, 0.98 - Math.log2(index + 1) * 0.08);
         return {
-        ...row,
-        similarity: evidenceScore * 0.45 + rankScore * 0.55,
-      };
+          ...publicRow,
+          similarity: evidenceScore * 0.45 + rankScore * 0.55,
+        };
       })
       .slice(0, limit);
 
@@ -6504,6 +7495,10 @@ Deno.serve(async req => {
       estimated_cost_usd: Number(usageJson.estimated_cost_usd || 0),
       metadata: {
         rerank_returned: llmReranks.size,
+        search_strategy: searchStrategy,
+        topical_candidate_count: topicalMatches.length,
+        openalex_topic_candidate_count: (openAlexTopicResponse.data || []).length,
+        retrieval_tail_count: retrievalTail.length,
       },
     });
 
@@ -6511,6 +7506,7 @@ Deno.serve(async req => {
       results,
       original_query: originalQuery || query,
       expanded_query: searchQuery,
+      search_strategy: searchStrategy,
     }, { headers: corsHeaders });
   } catch (error) {
     const message = error instanceof Error

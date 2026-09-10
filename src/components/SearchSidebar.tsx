@@ -398,7 +398,7 @@ export default function SearchSidebar({
         {/* Keywords Filter */}
         <FilterSection
           title="Keywords"
-          help="These keywords are extracted from the current results' profiles, fields, and publication titles."
+          help="These keywords are extracted from the current results' profiles, fields, publication titles, and OpenAlex paper topics."
           expanded={expandedSections.keywords}
           onToggle={() => toggleSection("keywords")}
         >

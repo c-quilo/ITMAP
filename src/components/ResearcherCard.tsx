@@ -7,6 +7,7 @@ interface ResearcherCardProps {
   researcher: Researcher;
   bookmarked?: boolean;
   onToggleBookmark?: (researcher: Researcher) => void;
+  onOpenProfile?: (researcher: Researcher) => void;
   showMatchExplanation?: boolean;
 }
 
@@ -135,6 +136,7 @@ export default function ResearcherCard({
   researcher,
   bookmarked = false,
   onToggleBookmark,
+  onOpenProfile,
   showMatchExplanation = true,
 }: ResearcherCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -151,7 +153,20 @@ export default function ResearcherCard({
             <span className="text-xs font-semibold text-primary">{researcher.imageInitials}</span>
           </div>
           <div className="min-w-0">
-            <h3 className="font-brand text-base font-semibold text-foreground leading-tight">{researcher.name}</h3>
+            <h3 className="font-brand text-base font-semibold leading-tight">
+              {onOpenProfile ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenProfile(researcher)}
+                  className="text-left text-foreground underline-offset-4 transition-colors hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                  title={`Open ${researcher.name}'s researcher profile`}
+                >
+                  {researcher.name}
+                </button>
+              ) : (
+                <span className="text-foreground">{researcher.name}</span>
+              )}
+            </h3>
             <p className="text-xs text-muted-foreground">{researcher.title}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{researcher.department} · {researcher.faculty}</p>
             {researcher.savedFromMission && (

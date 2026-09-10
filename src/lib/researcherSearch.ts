@@ -1,4 +1,4 @@
-import { MOCK_RESEARCHERS, type ExternalEvidence, type Publication, type Researcher } from "@/data/mockData";
+import { MOCK_RESEARCHERS, type ExternalEvidence, type OpenAlexTopicEvidence, type Publication, type Researcher } from "@/data/mockData";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 
 export const FALLBACK_KEYWORD_SUGGESTIONS = [
@@ -52,6 +52,28 @@ export interface ResearchPoolSummary {
     reason: string;
   }>;
   gaps: string[];
+  topicLandscape: ResearchPoolTopic[];
+}
+
+export interface ResearchPoolChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ResearchPoolQuestionAnswer {
+  answer: string;
+  evidenceTitles: string[];
+  caveat: string;
+}
+
+export interface ResearchPoolTopic {
+  label: string;
+  description: string;
+  researcherCount: number;
+  paperCount: number;
+  recentPaperCount: number;
+  emerging: boolean;
+  relevance: number;
 }
 
 export interface ResearcherSuggestion {
@@ -303,12 +325,21 @@ export interface QuickSearchResult {
 }
 
 export type OrganizationKind = "department" | "institute" | "school" | "faculty" | "centre" | "laboratory" | "unit";
+export type OrganizationGroupKey = "engineering" | "medicine" | "natural-sciences" | "business-school" | "education" | "cross-college" | "other";
+export type OrganizationScope = "faculty" | "department-hosted" | "cross-college" | "education" | "top-level-school" | "unclassified";
 
 export interface OrganizationSuggestion {
   name: string;
   kind: OrganizationKind;
   researcherCount: number;
   score: number;
+  groupKey: OrganizationGroupKey;
+  groupName: string;
+  groupResearcherCount: number;
+  groupUnitCount: number;
+  parentName: string;
+  scope: OrganizationScope;
+  officialUrl: string;
 }
 
 export interface OrganizationThemeEvidencePaper {
@@ -398,6 +429,11 @@ export interface OrganizationProfile {
   organization: {
     name: string;
     kind: OrganizationKind;
+    groupKey: OrganizationGroupKey;
+    groupName: string;
+    parentName: string;
+    scope: OrganizationScope;
+    officialUrl: string;
     researcherCount: number;
     researchersWithTopics: number;
     uniquePaperCount: number;
@@ -550,6 +586,22 @@ interface SupabaseExternalEvidence {
   url?: string | null;
 }
 
+interface SupabaseOpenAlexTopic {
+  openalex_topic_id?: string | null;
+  label?: string | null;
+  description?: string | null;
+  keywords?: string[] | null;
+  domain_name?: string | null;
+  field_name?: string | null;
+  subfield_name?: string | null;
+  topic_strength?: number | null;
+  paper_count?: number | null;
+  recent_paper_count?: number | null;
+  latest_year?: number | null;
+  trend?: string | null;
+  relevance?: number | null;
+}
+
 interface SupabaseResearcher {
   researcher_id: string;
   openalex_id?: string | null;
@@ -574,6 +626,7 @@ interface SupabaseResearcher {
   match_reason?: string | null;
   papers?: SupabasePublication[] | null;
   external_evidence?: SupabaseExternalEvidence[] | null;
+  openalex_topics?: SupabaseOpenAlexTopic[] | null;
 }
 
 function initials(name: string) {
@@ -593,7 +646,15 @@ function splitKeywords(value?: string | null) {
     .slice(0, 8);
 }
 
-function normaliseDepartment(value?: string | null) {
+const CANONICAL_CENTRE_NAMES = new Map([
+  ["centre for en", "Centre for Engagement and Simulation Science"],
+  ["centre for he", "Centre for Health Economics and Policy Innovation"],
+  ["centre for hi", "Centre for Higher Education Research and Scholarship"],
+  ["centre for la", "Centre for Languages, Culture and Communication"],
+  ["centre for po", "Centre for Population Biology"],
+]);
+
+export function normaliseDepartment(value?: string | null) {
   const department = String(value || "").trim();
   if (department.toLowerCase() === "institute for climate change") {
     return "Grantham Institute for Climate Change";
@@ -607,7 +668,18 @@ function normaliseDepartment(value?: string | null) {
   if (/\bnational heart and lung institute\b/.test(departmentKey)) {
     return "National Heart & Lung Institute";
   }
+  const canonicalCentre = CANONICAL_CENTRE_NAMES.get(departmentKey);
+  if (canonicalCentre) return canonicalCentre;
   return department || "Imperial College London";
+}
+
+const MEDIA_GUIDE_BOILERPLATE = /\s*MEDIA\s+GUIDE\s+Members of the media are welcome to contact me about my research and areas of expertise\.?/gi;
+
+export function cleanResearcherTitle(value: unknown) {
+  return String(value || "")
+    .replace(MEDIA_GUIDE_BOILERPLATE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function toPublication(pub: SupabasePublication): Publication {
@@ -655,6 +727,27 @@ function toExternalEvidence(item: SupabaseExternalEvidence): ExternalEvidence | 
   };
 }
 
+function toOpenAlexTopic(item: SupabaseOpenAlexTopic): OpenAlexTopicEvidence | null {
+  const label = item.label?.trim();
+  if (!label) return null;
+
+  return {
+    openalexTopicId: item.openalex_topic_id || undefined,
+    label,
+    description: item.description || undefined,
+    keywords: Array.isArray(item.keywords) ? item.keywords.map(String).filter(Boolean).slice(0, 12) : [],
+    domain: item.domain_name || undefined,
+    field: item.field_name || undefined,
+    subfield: item.subfield_name || undefined,
+    topicStrength: Math.max(0, Number(item.topic_strength || 0)),
+    paperCount: Math.max(0, Number(item.paper_count || 0)),
+    recentPaperCount: Math.max(0, Number(item.recent_paper_count || 0)),
+    latestYear: item.latest_year ?? null,
+    trend: item.trend || "stable",
+    relevance: Math.max(0, Math.min(1, Number(item.relevance || 0))),
+  };
+}
+
 function toResearcher(row: SupabaseResearcher): Researcher {
   const similarity = typeof row.similarity === "number" ? row.similarity : 0;
   const keywords = splitKeywords(row.fields_of_research);
@@ -666,7 +759,7 @@ function toResearcher(row: SupabaseResearcher): Researcher {
     profileUrl: row.profile_url || undefined,
     email: row.email || undefined,
     name: row.full_name,
-    title: row.position_name || row.position || "Imperial researcher",
+    title: cleanResearcherTitle(row.position_name || row.position) || "Imperial researcher",
     department: normaliseDepartment(row.affiliation),
     faculty: row.faculty || "Imperial College London",
     summary: summary || row.fields_of_research || "Profile and publication metadata available in the search index.",
@@ -687,6 +780,9 @@ function toResearcher(row: SupabaseResearcher): Researcher {
     externalEvidence: (row.external_evidence || [])
       .map(toExternalEvidence)
       .filter((item): item is ExternalEvidence => Boolean(item)),
+    openAlexTopics: (row.openalex_topics || [])
+      .map(toOpenAlexTopic)
+      .filter((item): item is OpenAlexTopicEvidence => Boolean(item)),
     publications: (row.papers || []).map(toPublication),
     imageInitials: initials(row.full_name),
     role: "lecturer",
@@ -734,7 +830,7 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
       original_query: payload.originalQuery || payload.query,
       mode: payload.mode,
       filters: payload.filters,
-      limit: 50,
+      limit: 200,
       enable_rerank: payload.mode === "semantic" ? true : payload.enableRerank ?? false,
       include_external_evidence: payload.includeExternalEvidence ?? false,
     },
@@ -823,11 +919,53 @@ export async function suggestResearchers(query: string): Promise<ResearcherSugge
     researcherId: String(row.researcher_id || ""),
     openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
     name: String(row.full_name || ""),
-    title: String(row.title || "Imperial researcher"),
+    title: cleanResearcherTitle(row.title) || "Imperial researcher",
     department: normaliseDepartment(String(row.department || "")),
     faculty: String(row.faculty || "Imperial College London"),
     score: Number(row.score || 0),
   })).filter(row => row.researcherId && row.name);
+}
+
+const ORGANIZATION_GROUP_KEYS = new Set<OrganizationGroupKey>([
+  "engineering",
+  "medicine",
+  "natural-sciences",
+  "business-school",
+  "education",
+  "cross-college",
+  "other",
+]);
+
+const ORGANIZATION_SCOPES = new Set<OrganizationScope>([
+  "faculty",
+  "department-hosted",
+  "cross-college",
+  "education",
+  "top-level-school",
+  "unclassified",
+]);
+
+function toOrganizationSuggestion(row: Record<string, unknown>): OrganizationSuggestion {
+  const groupKey = ORGANIZATION_GROUP_KEYS.has(String(row.group_key) as OrganizationGroupKey)
+    ? String(row.group_key) as OrganizationGroupKey
+    : "other";
+  const scope = ORGANIZATION_SCOPES.has(String(row.scope) as OrganizationScope)
+    ? String(row.scope) as OrganizationScope
+    : "unclassified";
+  const researcherCount = Number(row.researcher_count || 0);
+  return {
+    name: String(row.name || ""),
+    kind: String(row.kind || "unit") as OrganizationKind,
+    researcherCount,
+    score: Number(row.score || 0),
+    groupKey,
+    groupName: String(row.group_name || "Other Imperial units"),
+    groupResearcherCount: Number(row.group_researcher_count || researcherCount),
+    groupUnitCount: Number(row.group_unit_count || 1),
+    parentName: String(row.parent_name || "Imperial College London"),
+    scope,
+    officialUrl: String(row.official_url || "https://www.imperial.ac.uk/faculties-and-departments/"),
+  };
 }
 
 export async function suggestOrganizations(query: string): Promise<OrganizationSuggestion[]> {
@@ -846,12 +984,7 @@ export async function suggestOrganizations(query: string): Promise<OrganizationS
 
   const rows = Array.isArray(data?.suggestions) ? data.suggestions : [];
   return rows
-    .map((row: Record<string, unknown>) => ({
-      name: String(row.name || ""),
-      kind: String(row.kind || "unit") as OrganizationKind,
-      researcherCount: Number(row.researcher_count || 0),
-      score: Number(row.score || 0),
-    }))
+    .map((row: Record<string, unknown>) => toOrganizationSuggestion(row))
     .filter((row: OrganizationSuggestion) => row.name);
 }
 
@@ -866,12 +999,7 @@ export async function listOrganizations(): Promise<OrganizationSuggestion[]> {
 
   const rows = Array.isArray(data?.organizations) ? data.organizations : [];
   return rows
-    .map((row: Record<string, unknown>) => ({
-      name: String(row.name || ""),
-      kind: String(row.kind || "unit") as OrganizationKind,
-      researcherCount: Number(row.researcher_count || 0),
-      score: Number(row.score || 0),
-    }))
+    .map((row: Record<string, unknown>) => toOrganizationSuggestion(row))
     .filter((row: OrganizationSuggestion) => row.name);
 }
 
@@ -932,6 +1060,10 @@ export async function getOrganizationProfile(organizationName: string): Promise<
   const organization = data?.organization && typeof data.organization === "object"
     ? data.organization as Record<string, unknown>
     : {};
+  const organizationMetadata = toOrganizationSuggestion({
+    ...organization,
+    name: organization.name || organizationName,
+  });
   const themes = Array.isArray(data?.themes) ? data.themes : [];
   const emergingThemes = Array.isArray(data?.emerging_themes) ? data.emerging_themes : [];
   const researchers = Array.isArray(data?.researchers) ? data.researchers : [];
@@ -939,6 +1071,11 @@ export async function getOrganizationProfile(organizationName: string): Promise<
     organization: {
       name: String(organization.name || organizationName),
       kind: String(organization.kind || "unit") as OrganizationKind,
+      groupKey: organizationMetadata.groupKey,
+      groupName: organizationMetadata.groupName,
+      parentName: organizationMetadata.parentName,
+      scope: organizationMetadata.scope,
+      officialUrl: organizationMetadata.officialUrl,
       researcherCount: Number(organization.researcher_count || researchers.length || 0),
       researchersWithTopics: Number(organization.researchers_with_topics || 0),
       uniquePaperCount: Number(organization.paper_count || 0),
@@ -960,7 +1097,7 @@ export async function getOrganizationProfile(organizationName: string): Promise<
         openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
         profileUrl: row.profile_url ? String(row.profile_url) : undefined,
         name: String(row.full_name || ""),
-        title: String(row.title || "Imperial researcher"),
+        title: cleanResearcherTitle(row.title) || "Imperial researcher",
         department: normaliseDepartment(String(row.department || "")),
         faculty: String(row.faculty || "Imperial College London"),
         fieldsOfResearch: String(row.fields_of_research || ""),
@@ -1066,7 +1203,7 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
     profileUrl: row.profile_url ? String(row.profile_url) : undefined,
     email: row.email ? String(row.email) : undefined,
     name: String(row.full_name || "Imperial researcher"),
-    title: String(row.position_name || row.position || "Imperial researcher"),
+    title: cleanResearcherTitle(row.position_name || row.position) || "Imperial researcher",
     department: normaliseDepartment(String(row.affiliation || research || "")),
     faculty: String(row.faculty || "Imperial College London"),
     summary: String(row.profile_summary || profile || research || row.fields_of_research || ""),
@@ -1084,7 +1221,7 @@ export async function getResearcherProfile(researcherId: string): Promise<Resear
         latestYear: coauthor.latest_year === null || coauthor.latest_year === undefined ? null : Number(coauthor.latest_year),
         isImperialProfile: Boolean(coauthor.is_imperial_profile),
         imperialResearcherId: coauthor.imperial_researcher_id ? String(coauthor.imperial_researcher_id) : null,
-        imperialTitle: String(coauthor.imperial_title || ""),
+        imperialTitle: cleanResearcherTitle(coauthor.imperial_title),
         imperialDepartment: normaliseDepartment(String(coauthor.imperial_department || "")),
         imperialFaculty: String(coauthor.imperial_faculty || ""),
         paperTitles: Array.isArray(coauthor.paper_titles)
@@ -1180,7 +1317,7 @@ export async function getResearcherNetwork(
       openalexId: String(focal.openalex_id || ""),
       profileUrl: focal.profile_url ? String(focal.profile_url) : undefined,
       name: String(focal.name || "Imperial researcher"),
-      title: String(focal.title || "Imperial researcher"),
+      title: cleanResearcherTitle(focal.title) || "Imperial researcher",
       department: normaliseDepartment(String(focal.department || "")),
       faculty: String(focal.faculty || "Imperial College London"),
     },
@@ -1199,7 +1336,7 @@ export async function getResearcherNetwork(
         isImperialProfile: Boolean(connection.is_imperial_profile),
         imperialResearcherId: connection.imperial_researcher_id ? String(connection.imperial_researcher_id) : null,
         imperialProfileUrl: connection.imperial_profile_url ? String(connection.imperial_profile_url) : null,
-        imperialTitle: String(connection.imperial_title || ""),
+        imperialTitle: cleanResearcherTitle(connection.imperial_title),
         imperialDepartment: normaliseDepartment(String(connection.imperial_department || "")),
         imperialFaculty: String(connection.imperial_faculty || ""),
         paperTitles: Array.isArray(connection.paper_titles)
@@ -1238,7 +1375,7 @@ export async function getResearcherConnection(
         isImperialProfile: true,
         researcherId: researcher.id,
         profileUrl: researcher.profileUrl,
-        title: researcher.title,
+        title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
         department: normaliseDepartment(researcher.department),
         faculty: researcher.faculty,
         institutions: [],
@@ -1272,7 +1409,7 @@ export async function getResearcherConnection(
     isImperialProfile: Boolean(node?.is_imperial_profile),
     researcherId: node?.researcher_id ? String(node.researcher_id) : null,
     profileUrl: node?.profile_url ? String(node.profile_url) : null,
-    title: String(node?.title || ""),
+    title: cleanResearcherTitle(node?.title),
     department: node?.department ? normaliseDepartment(String(node.department)) : "",
     faculty: String(node?.faculty || ""),
     institutions: Array.isArray(node?.institutions) ? node.institutions.map(String).filter(Boolean).slice(0, 6) : [],
@@ -1391,7 +1528,7 @@ export async function getCollaborationOpportunities(
       openalexId: source.openalex_id ? String(source.openalex_id) : undefined,
       profileUrl: source.profile_url ? String(source.profile_url) : undefined,
       name: String(source.full_name || "Imperial researcher"),
-      title: String(source.title || "Imperial researcher"),
+      title: cleanResearcherTitle(source.title) || "Imperial researcher",
       department: normaliseDepartment(String(source.department || "")),
       faculty: String(source.faculty || "Imperial College London"),
       score: 1,
@@ -1402,7 +1539,7 @@ export async function getCollaborationOpportunities(
       profileUrl: row.profile_url ? String(row.profile_url) : null,
       openalexId: row.openalex_id ? String(row.openalex_id) : null,
       name: String(row.full_name || "Imperial researcher"),
-      title: String(row.title || "Imperial researcher"),
+      title: cleanResearcherTitle(row.title) || "Imperial researcher",
       department: normaliseDepartment(String(row.department || "")),
       faculty: String(row.faculty || "Imperial College London"),
       sharedTopicCount: Number(row.shared_topic_count || 0),
@@ -1520,19 +1657,14 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
         openalexId: researcher.openalex_id ? String(researcher.openalex_id) : undefined,
         profileUrl: researcher.profile_url ? String(researcher.profile_url) : undefined,
         name: String(researcher.full_name || ""),
-        title: String(researcher.title || "Imperial researcher"),
+        title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
         department: normaliseDepartment(String(researcher.department || "")),
         faculty: String(researcher.faculty || "Imperial College London"),
         score: Number(researcher.score || 0),
       }
       : undefined,
     organization: organization
-      ? {
-        name: String(organization.name || ""),
-        kind: String(organization.kind || "unit") as OrganizationKind,
-        researcherCount: Number(organization.researcher_count || 0),
-        score: Number(organization.score || 0),
-      }
+      ? toOrganizationSuggestion(organization)
       : undefined,
     suggestions: suggestions
       .map((row: Record<string, unknown>) => ({
@@ -1540,7 +1672,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
         openalexId: row.openalex_id ? String(row.openalex_id) : undefined,
         profileUrl: row.profile_url ? String(row.profile_url) : undefined,
         name: String(row.full_name || ""),
-        title: String(row.title || "Imperial researcher"),
+        title: cleanResearcherTitle(row.title) || "Imperial researcher",
         department: normaliseDepartment(String(row.department || "")),
         faculty: String(row.faculty || "Imperial College London"),
         score: Number(row.score || 0),
@@ -1584,7 +1716,7 @@ export async function matchSchoolMissions(query: string, researchers: Researcher
       researchers: researchers.slice(0, 20).map(researcher => ({
         id: researcher.id,
         name: researcher.name,
-        title: researcher.title,
+        title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
         department: researcher.department,
         faculty: researcher.faculty,
         summary: researcher.summary,
@@ -1616,7 +1748,67 @@ export async function matchSchoolMissions(query: string, researchers: Researcher
     .filter(row => row.researcherId && row.school && row.mission);
 }
 
+export function buildResearchPoolTopicLandscape(researchers: Researcher[]): ResearchPoolTopic[] {
+  const topics = new Map<string, {
+    label: string;
+    description: string;
+    researcherIds: Set<string>;
+    paperCount: number;
+    recentPaperCount: number;
+    emergingCount: number;
+    relevanceTotal: number;
+    relevanceCount: number;
+  }>();
+
+  for (const researcher of researchers) {
+    const seenForResearcher = new Set<string>();
+    for (const topic of researcher.openAlexTopics || []) {
+      if (!topic.label || topic.relevance < 0.18) continue;
+      const key = (topic.openalexTopicId || topic.label).toLowerCase();
+      if (seenForResearcher.has(key)) continue;
+      seenForResearcher.add(key);
+      const current = topics.get(key) || {
+        label: topic.label,
+        description: topic.description || "",
+        researcherIds: new Set<string>(),
+        paperCount: 0,
+        recentPaperCount: 0,
+        emergingCount: 0,
+        relevanceTotal: 0,
+        relevanceCount: 0,
+      };
+      current.researcherIds.add(researcher.id);
+      current.paperCount += topic.paperCount;
+      current.recentPaperCount += topic.recentPaperCount;
+      current.emergingCount += topic.trend === "emerging" ? 1 : 0;
+      current.relevanceTotal += topic.relevance;
+      current.relevanceCount += 1;
+      if (!current.description && topic.description) current.description = topic.description;
+      topics.set(key, current);
+    }
+  }
+
+  return [...topics.values()]
+    .map(topic => ({
+      label: topic.label,
+      description: topic.description,
+      researcherCount: topic.researcherIds.size,
+      paperCount: topic.paperCount,
+      recentPaperCount: topic.recentPaperCount,
+      emerging: topic.emergingCount > 0,
+      relevance: topic.relevanceCount > 0 ? topic.relevanceTotal / topic.relevanceCount : 0,
+    }))
+    .sort((a, b) =>
+      b.researcherCount - a.researcherCount
+      || b.relevance - a.relevance
+      || b.paperCount - a.paperCount
+      || a.label.localeCompare(b.label)
+    )
+    .slice(0, 10);
+}
+
 export async function summarizeResearchPool(query: string, researchers: Researcher[]): Promise<ResearchPoolSummary> {
+  const topicLandscape = buildResearchPoolTopicLandscape(researchers);
   if (!hasSupabaseConfig || !supabase || researchers.length === 0) {
     return {
       headline: "No summary available",
@@ -1624,6 +1816,7 @@ export async function summarizeResearchPool(query: string, researchers: Research
       themes: [],
       notableResearchers: [],
       gaps: [],
+      topicLandscape,
     };
   }
 
@@ -1631,16 +1824,17 @@ export async function summarizeResearchPool(query: string, researchers: Research
     body: {
       action: "summarize_pool",
       query,
-      researchers: researchers.slice(0, 20).map(researcher => ({
+      researchers: researchers.slice(0, 80).map(researcher => ({
         id: researcher.id,
         name: researcher.name,
-        title: researcher.title,
+        title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
         department: researcher.department,
         faculty: researcher.faculty,
         summary: researcher.summary,
         keywords: researcher.keywords,
         match_reason: researcher.semanticExplanation,
         publications: researcher.publications.slice(0, 10).map(publication => publication.title),
+        openalex_topics: (researcher.openAlexTopics || []).slice(0, 8).map(topic => topic.label),
         external_evidence: (researcher.externalEvidence || []).slice(0, 4).map(item => ({
           title: item.title,
           evidence_type: item.evidenceType,
@@ -1669,5 +1863,54 @@ export async function summarizeResearchPool(query: string, researchers: Research
         .slice(0, 6)
       : [],
     gaps: Array.isArray(summary.gaps) ? summary.gaps.map(String).slice(0, 4) : [],
+    topicLandscape,
+  };
+}
+
+export async function askResearchPoolQuestion(
+  searchQuery: string,
+  question: string,
+  researchers: Researcher[],
+  summary: ResearchPoolSummary,
+  conversation: ResearchPoolChatMessage[] = [],
+): Promise<ResearchPoolQuestionAnswer> {
+  if (!hasSupabaseConfig || !supabase || researchers.length === 0) {
+    throw new Error("The result chat is unavailable until Supabase is configured.");
+  }
+
+  const { data, error } = await supabase.functions.invoke("search-researchers", {
+    body: {
+      action: "research_pool_question",
+      query: question,
+      original_query: searchQuery,
+      pool_summary: {
+        headline: summary.headline,
+        summary: summary.summary,
+        themes: summary.themes,
+        notable_researchers: summary.notableResearchers,
+        gaps: summary.gaps,
+      },
+      conversation: conversation.slice(-6),
+      researchers: researchers.slice(0, 80).map(researcher => ({
+        id: researcher.id,
+        name: researcher.name,
+        title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
+        department: researcher.department,
+        faculty: researcher.faculty,
+        summary: researcher.summary,
+        keywords: researcher.keywords,
+        match_reason: researcher.semanticExplanation,
+        publications: researcher.publications.slice(0, 10).map(publication => publication.title),
+        openalex_topics: (researcher.openAlexTopics || []).slice(0, 8).map(topic => topic.label),
+      })),
+    },
+  });
+
+  if (error) throw new Error(error.message);
+
+  return {
+    answer: String(data?.answer || "I could not answer that from the current search results."),
+    evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String).slice(0, 8) : [],
+    caveat: String(data?.caveat || ""),
   };
 }

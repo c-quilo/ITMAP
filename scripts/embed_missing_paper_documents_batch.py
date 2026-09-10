@@ -29,6 +29,11 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--researcher-openalex-id", action="append", default=[])
     parser.add_argument("--researcher-openalex-id-file", type=Path)
+    parser.add_argument(
+        "--paper-import-state",
+        type=Path,
+        help="Only process researcher/work pairs recorded by a completed paper import.",
+    )
     parser.add_argument("--reset-cursor", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -141,6 +146,43 @@ def existing_doc_ids(paper_ids: list[str]) -> set[str]:
     return existing
 
 
+def load_imported_work_pairs(path: Path) -> set[tuple[str, str]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    pairs = set()
+    for key in data.get("completed_work_keys", []):
+        researcher_id, separator, work_id = str(key).partition(":")
+        if separator and researcher_id and work_id:
+            pairs.add((researcher_id, work_id))
+    return pairs
+
+
+def load_imported_papers(imported_pairs: set[tuple[str, str]]) -> list[dict]:
+    work_ids = sorted({work_id for _, work_id in imported_pairs})
+    rows_by_id = {}
+    for work_id_batch in chunks(work_ids, 100):
+        offset = 0
+        while True:
+            query = {
+                "select": "id,researcher_id,title,abstract,source_display_name,openalex_work_id",
+                "openalex_work_id": f"in.({','.join(work_id_batch)})",
+                "order": "id.asc",
+                "limit": str(PAGE_SIZE),
+                "offset": str(offset),
+            }
+            batch = request_json(
+                f"{SUPABASE_URL}/rest/v1/researcher_papers?{urllib.parse.urlencode(query)}",
+                headers=supabase_headers(),
+            ) or []
+            for row in batch:
+                pair = (row.get("researcher_id", ""), row.get("openalex_work_id", ""))
+                if row.get("id") and pair in imported_pairs:
+                    rows_by_id[row["id"]] = row
+            if len(batch) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+    return list(rows_by_id.values())
+
+
 def load_candidate_papers(limit: int, researcher_ids: list[str], start_after_id: str = "") -> list[dict]:
     rows = []
     last_id = start_after_id
@@ -207,14 +249,31 @@ def main() -> int:
             if value.startswith("A") and value not in args.researcher_openalex_id:
                 args.researcher_openalex_id.append(value)
 
+    if args.paper_import_state and args.researcher_openalex_id:
+        raise SystemExit("Use either --paper-import-state or a researcher OpenAlex ID scope, not both.")
+
     scoped_researchers = load_researchers_by_openalex(args.researcher_openalex_id)
-    use_cursor = not scoped_researchers
+    use_cursor = not scoped_researchers and not args.paper_import_state
     if args.reset_cursor and CURSOR_PATH.exists():
         CURSOR_PATH.unlink()
     start_after_id = read_cursor() if use_cursor else ""
     if start_after_id:
         print(f"Starting after paper cursor: {start_after_id}", flush=True)
-    papers = load_candidate_papers(args.limit, list(scoped_researchers), start_after_id)
+
+    if args.paper_import_state:
+        imported_pairs = load_imported_work_pairs(args.paper_import_state)
+        print(f"Imported researcher/work pairs in scope: {len(imported_pairs)}", flush=True)
+        imported_papers = load_imported_papers(imported_pairs)
+        existing = existing_doc_ids([paper["id"] for paper in imported_papers if paper.get("id")])
+        papers = [
+            paper
+            for paper in imported_papers
+            if paper.get("id") and paper["id"] not in existing and paper.get("title")
+        ][:args.limit]
+        print(f"Imported paper rows found: {len(imported_papers)}", flush=True)
+        print(f"Existing documents in scope: {len(existing)}", flush=True)
+    else:
+        papers = load_candidate_papers(args.limit, list(scoped_researchers), start_after_id)
     researchers = scoped_researchers or load_researchers_by_ids(sorted({paper["researcher_id"] for paper in papers}))
     print(f"Missing paper documents selected: {len(papers)}")
     if args.dry_run:

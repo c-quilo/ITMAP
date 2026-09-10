@@ -196,7 +196,7 @@ export default function CollaborationTimeline({ timeline }: { timeline: Collabor
                 {selected.topCrossDepartment.slice(0, 4).map(collaborator => (
                   <div key={collaborator.openalexId} className="rounded-sm border-l-2 border-primary/55 bg-card/70 py-1 pl-2 pr-1">
                     <p className="text-xs font-medium leading-tight text-foreground">{collaborator.name}</p>
-                    <p className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground">{collaborator.department || collaborator.faculty}</p>
+                    <p className="mt-0.5 break-words text-[10px] leading-snug text-muted-foreground">{collaborator.department || collaborator.faculty}</p>
                   </div>
                 ))}
               </div>

@@ -27,6 +27,22 @@ export interface ExternalEvidence {
   url?: string;
 }
 
+export interface OpenAlexTopicEvidence {
+  openalexTopicId?: string;
+  label: string;
+  description?: string;
+  keywords: string[];
+  domain?: string;
+  field?: string;
+  subfield?: string;
+  topicStrength: number;
+  paperCount: number;
+  recentPaperCount: number;
+  latestYear?: number | null;
+  trend: string;
+  relevance: number;
+}
+
 export interface Researcher {
   id: string;
   openalexId?: string;
@@ -52,6 +68,7 @@ export interface Researcher {
   };
   semanticExplanation?: string;
   externalEvidence?: ExternalEvidence[];
+  openAlexTopics?: OpenAlexTopicEvidence[];
   schoolMissionMatch?: {
     school: string;
     mission: string;

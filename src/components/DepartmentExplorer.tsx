@@ -4,7 +4,9 @@ import {
   Building2,
   CalendarRange,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  ExternalLink,
   Loader2,
   Info,
   Search,
@@ -32,7 +34,7 @@ import {
   getOrganizationProfile,
   listOrganizations,
   suggestOrganizations,
-  type OrganizationKind,
+  type OrganizationGroupKey,
   type OrganizationProfile,
   type OrganizationSuggestion,
   type OrganizationTheme,
@@ -44,15 +46,25 @@ const QUICK_ORGANIZATIONS = [
   "Department of Mechanical Engineering",
 ];
 
-const DIRECTORY_KINDS: Array<{ value: OrganizationKind | "all"; label: string }> = [
+const DIRECTORY_GROUPS: Array<{ value: OrganizationGroupKey | "all"; label: string }> = [
   { value: "all", label: "All" },
-  { value: "department", label: "Departments" },
-  { value: "institute", label: "Institutes" },
-  { value: "school", label: "Schools" },
-  { value: "faculty", label: "Faculties" },
-  { value: "centre", label: "Centres" },
-  { value: "laboratory", label: "Labs" },
+  { value: "engineering", label: "Engineering" },
+  { value: "medicine", label: "Medicine" },
+  { value: "natural-sciences", label: "Natural Sciences" },
+  { value: "business-school", label: "Business School" },
+  { value: "education", label: "Education" },
+  { value: "cross-college", label: "Cross-College" },
 ];
+
+const DIRECTORY_GROUP_DESCRIPTIONS: Record<OrganizationGroupKey, string> = {
+  engineering: "Academic departments and the School of Design Engineering.",
+  medicine: "Departments, schools, and institutes within the Faculty of Medicine.",
+  "natural-sciences": "Academic departments and the Centre for Environmental Policy.",
+  "business-school": "Imperial's business school, shown as a top-level academic unit.",
+  education: "College-wide education centres and schools outside the faculty structure.",
+  "cross-college": "Institutes and centres that bring together researchers from more than one faculty.",
+  other: "Imperial units whose formal reporting line is not yet represented in ITMAP.",
+};
 
 const numberFormatter = new Intl.NumberFormat("en-GB");
 
@@ -183,7 +195,7 @@ function OrganizationSearch({
               selectedNameRef.current = "";
             }
           }}
-          placeholder="Find a department, institute, school, faculty, centre, or lab..."
+          placeholder="Find a department, institute, school, or centre..."
           aria-label="Find a department or institute"
           className="h-11 w-full rounded-lg border border-border bg-background pl-10 pr-28 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
@@ -217,13 +229,17 @@ function OrganizationSearch({
               key={suggestion.name}
               type="button"
               onClick={() => select(suggestion.name)}
-              className="flex w-full items-center justify-between gap-4 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-secondary"
+              className="flex w-full items-start justify-between gap-4 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-secondary"
             >
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-foreground">{suggestion.name}</span>
-                <span className="mt-0.5 block text-xs capitalize text-muted-foreground">{suggestion.kind}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block break-words text-sm font-semibold leading-snug text-foreground">{suggestion.name}</span>
+                <span className="mt-1 block break-words text-xs leading-snug text-muted-foreground">
+                  {suggestion.scope === "department-hosted"
+                    ? `${suggestion.kind} · ${suggestion.parentName}`
+                    : suggestion.groupName}
+                </span>
               </span>
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">
                 {numberFormatter.format(suggestion.researcherCount)} researchers
               </span>
             </button>
@@ -437,7 +453,7 @@ export default function DepartmentExplorer({
   const [isLoadingDirectory, setIsLoadingDirectory] = useState(true);
   const [directoryError, setDirectoryError] = useState("");
   const [directoryQuery, setDirectoryQuery] = useState("");
-  const [directoryKind, setDirectoryKind] = useState<OrganizationKind | "all">("all");
+  const [directoryGroup, setDirectoryGroup] = useState<OrganizationGroupKey | "all">("all");
   const [themeChartView, setThemeChartView] = useState<"span" | "volume">("span");
   const [chartTopicFilter, setChartTopicFilter] = useState("");
   const [activeView, setActiveView] = useState<"overview" | "connections">("overview");
@@ -551,11 +567,39 @@ export default function DepartmentExplorer({
   const filteredOrganizations = useMemo(() => {
     const query = normalized(directoryQuery);
     return organizationDirectory.filter(organization => {
-      const matchesKind = directoryKind === "all" || organization.kind === directoryKind;
-      const matchesQuery = !query || normalized(organization.name).includes(query);
-      return matchesKind && matchesQuery;
+      const matchesGroup = directoryGroup === "all" || organization.groupKey === directoryGroup;
+      const matchesQuery = !query || normalized([
+        organization.name,
+        organization.groupName,
+        organization.parentName,
+      ].join(" ")).includes(query);
+      return matchesGroup && matchesQuery;
     });
-  }, [directoryKind, directoryQuery, organizationDirectory]);
+  }, [directoryGroup, directoryQuery, organizationDirectory]);
+
+  const groupedOrganizations = useMemo(() => {
+    const organizationsByGroup = new Map<OrganizationGroupKey, OrganizationSuggestion[]>();
+    for (const organization of filteredOrganizations) {
+      const rows = organizationsByGroup.get(organization.groupKey) || [];
+      rows.push(organization);
+      organizationsByGroup.set(organization.groupKey, rows);
+    }
+    return DIRECTORY_GROUPS
+      .filter(group => group.value !== "all")
+      .map(group => ({
+        key: group.value as OrganizationGroupKey,
+        label: filteredOrganizations.find(organization => organization.groupKey === group.value)?.groupName || group.label,
+        organizations: organizationsByGroup.get(group.value as OrganizationGroupKey) || [],
+      }))
+      .filter(group => group.organizations.length > 0)
+      .concat(organizationsByGroup.has("other")
+        ? [{
+          key: "other" as OrganizationGroupKey,
+          label: "Other Imperial units",
+          organizations: organizationsByGroup.get("other") || [],
+        }]
+        : []);
+  }, [filteredOrganizations]);
 
   const chartThemes = useMemo(() => {
     if (!profile) return [];
@@ -578,9 +622,9 @@ export default function DepartmentExplorer({
               <Building2 className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <h2 className="text-xl font-semibold text-foreground sm:text-2xl">Departments &amp; Institutes</h2>
+              <h2 className="text-xl font-semibold text-foreground sm:text-2xl">Departments, schools &amp; institutes</h2>
               <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-                Explore an Imperial unit as a whole: its people, strongest research themes, and topics showing recent momentum.
+                Browse Imperial's academic structure by faculty, or explore cross-College and education units separately.
               </p>
             </div>
           </div>
@@ -647,18 +691,18 @@ export default function DepartmentExplorer({
           </div>
 
           <div className="mt-4 flex gap-1 overflow-x-auto rounded-lg bg-secondary p-1">
-            {DIRECTORY_KINDS.map(kind => (
+            {DIRECTORY_GROUPS.map(group => (
               <button
-                key={kind.value}
+                key={group.value}
                 type="button"
-                onClick={() => setDirectoryKind(kind.value)}
+                onClick={() => setDirectoryGroup(group.value)}
                 className={`h-8 shrink-0 rounded-md px-3 text-xs font-medium transition-colors ${
-                  directoryKind === kind.value
+                  directoryGroup === group.value
                     ? "bg-card text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {kind.label}
+                {group.label}
               </button>
             ))}
           </div>
@@ -674,30 +718,68 @@ export default function DepartmentExplorer({
           ) : filteredOrganizations.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">No organisation names match this filter.</div>
           ) : (
-            <div className="mt-5 grid gap-x-5 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredOrganizations.map(organization => (
-                <button
-                  key={`${organization.kind}-${organization.name}`}
-                  type="button"
-                  onClick={() => loadOrganization(organization.name)}
-                  className="group flex min-w-0 items-center justify-between gap-4 border-b border-border py-4 text-left"
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">
-                      {organization.name}
-                    </span>
-                    <span className="mt-1 block text-[10px] font-semibold uppercase text-muted-foreground">
-                      {organization.kind}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-right">
-                    <span className="block text-xs font-semibold tabular-nums text-foreground">
-                      {numberFormatter.format(organization.researcherCount)}
-                    </span>
-                    <span className="block text-[10px] text-muted-foreground">researchers</span>
-                  </span>
-                </button>
-              ))}
+            <div className="mt-7 space-y-9">
+              {groupedOrganizations.map(group => {
+                const firstOrganization = group.organizations[0];
+                return (
+                  <section key={group.key} aria-labelledby={`organization-group-${group.key}`}>
+                    <div className="flex flex-col gap-2 border-b border-border pb-3 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <h4 id={`organization-group-${group.key}`} className="text-sm font-semibold text-foreground sm:text-base">
+                            {group.label}
+                          </h4>
+                          <span className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {numberFormatter.format(group.organizations.length)} {group.organizations.length === 1 ? "unit" : "units"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          {DIRECTORY_GROUP_DESCRIPTIONS[group.key]}
+                        </p>
+                      </div>
+                      <a
+                        href={firstOrganization.officialUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex w-fit items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
+                      >
+                        Imperial source
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+
+                    <div className="grid gap-x-5 sm:grid-cols-2 lg:grid-cols-3">
+                      {group.organizations.map(organization => (
+                        <button
+                          key={`${organization.kind}-${organization.name}`}
+                          type="button"
+                          onClick={() => loadOrganization(organization.name)}
+                          className="group flex min-w-0 items-center justify-between gap-4 border-b border-border py-4 text-left"
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">
+                              {organization.name}
+                            </span>
+                            <span className="mt-1 block break-words text-[10px] font-semibold uppercase leading-snug text-muted-foreground">
+                              {organization.scope === "department-hosted"
+                                ? `${organization.kind} · hosted by ${organization.parentName}`
+                                : organization.scope === "cross-college"
+                                  ? `Cross-College ${organization.kind}`
+                                  : organization.kind}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-right">
+                            <span className="block text-xs font-semibold tabular-nums text-foreground">
+                              {numberFormatter.format(organization.researcherCount)}
+                            </span>
+                            <span className="block text-[10px] text-muted-foreground">researchers</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           )}
         </section>
@@ -706,8 +788,31 @@ export default function DepartmentExplorer({
           <section className="border-b border-border px-3 py-5 sm:px-6 sm:py-7">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div className="min-w-0">
-                <span className="inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase text-primary">
-                  {profile.organization.kind}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>{profile.organization.groupName}</span>
+                  {profile.organization.parentName
+                    && profile.organization.parentName !== profile.organization.groupName
+                    && profile.organization.parentName !== "Imperial College London" && (
+                    <>
+                      <ChevronRight className="h-3.5 w-3.5" />
+                      <span>{profile.organization.parentName}</span>
+                    </>
+                  )}
+                  <a
+                    href={profile.organization.officialUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open Imperial's official organisation page"
+                    title="Open Imperial's official organisation page"
+                    className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-md text-primary transition-colors hover:bg-primary/10"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+                <span className="mt-3 inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase text-primary">
+                  {profile.organization.scope === "cross-college"
+                    ? `Cross-College ${profile.organization.kind}`
+                    : profile.organization.kind}
                 </span>
                 <h3 className="mt-3 text-xl font-semibold text-foreground sm:text-2xl">{profile.organization.name}</h3>
                 <p className="mt-3 max-w-4xl text-sm leading-relaxed text-muted-foreground">{profile.summary}</p>

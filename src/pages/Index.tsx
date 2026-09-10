@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake, Building2 } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake, Building2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -7,7 +7,7 @@ import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
 import ViewErrorBoundary from "@/components/ViewErrorBoundary";
 import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
-import { FALLBACK_KEYWORD_SUGGESTIONS, askResearcherProfileQuestion, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolSummary } from "@/lib/researcherSearch";
+import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -15,10 +15,12 @@ import scsSwoosh from "@/assets/scs-swoosh.png";
 const ResearcherNetworkGraph = lazy(() => import("@/components/ResearcherNetworkGraph"));
 const CollaborationOpportunities = lazy(() => import("@/components/CollaborationOpportunities"));
 const DepartmentExplorer = lazy(() => import("@/components/DepartmentExplorer"));
+const SearchResultsGraph = lazy(() => import("@/components/SearchResultsGraph"));
 
 type SortBy = "relevance" | "name" | "seniority";
 type TabMode = "search" | "quick" | "deep-search" | "profile" | "departments" | "saved" | "help";
 type ResearcherWorkspaceView = "profile" | "graph" | "collaborate";
+type SearchWorkspaceView = "results" | "graph";
 type SearchMode = "semantic" | "keyword";
 
 type SavedSearch = SavedSearchSummary & {
@@ -37,7 +39,7 @@ type PendingProfileLookup = {
 const SAVED_SEARCHES_KEY = "itmap.savedSearches.v1";
 const SAVED_RESEARCHERS_KEY = "itmap.savedResearchers.v1";
 const SCHOOL_MISSION_CACHE_KEY = "itmap.schoolMissionMatches.v1";
-const POOL_SUMMARY_CACHE_KEY = "itmap.researchPoolSummaries.v1";
+const POOL_SUMMARY_CACHE_KEY = "itmap.researchPoolSummaries.v5";
 const INTRO_SEEN_KEY = "itmap.introSeen.v1";
 const MATCH_FILTERS = new Set(["Strong Match", "Moderate", "Weak"]);
 const SCHOOL_MISSION_THEME_PREFIX = "Theme: ";
@@ -56,6 +58,14 @@ const KEYWORD_STOP_WORDS = new Set([
   "profile", "research", "researcher", "science", "sciences", "study", "that", "their", "these",
   "this", "through", "university", "using", "with", "work", "works",
 ]);
+
+function cleanStoredResearcher(researcher: Researcher): Researcher {
+  return {
+    ...researcher,
+    title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
+    department: normaliseDepartment(researcher.department),
+  };
+}
 
 const GRADE_FILTERS = new Set([
   "Professor",
@@ -226,6 +236,10 @@ function buildResultKeywords(researchers: Researcher[]) {
   for (const researcher of researchers) {
     researcher.keywords.forEach(keyword => add(keyword, 5));
     researcher.matchedKeywords.forEach(keyword => add(keyword, 6));
+    (researcher.openAlexTopics || []).forEach(topic => {
+      add(topic.label, 7);
+      topic.keywords.forEach(keyword => add(keyword, 3));
+    });
     [
       researcher.title,
       researcher.department,
@@ -251,9 +265,10 @@ function missionCacheKey(query: string, researchers: Researcher[]) {
 
 function poolSummaryCacheKey(query: string, researchers: Researcher[]) {
   return [
-    "summary",
+    "summary-v2",
     query.trim().toLowerCase(),
-    ...researchers.slice(0, 20).map(researcher => researcher.id),
+    researchers.length,
+    ...researchers.slice(0, 80).map(researcher => researcher.id),
   ].join("|");
 }
 
@@ -266,8 +281,8 @@ const SEARCH_STEPS = [
   },
   {
     at: 7,
-    label: "Searching profiles and papers",
-    detail: "Matching the query against researcher profiles, fields, positions, and paper evidence.",
+    label: "Searching profiles, papers, and topics",
+    detail: "Matching the query against profiles, positions, publication evidence, and OpenAlex paper topics.",
     Icon: Database,
   },
   {
@@ -395,15 +410,165 @@ function SearchProgress({ seconds, mode }: { seconds: number; mode: SearchMode }
   );
 }
 
+type PoolChatEntry = ResearchPoolChatMessage & {
+  evidenceTitles?: string[];
+  caveat?: string;
+};
+
+function ResearchPoolChat({
+  query,
+  researchers,
+  summary,
+}: {
+  query: string;
+  researchers: Researcher[];
+  summary: ResearchPoolSummary;
+}) {
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<PoolChatEntry[]>([]);
+  const [isAnswering, setIsAnswering] = useState(false);
+  const [error, setError] = useState("");
+
+  const submitQuestion = async (suggestedQuestion?: string) => {
+    const nextQuestion = (suggestedQuestion || question).trim();
+    if (!nextQuestion || isAnswering) return;
+
+    const userMessage: PoolChatEntry = { role: "user", content: nextQuestion };
+    setMessages(current => [...current, userMessage]);
+    setQuestion("");
+    setError("");
+    setIsAnswering(true);
+    try {
+      const answer = await askResearchPoolQuestion(query, nextQuestion, researchers, summary, messages);
+      setMessages(current => [...current, {
+        role: "assistant",
+        content: answer.answer,
+        evidenceTitles: answer.evidenceTitles,
+        caveat: answer.caveat,
+      }]);
+    } catch (questionError) {
+      setError(questionError instanceof Error ? questionError.message : "Could not answer that question.");
+    } finally {
+      setIsAnswering(false);
+    }
+  };
+
+  const starterQuestions = [
+    "Who should I contact first?",
+    "How does the expertise differ across departments?",
+    "What gaps remain in this result pool?",
+  ];
+
+  return (
+    <div className="mt-4 border-t border-border pt-4">
+      <div className="flex items-center gap-2">
+        <MessageSquareText className="h-4 w-4 text-primary" />
+        <p className="text-xs font-semibold text-foreground">Ask about these results</p>
+      </div>
+
+      {messages.length > 0 ? (
+        <div className="mt-3 max-h-72 space-y-3 overflow-y-auto pr-1" aria-live="polite">
+          {messages.map((message, index) => (
+            <div
+              key={`${message.role}-${index}`}
+              className={`max-w-[92%] rounded-lg px-3 py-2 text-xs leading-relaxed sm:max-w-[82%] ${
+                message.role === "user"
+                  ? "ml-auto bg-primary text-primary-foreground"
+                  : "bg-secondary text-foreground"
+              }`}
+            >
+              <p className="whitespace-pre-wrap">{message.content}</p>
+              {message.evidenceTitles && message.evidenceTitles.length > 0 && (
+                <div className="mt-2 border-t border-border/60 pt-2">
+                  <p className="text-[10px] font-semibold uppercase text-muted-foreground">Publications mentioned</p>
+                  <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
+                    {message.evidenceTitles.map(title => <li key={title}>{title}</li>)}
+                  </ul>
+                </div>
+              )}
+              {message.caveat && <p className="mt-2 text-[11px] text-muted-foreground">{message.caveat}</p>}
+            </div>
+          ))}
+          {isAnswering && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+              ITMAP is reading the current results...
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {starterQuestions.map(starter => (
+            <button
+              key={starter}
+              type="button"
+              onClick={() => submitQuestion(starter)}
+              className="rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+            >
+              {starter}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <form
+        className="mt-3 flex items-end gap-2"
+        onSubmit={event => {
+          event.preventDefault();
+          submitQuestion();
+        }}
+      >
+        <textarea
+          value={question}
+          onChange={event => setQuestion(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              submitQuestion();
+            }
+          }}
+          rows={2}
+          maxLength={1200}
+          placeholder="Ask a follow-up about this researcher pool..."
+          className="min-h-11 flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+        />
+        <button
+          type="submit"
+          disabled={!question.trim() || isAnswering}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Ask about these results"
+          title="Ask about these results"
+        >
+          {isAnswering ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+        </button>
+      </form>
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
 function ResearchPoolSummaryPanel({
   summary,
+  query,
+  researchers,
   onSelectResearcher,
   canSelectResearcher,
+  activeTopic,
+  onSelectTopic,
 }: {
   summary: ResearchPoolSummary;
+  query: string;
+  researchers: Researcher[];
   onSelectResearcher: (name: string) => void;
   canSelectResearcher: (name: string) => boolean;
+  activeTopic: string;
+  onSelectTopic: (topic: string) => void;
 }) {
+  const [showAllTopics, setShowAllTopics] = useState(false);
+  const visibleTopics = showAllTopics || activeTopic
+    ? summary.topicLandscape
+    : summary.topicLandscape.slice(0, 6);
+
   return (
     <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-4">
       <div className="flex items-start gap-3">
@@ -412,8 +577,9 @@ function ResearchPoolSummaryPanel({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-foreground">{summary.headline}</p>
+          <ResearchPoolChat query={query} researchers={researchers} summary={summary} />
           {summary.summary && (
-            <p className="mt-1 text-sm leading-relaxed text-foreground/75">{summary.summary}</p>
+            <p className="mt-4 text-sm leading-relaxed text-foreground/75">{summary.summary}</p>
           )}
           {summary.themes.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
@@ -422,6 +588,56 @@ function ResearchPoolSummaryPanel({
                   {theme}
                 </span>
               ))}
+            </div>
+          )}
+          {summary.topicLandscape.length > 0 && (
+            <div className="mt-3 border-t border-border pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-foreground">OpenAlex topics</p>
+                <div className="flex items-center gap-3">
+                  {activeTopic && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectTopic("")}
+                      className="text-[11px] font-medium text-primary hover:underline"
+                    >
+                      Clear filter
+                    </button>
+                  )}
+                  {summary.topicLandscape.length > 6 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllTopics(current => !current)}
+                      className="text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                    >
+                      {showAllTopics ? "Show fewer" : `Show all ${summary.topicLandscape.length}`}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {visibleTopics.map(topic => {
+                  const isActive = activeTopic === topic.label;
+                  return (
+                    <button
+                      key={topic.label}
+                      type="button"
+                      onClick={() => onSelectTopic(isActive ? "" : topic.label)}
+                      title={topic.description || topic.label}
+                      className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        isActive
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                      }`}
+                    >
+                      <span>{topic.label}</span>
+                      <span className={isActive ? "text-primary-foreground/75" : "text-muted-foreground/75"}>
+                        {topic.researcherCount}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           {summary.notableResearchers.length > 0 && (
@@ -489,7 +705,7 @@ function QuickSearchPanel({
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-foreground">{suggestion.name}</p>
           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{suggestion.title}</p>
-          <p className="mt-1 truncate text-[11px] text-muted-foreground">{suggestion.department}</p>
+          <p className="mt-1 break-words text-[11px] leading-snug text-muted-foreground">{suggestion.department}</p>
         </div>
         <div className="flex shrink-0 flex-row gap-1.5 sm:flex-col">
           <button
@@ -1022,6 +1238,8 @@ export default function Index() {
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [tabMode, setTabMode] = useState<TabMode>("search");
+  const [searchWorkspaceView, setSearchWorkspaceView] = useState<SearchWorkspaceView>("results");
+  const [searchSidebarCollapsed, setSearchSidebarCollapsed] = useState(false);
   const [searchResults, setSearchResults] = useState<Researcher[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -1040,6 +1258,7 @@ export default function Index() {
   const [isGeneratingPoolSummary, setIsGeneratingPoolSummary] = useState(false);
   const [poolSummaryError, setPoolSummaryError] = useState("");
   const [poolSummaryDone, setPoolSummaryDone] = useState(false);
+  const [poolTopicFilter, setPoolTopicFilter] = useState("");
   const [highlightedResearcherId, setHighlightedResearcherId] = useState<string | null>(null);
   const [pendingProfileLookup, setPendingProfileLookup] = useState<PendingProfileLookup | null>(null);
   const [profileQuery, setProfileQuery] = useState("");
@@ -1095,6 +1314,7 @@ export default function Index() {
           .filter(search => Array.isArray(search.results))
           .map(search => ({
             ...search,
+            results: search.results.map(cleanStoredResearcher),
             resultCount: defaultFinalResultCount(search.results),
           }))
           .slice(0, 10));
@@ -1107,7 +1327,7 @@ export default function Index() {
       const rawResearchers = window.localStorage.getItem(SAVED_RESEARCHERS_KEY);
       const parsedResearchers = rawResearchers ? JSON.parse(rawResearchers) : [];
       if (Array.isArray(parsedResearchers)) {
-        setSavedResearchers(parsedResearchers);
+        setSavedResearchers(parsedResearchers.map(cleanStoredResearcher));
       }
     } catch {
       setSavedResearchers([]);
@@ -1372,6 +1592,8 @@ export default function Index() {
     setPoolSummary(null);
     setPoolSummaryDone(false);
     setPoolSummaryError("");
+    setPoolTopicFilter("");
+    setSearchWorkspaceView("results");
     setSearchError("");
     setEmptySearchMessage("");
     setTabMode("search");
@@ -1496,6 +1718,8 @@ export default function Index() {
     setPoolSummary(null);
     setPoolSummaryError("");
     setPoolSummaryDone(false);
+    setPoolTopicFilter("");
+    setSearchWorkspaceView("results");
     try {
       const response = await searchResearchers({
         query: trimmedQuery,
@@ -1555,6 +1779,7 @@ export default function Index() {
       setSearchError("");
       setEmptySearchMessage(INCOMPLETE_SEARCH_MESSAGE);
       setHasSearched(true);
+      setSearchWorkspaceView("results");
       return;
     }
 
@@ -1650,8 +1875,8 @@ export default function Index() {
 
   const generatePoolSummary = async () => {
     if (!currentMission || sortedResearchers.length === 0) return;
-    const topResearchers = sortedResearchers.slice(0, 20);
-    const cacheKey = poolSummaryCacheKey(currentMission, topResearchers);
+    const summaryResearchers = sortedResearchers;
+    const cacheKey = poolSummaryCacheKey(currentMission, summaryResearchers);
     setIsGeneratingPoolSummary(true);
     setPoolSummaryError("");
     try {
@@ -1664,7 +1889,7 @@ export default function Index() {
         return;
       }
 
-      const summary = await summarizeResearchPool(currentMission, topResearchers);
+      const summary = await summarizeResearchPool(currentMission, summaryResearchers);
       setPoolSummary(summary);
       setPoolSummaryDone(true);
       try {
@@ -1715,10 +1940,13 @@ export default function Index() {
         || (researcher.schoolMissionMatch && selectedSchoolMissionThemes.includes(researcher.schoolMissionMatch.school));
       const schoolMissionMatch = selectedSchoolMissions.length === 0
         || (researcher.schoolMissionMatch && selectedSchoolMissions.includes(`${researcher.schoolMissionMatch.school} · ${researcher.schoolMissionMatch.mission}`));
+      const poolTopicMatch = !poolTopicFilter
+        || (researcher.openAlexTopics || []).some(topic => topic.label === poolTopicFilter);
       const keywordMatch = filterByAny([
         researcher.summary,
         researcher.keywords.join(" "),
         researcher.matchedKeywords.join(" "),
+        (researcher.openAlexTopics || []).flatMap(topic => [topic.label, ...topic.keywords]).join(" "),
         researcher.publications.map(pub => pub.title).join(" "),
       ], selectedKeywords);
 
@@ -1728,9 +1956,10 @@ export default function Index() {
         && matchStrengthMatch
         && schoolMissionThemeMatch
         && schoolMissionMatch
+        && poolTopicMatch
         && keywordMatch;
     });
-  }, [activeFilters, departmentFilters, schoolMissionFilters, searchResults]);
+  }, [activeFilters, departmentFilters, poolTopicFilter, schoolMissionFilters, searchResults]);
 
   const sortedResearchers = [...filteredResearchers].sort((a, b) => {
     if (sortBy === "relevance") return b.relevanceScore - a.relevanceScore;
@@ -1780,6 +2009,24 @@ export default function Index() {
     }, 2200);
   };
 
+  const openSearchGraphResearcher = (researcher: Researcher) => {
+    setSearchWorkspaceView("results");
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => jumpToSummaryResearcher(researcher.name));
+    });
+  };
+
+  const openSearchResultProfile = (researcher: Researcher) => loadResearcherProfile({
+    researcherId: researcher.id,
+    openalexId: researcher.openalexId,
+    profileUrl: researcher.profileUrl,
+    name: researcher.name,
+    title: researcher.title,
+    department: researcher.department,
+    faculty: researcher.faculty,
+    score: researcher.relevanceScore,
+  });
+
   const renderResultCard = (researcher: Researcher) => (
     <div
       key={researcher.id}
@@ -1794,6 +2041,7 @@ export default function Index() {
         researcher={researcher}
         bookmarked={savedResearcherIds.has(researcher.id)}
         onToggleBookmark={toggleSavedResearcher}
+        onOpenProfile={openSearchResultProfile}
         showMatchExplanation={currentSearchMode === "semantic"}
       />
     </div>
@@ -1816,6 +2064,7 @@ export default function Index() {
       "pool_summary_headline",
       "pool_summary",
       "pool_summary_themes",
+      "pool_openalex_topic_landscape",
       "pool_summary_notable_researchers",
       "pool_summary_caveats",
       "rank",
@@ -1828,6 +2077,7 @@ export default function Index() {
       "profile_url",
       "email",
       "fields",
+      "openalex_topics",
       "publications",
       "external_evidence",
       "school_mission_school",
@@ -1845,6 +2095,9 @@ export default function Index() {
       index === 0 ? poolSummary?.headline || "" : "",
       index === 0 ? poolSummary?.summary || "" : "",
       index === 0 ? poolSummary?.themes?.join("; ") || "" : "",
+      index === 0
+        ? poolSummary?.topicLandscape?.map(topic => `${topic.label} (${topic.researcherCount} researchers)`).join("; ") || ""
+        : "",
       index === 0 ? summaryNotableResearchers : "",
       index === 0 ? poolSummary?.gaps?.join("; ") || "" : "",
       (index + 1).toString(),
@@ -1857,6 +2110,7 @@ export default function Index() {
       researcher.profileUrl || "",
       researcher.email || "",
       researcher.keywords.join("; "),
+      (researcher.openAlexTopics || []).map(topic => topic.label).join("; "),
       researcher.publications
         .map(pub => `${pub.title}${pub.year ? ` (${pub.year})` : ""}${pub.doi ? ` ${pub.doi}` : ""}`)
         .join("; "),
@@ -2065,22 +2319,28 @@ export default function Index() {
       {tabMode === "search" || tabMode === "deep-search" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Sidebar */}
-          <div className={`${hasSearched ? "max-h-[38dvh]" : "max-h-[52dvh]"} w-full shrink-0 overflow-hidden border-b border-border transition-[max-height] duration-200 lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r`}>
-            <SearchSidebar
-              activeFilters={activeFilters}
-              onToggleFilter={toggleFilter}
-              onClearFilters={() => setActiveFilters([])}
-              onSearch={handleSearch}
-              onCancelSearch={cancelSearch}
-              onLoadSavedSearch={loadSavedSearch}
-              isSearching={isSearching}
-              departmentOptions={availableDepartments}
-              keywordOptions={availableKeywords}
-              keywordSearchSuggestions={keywordSearchSuggestions}
-              schoolMissionOptions={availableSchoolMissions}
-              schoolMissionThemeOptions={availableSchoolMissionThemes}
-              savedSearches={savedSearches}
-            />
+          <div className={`shrink-0 overflow-hidden transition-[width,max-height] duration-300 ${
+            searchSidebarCollapsed
+              ? "max-h-0 w-full border-0 lg:max-h-none lg:w-0"
+              : `${hasSearched ? "max-h-[38dvh]" : "max-h-[52dvh]"} w-full border-b border-border lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r`
+          }`}>
+            <div className={`h-full w-full lg:w-[420px] ${searchSidebarCollapsed ? "invisible" : "visible"}`}>
+              <SearchSidebar
+                activeFilters={activeFilters}
+                onToggleFilter={toggleFilter}
+                onClearFilters={() => setActiveFilters([])}
+                onSearch={handleSearch}
+                onCancelSearch={cancelSearch}
+                onLoadSavedSearch={loadSavedSearch}
+                isSearching={isSearching}
+                departmentOptions={availableDepartments}
+                keywordOptions={availableKeywords}
+                keywordSearchSuggestions={keywordSearchSuggestions}
+                schoolMissionOptions={availableSchoolMissions}
+                schoolMissionThemeOptions={availableSchoolMissionThemes}
+                savedSearches={savedSearches}
+              />
+            </div>
           </div>
 
           {/* Results */}
@@ -2089,6 +2349,15 @@ export default function Index() {
             <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-3 py-3 backdrop-blur-sm sm:px-6">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setSearchSidebarCollapsed(collapsed => !collapsed)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    aria-label={searchSidebarCollapsed ? "Show search panel" : "Hide search panel"}
+                    title={searchSidebarCollapsed ? "Show search panel" : "Hide search panel"}
+                  >
+                    {searchSidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                  </button>
                   <p className="text-sm font-medium text-foreground">
                     {hasSearched ? `${sortedResearchers.length} researchers found` : "Ready to search"}
                   </p>
@@ -2120,18 +2389,20 @@ export default function Index() {
                       <span className="hidden sm:inline">Export Search</span>
                     </button>
                   )}
-                  <div className="flex items-center gap-1.5">
-                    <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                    <select
-                      value={sortBy}
-                      onChange={e => setSortBy(e.target.value as SortBy)}
-                      className="min-h-10 cursor-pointer border-0 bg-transparent text-xs text-muted-foreground focus:outline-none"
-                    >
-                      <option value="relevance">Relevance</option>
-                      <option value="name">Name</option>
-                      <option value="seniority">Role / Seniority</option>
-                    </select>
-                  </div>
+                  {searchWorkspaceView === "results" && (
+                    <div className="flex items-center gap-1.5">
+                      <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+                      <select
+                        value={sortBy}
+                        onChange={e => setSortBy(e.target.value as SortBy)}
+                        className="min-h-10 cursor-pointer border-0 bg-transparent text-xs text-muted-foreground focus:outline-none"
+                      >
+                        <option value="relevance">Relevance</option>
+                        <option value="name">Name</option>
+                        <option value="seniority">Role / Seniority</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -2153,12 +2424,60 @@ export default function Index() {
                 </div>
               )}
               {!isSearching && hasSearched && sortedResearchers.length > 0 && (
+                <div className="xl:col-span-2 flex items-center justify-between gap-3 border-b border-border pb-3">
+                  <div role="tablist" aria-label="Search result views" className="inline-flex rounded-lg bg-secondary p-1">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={searchWorkspaceView === "results"}
+                      onClick={() => setSearchWorkspaceView("results")}
+                      className={`inline-flex min-h-9 items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        searchWorkspaceView === "results"
+                          ? "bg-card text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <List className="h-3.5 w-3.5" />
+                      Results
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={searchWorkspaceView === "graph"}
+                      onClick={() => setSearchWorkspaceView("graph")}
+                      className={`inline-flex min-h-9 items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        searchWorkspaceView === "graph"
+                          ? "bg-card text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Share2 className="h-3.5 w-3.5" />
+                      Graph
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!isSearching && hasSearched && sortedResearchers.length > 0 && searchWorkspaceView === "graph" && (
+                <div className="xl:col-span-2">
+                  <Suspense fallback={<div className="flex min-h-[500px] items-center justify-center rounded-lg border border-border"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>}>
+                    <SearchResultsGraph
+                      researchers={sortedResearchers}
+                      onSelectResearcher={openSearchGraphResearcher}
+                    />
+                  </Suspense>
+                </div>
+              )}
+              {!isSearching && hasSearched && sortedResearchers.length > 0 && searchWorkspaceView === "results" && (
                 <>
                   {poolSummary && (
                     <ResearchPoolSummaryPanel
                       summary={poolSummary}
+                      query={currentMission}
+                      researchers={sortedResearchers}
                       onSelectResearcher={jumpToSummaryResearcher}
                       canSelectResearcher={canJumpToSummaryResearcher}
+                      activeTopic={poolTopicFilter}
+                      onSelectTopic={setPoolTopicFilter}
                     />
                   )}
                   <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-3">
@@ -2168,7 +2487,7 @@ export default function Index() {
                         <div>
                           <p className="text-sm font-medium text-foreground">Summarise this researcher pool?</p>
                           <p className="text-xs leading-relaxed text-muted-foreground">
-                            Generate a short overview of the main expertise clusters, notable researchers, and gaps in the current results.
+                            Generate a short overview plus a compact view of the OpenAlex paper topics in the current results.
                           </p>
                           {poolSummaryError && (
                             <p className="mt-1 text-xs text-destructive">{poolSummaryError}</p>
@@ -2194,7 +2513,7 @@ export default function Index() {
                   </div>
                 </>
               )}
-              {!isSearching && hasSearched && sortedResearchers.length > 0 && (
+              {!isSearching && hasSearched && sortedResearchers.length > 0 && searchWorkspaceView === "results" && (
                 <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-3">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-start gap-2">
@@ -2240,22 +2559,22 @@ export default function Index() {
                   </div>
                 </div>
               )}
-              {sortBy === "seniority" ? (
-                seniorityGroups.map(group => (
-                  <div key={group.label} className="contents">
-                    <div className="xl:col-span-2 mt-1 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-border" />
-                      <span className="rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
-                        {group.label} · {group.researchers.length}
-                      </span>
-                      <div className="h-px flex-1 bg-border" />
+              {searchWorkspaceView === "results" && (sortBy === "seniority" ? (
+                  seniorityGroups.map(group => (
+                    <div key={group.label} className="contents">
+                      <div className="xl:col-span-2 mt-1 flex items-center gap-3">
+                        <div className="h-px flex-1 bg-border" />
+                        <span className="rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
+                          {group.label} · {group.researchers.length}
+                        </span>
+                        <div className="h-px flex-1 bg-border" />
+                      </div>
+                      {group.researchers.map(renderResultCard)}
                     </div>
-                    {group.researchers.map(renderResultCard)}
-                  </div>
-                ))
-              ) : (
-                sortedResearchers.map(renderResultCard)
-              )}
+                  ))
+                ) : (
+                  sortedResearchers.map(renderResultCard)
+                ))}
             </div>
           </main>
         </div>
@@ -2348,7 +2667,7 @@ export default function Index() {
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-semibold text-foreground">{suggestion.name}</span>
                           <span className="mt-0.5 block line-clamp-1 text-xs text-muted-foreground">{suggestion.title}</span>
-                          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{suggestion.department}</span>
+                          <span className="mt-0.5 block break-words text-[11px] leading-snug text-muted-foreground">{suggestion.department}</span>
                         </span>
                         <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
                           {Math.round(suggestion.score * 100)}%

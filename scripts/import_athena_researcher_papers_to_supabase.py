@@ -144,6 +144,27 @@ def load_researcher_ids_by_openalex() -> dict[str, list[str]]:
     for row in rows:
         if row.get("openalex_id") and row.get("id"):
             researcher_ids.setdefault(row["openalex_id"], []).append(row["id"])
+
+    offset = 0
+    while True:
+        params = {
+            "select": "researcher_id,openalex_id",
+            "openalex_id": "not.is.null",
+            "limit": "1000",
+            "offset": str(offset),
+        }
+        url = f"{SUPABASE_URL}/rest/v1/researcher_openalex_aliases?{urllib.parse.urlencode(params)}"
+        batch = request_json(url, headers=supabase_headers()) or []
+        for row in batch:
+            researcher_id = row.get("researcher_id")
+            openalex_id = row.get("openalex_id")
+            if researcher_id and openalex_id:
+                ids = researcher_ids.setdefault(openalex_id, [])
+                if researcher_id not in ids:
+                    ids.append(researcher_id)
+        if len(batch) < 1000:
+            break
+        offset += 1000
     return researcher_ids
 
 
@@ -169,6 +190,40 @@ def upsert_rows(rows: list[dict]) -> int:
     return uploaded
 
 
+def parse_topics(row: dict) -> list[str]:
+    raw = (row.get("topics_json") or row.get("topics") or "").strip()
+    if not raw:
+        return []
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        values = [value.strip() for value in raw.strip("[]").split(",")]
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(compact(value) for value in values if compact(value)))
+
+
+def upsert_work_topics(rows: list[dict]) -> int:
+    topics_by_work = {}
+    for row in rows:
+        work_id = row.get("openalex_work_id")
+        if work_id:
+            topics_by_work[work_id] = {
+                "openalex_work_id": work_id,
+                "topics": row.get("_topics", []),
+            }
+    uploaded = 0
+    for batch in chunks(list(topics_by_work.values()), SUPABASE_BATCH_SIZE):
+        request_json(
+            f"{SUPABASE_URL}/rest/v1/openalex_work_topics?on_conflict=openalex_work_id",
+            method="POST",
+            headers=supabase_headers("resolution=merge-duplicates,return=minimal"),
+            body=batch,
+        )
+        uploaded += len(batch)
+    return uploaded
+
+
 def main() -> int:
     global SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
     args = parse_args()
@@ -183,6 +238,7 @@ def main() -> int:
     total_seen = 0
     total_prepared = 0
     total_uploaded = 0
+    total_topics_uploaded = 0
     pending = []
     pending_keys = []
 
@@ -214,6 +270,7 @@ def main() -> int:
                     "cited_by_count": int(row["cited_by_count"]) if str(row.get("cited_by_count", "")).isdigit() else None,
                     "source_display_name": compact(row.get("source_display_name")) or None,
                     "doi": row.get("doi") or None,
+                    "_topics": parse_topics(row),
                 })
                 pending_keys.append(key)
                 total_prepared += 1
@@ -222,16 +279,24 @@ def main() -> int:
                 pending = dedupe_rows(pending)
                 pending_keys = [f"{row['researcher_id']}:{row['openalex_work_id']}" for row in pending]
                 if not args.dry_run:
-                    total_uploaded += upsert_rows(pending)
+                    paper_rows = [{key: value for key, value in row.items() if key != "_topics"} for row in pending]
+                    total_uploaded += upsert_rows(paper_rows)
+                    total_topics_uploaded += upsert_work_topics(pending)
                     completed.update(pending_keys)
                     save_state(args.state_path, completed)
-                print(f"Seen {total_seen}; prepared {total_prepared}; uploaded {total_uploaded}", flush=True)
+                print(
+                    f"Seen {total_seen}; prepared {total_prepared}; uploaded {total_uploaded}; "
+                    f"topics {total_topics_uploaded}",
+                    flush=True,
+                )
                 pending = []
                 pending_keys = []
 
     if pending:
         if not args.dry_run:
-            total_uploaded += upsert_rows(pending)
+            paper_rows = [{key: value for key, value in row.items() if key != "_topics"} for row in pending]
+            total_uploaded += upsert_rows(paper_rows)
+            total_topics_uploaded += upsert_work_topics(pending)
             completed.update(pending_keys)
             save_state(args.state_path, completed)
         print(f"Seen {total_seen}; prepared {total_prepared}; uploaded {total_uploaded}", flush=True)
@@ -240,6 +305,7 @@ def main() -> int:
     print(f"Rows seen: {total_seen}")
     print(f"Rows prepared: {total_prepared}")
     print(f"Rows uploaded: {total_uploaded}")
+    print(f"Work topics uploaded: {total_topics_uploaded}")
     print(f"State file: {args.state_path}")
     return 0
 

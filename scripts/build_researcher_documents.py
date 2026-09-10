@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -9,6 +10,17 @@ PAPERS_CSV = Path("/Users/caq13/Documents/ITMAP/researcher_papers.csv")
 OUT_JSONL = Path("/Users/caq13/Documents/ITMAP/researcher_search_documents.jsonl")
 OUT_CSV = Path("/Users/caq13/Documents/ITMAP/researcher_search_documents.csv")
 PAPER_DOCS_JSONL = Path("/Users/caq13/Documents/ITMAP/researcher_paper_search_documents.jsonl")
+MEDIA_GUIDE_BOILERPLATE = re.compile(
+    r"\s*MEDIA\s+GUIDE\s+Members of the media are welcome to contact me about my research and areas of expertise\.?",
+    re.IGNORECASE,
+)
+CANONICAL_AFFILIATIONS = {
+    "Centre for En": "Centre for Engagement and Simulation Science",
+    "Centre for He": "Centre for Health Economics and Policy Innovation",
+    "Centre for Hi": "Centre for Higher Education Research and Scholarship",
+    "Centre for La": "Centre for Languages, Culture and Communication",
+    "Centre for Po": "Centre for Population Biology",
+}
 
 
 def restore_abstract(value: str) -> str:
@@ -27,6 +39,15 @@ def restore_abstract(value: str) -> str:
 
 def compact(value: str) -> str:
     return " ".join((value or "").split())
+
+
+def clean_researcher_title(value: str) -> str:
+    return compact(MEDIA_GUIDE_BOILERPLATE.sub(" ", value or ""))
+
+
+def clean_affiliation(value: str) -> str:
+    compact_value = compact(value)
+    return CANONICAL_AFFILIATIONS.get(compact_value, compact_value)
 
 
 def load_papers():
@@ -54,8 +75,8 @@ def load_papers():
 def make_document(profile: dict, papers: list[dict]) -> str:
     parts = [
         f"Name: {profile.get('full_name', '')}",
-        f"Position: {profile.get('position_name') or profile.get('position') or ''}",
-        f"Affiliation: {profile.get('affiliation', '')}",
+        f"Position: {clean_researcher_title(profile.get('position_name') or profile.get('position') or '')}",
+        f"Affiliation: {clean_affiliation(profile.get('affiliation', ''))}",
         f"Faculty: {profile.get('faculty', '')}",
         f"Fields of research: {profile.get('fields_of_research', '')}",
         f"Profile: {profile.get('bio_about', '')}",
@@ -90,9 +111,9 @@ def main() -> int:
                 "email": profile.get("email", ""),
                 "bio_about": profile.get("bio_about", ""),
                 "research": profile.get("research", ""),
-                "position_name": profile.get("position_name", ""),
+                "position_name": clean_researcher_title(profile.get("position_name", "")),
                 "position": profile.get("position", ""),
-                "affiliation": profile.get("affiliation", ""),
+                "affiliation": clean_affiliation(profile.get("affiliation", "")),
                 "faculty": profile.get("faculty", ""),
                 "fields_of_research": profile.get("fields_of_research", ""),
                 "paper_count": len(author_papers),
