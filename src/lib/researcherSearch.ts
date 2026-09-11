@@ -1,5 +1,6 @@
 import { MOCK_RESEARCHERS, type ExternalEvidence, type OpenAlexTopicEvidence, type Publication, type Researcher } from "@/data/mockData";
 import { hasSupabaseConfig, supabase } from "@/lib/supabase";
+import { naturaliseUserFacingText } from "@/lib/userFacingText";
 
 export const FALLBACK_KEYWORD_SUGGESTIONS = [
   "air pollution",
@@ -713,7 +714,7 @@ function toPublication(pub: SupabasePublication): Publication {
   return {
     title: pub.title,
     abstract: pub.abstract || undefined,
-    journal: pub.journal || "OpenAlex",
+    journal: pub.journal || "Publication record",
     year: pub.year || 0,
     citations: pub.citations || 0,
     relevanceScore: pub.relevance_score ? Math.round(pub.relevance_score * 100) : undefined,
@@ -796,7 +797,9 @@ function toResearcher(row: SupabaseResearcher): Researcher {
       paperDepth: typeof row.paper_depth_score === "number" ? Math.round(row.paper_depth_score * 100) : undefined,
       llmRerank: typeof row.llm_rerank_score === "number" ? Math.round(row.llm_rerank_score) : undefined,
     },
-    semanticExplanation: row.match_reason || "Matched from the researcher profile, paper titles, abstracts, and OpenAlex metadata.",
+    semanticExplanation: naturaliseUserFacingText(
+      row.match_reason || "Their profile and publications provide evidence for this research query.",
+    ),
     externalEvidence: (row.external_evidence || [])
       .map(toExternalEvidence)
       .filter((item): item is ExternalEvidence => Boolean(item)),
@@ -806,6 +809,37 @@ function toResearcher(row: SupabaseResearcher): Researcher {
     publications: (row.papers || []).map(toPublication),
     imageInitials: initials(row.full_name),
     role: "lecturer",
+  };
+}
+
+function calibrateKeywordMatch(researcher: Researcher, query: string): Researcher {
+  const terms = query
+    .toLowerCase()
+    .replace(/"/g, " ")
+    .split(/[^a-z0-9]+/)
+    .filter(term => term.length >= 2 && !["and", "or", "not"].includes(term));
+  if (terms.length === 0) return researcher;
+
+  const evidenceText = [researcher.title, researcher.summary, researcher.keywords.join(" ")].join(" ").toLowerCase();
+  const authorityText = [researcher.title, researcher.keywords.join(" ")].join(" ").toLowerCase();
+  const counts = terms.map(term => evidenceText.split(term).length - 1);
+  const requiredMatches = /\bOR\b/.test(query) ? 1 : terms.length;
+  const matchingTerms = counts.filter(count => count > 0).length;
+  const directAuthorityMatch = terms.filter(term => authorityText.includes(term)).length >= requiredMatches;
+  const repeatedEvidence = counts.filter(count => count >= 2).length >= requiredMatches;
+  const matchType = directAuthorityMatch || repeatedEvidence
+    ? "strong"
+    : matchingTerms >= requiredMatches
+      ? "adjacent"
+      : "weak";
+
+  return {
+    ...researcher,
+    scoreExplanation: {
+      ...researcher.scoreExplanation,
+      finalScore: researcher.scoreExplanation?.finalScore || researcher.relevanceScore,
+      matchType,
+    },
   };
 }
 
@@ -862,7 +896,10 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
 
   const rows = Array.isArray(data?.results) ? data.results : [];
   return {
-    researchers: rows.map(toResearcher),
+    researchers: rows.map((row: SupabaseResearcher) => {
+      const researcher = toResearcher(row);
+      return payload.mode === "keyword" ? calibrateKeywordMatch(researcher, payload.query) : researcher;
+    }),
     originalQuery: String(data?.original_query || payload.originalQuery || payload.query),
     expandedQuery: String(data?.expanded_query || payload.query),
   };
@@ -1065,7 +1102,7 @@ function toOrganizationTheme(row: Record<string, unknown>): OrganizationTheme {
 
 export async function getOrganizationProfile(organizationName: string): Promise<OrganizationProfile> {
   if (!hasSupabaseConfig || !supabase) {
-    throw new Error("The live ITMAP database connection is needed for department exploration.");
+    throw new Error("ITMAP could not load department information. Please try again shortly.");
   }
 
   const { data, error } = await supabase.functions.invoke("search-researchers", {
@@ -1146,7 +1183,7 @@ export async function getOrganizationConnectionNetworks(researcherIds: string[])
   departmentReach: OrganizationDepartmentReach;
 }> {
   if (!hasSupabaseConfig || !supabase) {
-    throw new Error("The live ITMAP database connection is needed for department connections.");
+    throw new Error("ITMAP could not load department connections. Please try again shortly.");
   }
 
   const uniqueResearcherIds = [...new Set(researcherIds.map(value => value.trim()).filter(Boolean))];
@@ -1408,7 +1445,7 @@ export async function getResearcherConnection(
       target: fallbackNode(targetResearcherId),
       nodes: [],
       paths: [],
-      coverageNote: "Connection paths need the live ITMAP database connection.",
+      coverageNote: "Connection paths are not available right now.",
       durationMs: 0,
     };
   }
@@ -1525,7 +1562,7 @@ export async function getCollaborationOpportunities(
       },
       themes: [],
       opportunities: [],
-      coverageNote: "Collaboration opportunities need the live ITMAP database connection.",
+      coverageNote: "Collaboration suggestions are not available right now.",
       durationMs: 0,
     };
   }
@@ -1600,7 +1637,7 @@ export async function askResearcherProfileQuestion(
 ): Promise<ResearcherProfileQuestionAnswer> {
   if (!hasSupabaseConfig || !supabase) {
     return {
-      answer: "Profile questions need the live ITMAP database connection.",
+      answer: "ITMAP cannot answer profile questions right now. Please try again shortly.",
       evidenceTitles: [],
       caveat: "",
     };
@@ -1619,9 +1656,9 @@ export async function askResearcherProfileQuestion(
   }
 
   return {
-    answer: String(data?.answer || ""),
+    answer: naturaliseUserFacingText(data?.answer || ""),
     evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
-    caveat: String(data?.caveat || ""),
+    caveat: naturaliseUserFacingText(data?.caveat || ""),
   };
 }
 
@@ -1641,7 +1678,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
   if (!hasSupabaseConfig || !supabase) {
     return {
       kind: "empty",
-      answer: "Quick Search needs the live ITMAP database connection.",
+      answer: "Ask ITMAP is not available right now. Please try again shortly.",
       suggestions: [],
       papers: [],
       evidenceTitles: [],
@@ -1673,7 +1710,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
     kind: ["person", "relationship", "organization", "topic", "papers", "information", "redirect", "empty"].includes(String(data?.kind))
       ? String(data?.kind) as QuickSearchResult["kind"]
       : "empty",
-    answer: String(data?.answer || ""),
+    answer: naturaliseUserFacingText(data?.answer || ""),
     researcher: researcher
       ? {
         researcherId: String(researcher.researcher_id || ""),
@@ -1699,7 +1736,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
         department: normaliseDepartment(String(row.department || "")),
         faculty: String(row.faculty || "Imperial College London"),
         score: Number(row.score || 0),
-        reason: String(row.reason || ""),
+        reason: naturaliseUserFacingText(row.reason || ""),
       }))
       .filter((row: QuickSearchSuggestion) => row.researcherId && row.name),
     papers: papers
@@ -1716,7 +1753,7 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
             : Number(paper.publication_year),
           journal: paper.source_display_name ? String(paper.source_display_name) : undefined,
           doi: paper.doi ? String(paper.doi) : undefined,
-          reason: String(paper.reason || ""),
+          reason: naturaliseUserFacingText(paper.reason || ""),
           authors: authors
             .map((author: Record<string, unknown>) => ({
               name: String(author.name || author.full_name || ""),
@@ -1734,14 +1771,14 @@ export async function quickSearch(query: string): Promise<QuickSearchResult> {
               department: normaliseDepartment(String(author.department || "")),
               faculty: String(author.faculty || "Imperial College London"),
               score: Number(author.score || 0),
-              reason: String(author.reason || "Author of this publication."),
+              reason: naturaliseUserFacingText(author.reason || "Author of this publication."),
             }))
             .filter((author: QuickSearchSuggestion) => author.researcherId && author.name),
         };
       })
       .filter((paper: { paperId: string; title: string }) => paper.paperId && paper.title),
     evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String) : [],
-    caveat: String(data?.caveat || ""),
+    caveat: naturaliseUserFacingText(data?.caveat || ""),
   };
 }
 
@@ -1804,7 +1841,7 @@ export async function matchSchoolMissions(query: string, researchers: Researcher
       school: String(row.school || ""),
       mission: String(row.mission || ""),
       confidence: Math.max(0, Math.min(100, Number(row.confidence || 0))),
-      reason: String(row.reason || ""),
+      reason: naturaliseUserFacingText(row.reason || ""),
     }))
     .filter(row => row.researcherId && row.school && row.mission);
 }
@@ -1911,19 +1948,21 @@ export async function summarizeResearchPool(query: string, researchers: Research
 
   const summary = data?.summary && typeof data.summary === "object" ? data.summary as Record<string, unknown> : {};
   return {
-    headline: String(summary.headline || "What ITMAP found"),
-    summary: String(summary.summary || ""),
+    headline: naturaliseUserFacingText(summary.headline || "What ITMAP found"),
+    summary: naturaliseUserFacingText(summary.summary || ""),
     themes: Array.isArray(summary.themes) ? summary.themes.map(String).slice(0, 6) : [],
     notableResearchers: Array.isArray(summary.notable_researchers)
       ? summary.notable_researchers
         .map((item: Record<string, unknown>) => ({
           name: String(item.name || ""),
-          reason: String(item.reason || ""),
+          reason: naturaliseUserFacingText(item.reason || ""),
         }))
         .filter(item => item.name && item.reason)
         .slice(0, 6)
       : [],
-    gaps: Array.isArray(summary.gaps) ? summary.gaps.map(String).slice(0, 4) : [],
+    gaps: Array.isArray(summary.gaps)
+      ? summary.gaps.map(naturaliseUserFacingText).filter(Boolean).slice(0, 4)
+      : [],
     topicLandscape,
   };
 }
@@ -1970,8 +2009,8 @@ export async function askResearchPoolQuestion(
   if (error) throw new Error(error.message);
 
   return {
-    answer: String(data?.answer || "I could not answer that from the current search results."),
+    answer: naturaliseUserFacingText(data?.answer || "I could not answer that from the current search results."),
     evidenceTitles: Array.isArray(data?.evidence_titles) ? data.evidence_titles.map(String).slice(0, 8) : [],
-    caveat: String(data?.caveat || ""),
+    caveat: naturaliseUserFacingText(data?.caveat || ""),
   };
 }

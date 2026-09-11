@@ -327,7 +327,7 @@ export default function AdminSearchLogs() {
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">
                           <span className="rounded-md bg-secondary px-2 py-1">{log.mode || "search"}</span>
-                          {log.enableRerank && <span className="ml-1 rounded-md bg-primary/10 px-2 py-1 text-primary">rerank</span>}
+                          {log.enableRerank && <span className="ml-1 rounded-md bg-primary/10 px-2 py-1 text-primary">AI review</span>}
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatDuration(log.durationMs)}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">

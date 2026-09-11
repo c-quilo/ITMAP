@@ -1,14 +1,15 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake, Building2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ArrowUpDown, X, Search as SearchIcon, Share2, Loader2, Sparkles, Database, Brain, BookmarkCheck, Download, List, Target, CheckCircle2, UserRound, FileText, ChevronDown, ChevronLeft, ChevronRight, SendHorizontal, MessageSquareText, UsersRound, ExternalLink, CircleHelp, Handshake, Building2, PanelLeftClose, PanelLeftOpen, MoreHorizontal, BookOpen, ShieldCheck } from "lucide-react";
 import SearchSidebar, { type SavedSearchSummary, type SearchOptions } from "@/components/SearchSidebar";
 import ResearcherCard from "@/components/ResearcherCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import PublicationThemeTimeline from "@/components/PublicationThemeTimeline";
 import CollaborationTimeline from "@/components/CollaborationTimeline";
 import ViewErrorBoundary from "@/components/ViewErrorBoundary";
-import { KEYWORD_OPTIONS, type Researcher } from "@/data/mockData";
+import { type Researcher } from "@/data/mockData";
 import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchPaper, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { researcherMatchLabel } from "@/lib/matchStrength";
+import { friendlyUserFacingError, naturaliseUserFacingText } from "@/lib/userFacingText";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
 import scsSwoosh from "@/assets/scs-swoosh.png";
@@ -19,7 +20,7 @@ const DepartmentExplorer = lazy(() => import("@/components/DepartmentExplorer"))
 const SearchResultsGraph = lazy(() => import("@/components/SearchResultsGraph"));
 
 type SortBy = "relevance" | "name" | "seniority";
-type TabMode = "search" | "quick" | "deep-search" | "profile" | "departments" | "saved" | "help";
+type TabMode = "search" | "quick" | "profile" | "departments" | "saved" | "help";
 type ResearcherWorkspaceView = "profile" | "graph" | "collaborate";
 type SearchWorkspaceView = "results" | "graph";
 type SearchMode = "semantic" | "keyword";
@@ -42,6 +43,8 @@ const SAVED_RESEARCHERS_KEY = "itmap.savedResearchers.v1";
 const SCHOOL_MISSION_CACHE_KEY = "itmap.schoolMissionMatches.v1";
 const POOL_SUMMARY_CACHE_KEY = "itmap.researchPoolSummaries.v5";
 const INTRO_SEEN_KEY = "itmap.introSeen.v1";
+const ONBOARDING_SEEN_KEY = "itmap.onboardingSeen.v1";
+const RESULTS_PAGE_SIZE = 24;
 const MATCH_FILTERS = new Set(["Strong Match", "Moderate", "Weak"]);
 const SCHOOL_MISSION_THEME_PREFIX = "Theme: ";
 const SCHOOL_MISSION_PREFIX = "Mission: ";
@@ -65,6 +68,13 @@ function cleanStoredResearcher(researcher: Researcher): Researcher {
     ...researcher,
     title: cleanResearcherTitle(researcher.title) || "Imperial researcher",
     department: normaliseDepartment(researcher.department),
+    semanticExplanation: naturaliseUserFacingText(researcher.semanticExplanation),
+    schoolMissionMatch: researcher.schoolMissionMatch
+      ? {
+        ...researcher.schoolMissionMatch,
+        reason: naturaliseUserFacingText(researcher.schoolMissionMatch.reason),
+      }
+      : undefined,
   };
 }
 
@@ -270,26 +280,26 @@ function poolSummaryCacheKey(query: string, researchers: Researcher[]) {
 const SEARCH_STEPS = [
   {
     at: 0,
-    label: "Clarifying the research topic",
-    detail: "ITMAP is removing search instructions and identifying the expertise, methods, and domains that matter.",
+    label: "Understanding your question",
+    detail: "Identifying the topic, methods, and outcomes that matter.",
     Icon: Sparkles,
   },
   {
     at: 7,
-    label: "Searching profiles, papers, and topics",
-    detail: "Matching the query against profiles, positions, publication evidence, and OpenAlex paper topics.",
+    label: "Looking across profiles and publications",
+    detail: "Finding researchers whose work addresses the same ideas.",
     Icon: Database,
   },
   {
     at: 16,
-    label: "Collecting full publication titles",
-    detail: "Adding each candidate's broader publication history before the final judgement.",
+    label: "Checking the strongest evidence",
+    detail: "Reading the publication history of each likely match.",
     Icon: List,
   },
   {
     at: 25,
-    label: "Reranking candidates",
-    detail: "ITMAP is reviewing the narrowed pool and writing grounded match explanations.",
+    label: "Preparing your shortlist",
+    detail: "Comparing the evidence and writing a clear reason for each result.",
     Icon: Brain,
   },
 ];
@@ -297,20 +307,20 @@ const SEARCH_STEPS = [
 const KEYWORD_SEARCH_STEPS = [
   {
     at: 0,
-    label: "Looking up exact terms",
-    detail: "ITMAP is using the keyword index to find matching researcher profiles.",
+    label: "Finding your terms",
+    detail: "Looking for the words and phrases you entered.",
     Icon: SearchIcon,
   },
   {
     at: 2,
-    label: "Ranking keyword hits",
-    detail: "Sorting profile matches with full-text relevance and your filters.",
+    label: "Ordering the matches",
+    detail: "Putting the clearest exact matches first.",
     Icon: Database,
   },
   {
     at: 4,
-    label: "Attaching papers",
-    detail: "Adding representative publications for the matched researchers.",
+    label: "Adding relevant publications",
+    detail: "Showing papers that contain or closely support your terms.",
     Icon: List,
   },
 ];
@@ -588,7 +598,8 @@ function ResearchPoolSummaryPanel({
           {summary.topicLandscape.length > 0 && (
             <div className="mt-3 border-t border-border pt-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-foreground">OpenAlex topics</p>
+                <p className="text-xs font-semibold text-foreground">Publication topics</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Topic labels are supplied by OpenAlex.</p>
                 <div className="flex items-center gap-3">
                   {activeTopic && (
                     <button
@@ -809,7 +820,7 @@ function QuickSearchPanel({
             <div>
               <p className="text-base font-semibold text-foreground">Ask ITMAP</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                Ask about a known researcher, an Imperial research topic, or the School of Convergence Science. If ITMAP shows a name, click it to explore more in Researcher Profile.
+                Use this for a quick factual question about a known person, research topic, or Imperial unit. For a ranked expert shortlist, use Search.
               </p>
             </div>
             {(result?.kind === "topic" || result?.kind === "papers") && (
@@ -819,7 +830,7 @@ function QuickSearchPanel({
                 className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
               >
                 <SearchIcon className="h-3.5 w-3.5" />
-                Run full search
+                Build ranked shortlist
               </button>
             )}
           </div>
@@ -834,7 +845,7 @@ function QuickSearchPanel({
                   onSubmit();
                 }
               }}
-              placeholder="Ask a quick question or type a topic..."
+              placeholder="Ask about a person, topic, or Imperial unit..."
               className="h-11 min-h-11 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20 sm:flex-1"
             />
             <button
@@ -844,7 +855,7 @@ function QuickSearchPanel({
               className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
-              {isLoading ? "Checking..." : "Ask"}
+              {isLoading ? "Finding an answer..." : "Ask"}
             </button>
           </div>
 
@@ -909,7 +920,7 @@ function QuickSearchPanel({
               )}
               {result.evidenceTitles.length > 0 && (
                 <div className="mt-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Evidence used</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Supporting evidence</p>
                   <ul className="mt-1 space-y-1 text-xs leading-relaxed text-muted-foreground">
                     {result.evidenceTitles.map(title => (
                       <li key={title}>- {title}</li>
@@ -930,52 +941,37 @@ function QuickSearchPanel({
   );
 }
 
-function HelpAboutPanel() {
+function HelpAboutPanel({ onNavigate }: { onNavigate: (tab: TabMode) => void }) {
   const sections = [
     {
       title: "Search",
-      text: "This is the main expert-finding tool. Use it when you have a research question or need a ranked shortlist. Search has two modes inside it: Semantic and Keyword.",
+      text: "Use this when you need a ranked shortlist of researchers. Semantic mode understands an idea; Keyword mode finds exact words.",
       examples: ["AI for weather forecasting", "Environmental exposure and air pollution", "Sustainable textiles"],
-    },
-    {
-      title: "Search: Semantic mode",
-      text: "Use this when the idea matters more than the exact words. ITMAP looks for meaning in profiles and papers, then reranks the best people.",
-      examples: ["Good for long query text", "Good for broad or mixed topics"],
-    },
-    {
-      title: "Search: Keyword mode",
-      text: "Use this when you know the words that must appear. It is more literal. It can be faster, but it can miss people who use different words.",
-      examples: ["air pollution AND AI", "photonics", "Grantham Institute"],
+      tab: "search" as const,
     },
     {
       title: "Researcher Profile",
-      text: "Use this when you want one person. Choose the researcher once, then move between their Profile, Graph, and Collaborate views without searching for the name again.",
+      text: "Use this when you already know a person. Read their Imperial profile, publications, recent collaborators, research themes, and collaboration network.",
       examples: ["Read their profile and papers", "Explore their network", "Find new collaborators"],
-    },
-    {
-      title: "Researcher Profile: Graph",
-      text: "Inside Researcher Profile, use Graph to explore the selected person's immediate collaboration network. You can choose a second researcher to find a supported co-authorship path of up to three degrees.",
-      examples: ["Find immediate co-authors", "Trace a connection between two researchers"],
-    },
-    {
-      title: "Researcher Profile: Collaborate",
-      text: "Inside Researcher Profile, use Collaborate to find people with related OpenAlex topics who do not have a recorded co-authorship with the selected researcher.",
-      examples: ["Start with one researcher", "Compare shared topics and papers"],
+      tab: "profile" as const,
     },
     {
       title: "Departments",
       text: "Use this to explore an Imperial department, institute, school, faculty, centre, or lab as one research community. You can see its people, leading themes, and topics with recent momentum.",
       examples: ["Grantham Institute for Climate Change", "Department of Mechanical Engineering"],
+      tab: "departments" as const,
     },
     {
       title: "Ask ITMAP",
-      text: "Use this later for a quick factual question about a known researcher, Imperial unit, or simple topic. It gives a fast pointer, not the full evidence-led ranking from Search. If ITMAP gives you a name, click it to open Researcher Profile.",
+      text: "Use this for a quick factual answer or first pointer. It checks a smaller evidence set and does not produce the full ranked shortlist from Search. Names in the answer can open Researcher Profile.",
       examples: ["Tell me about Benjamin Barratt", "Who is working on photonics?", "Co-directors of the school"],
+      tab: "quick" as const,
     },
     {
       title: "Saved",
-      text: "Use this like a small basket. Save researchers from results, then export the list when you are ready.",
+      text: "Keep useful researchers from several searches in one shortlist. The list is stored in this browser and can be exported as CSV.",
       examples: ["Save a shortlist", "Export CSV"],
+      tab: "saved" as const,
     },
   ];
 
@@ -990,9 +986,8 @@ function HelpAboutPanel() {
             <div>
               <p className="text-lg font-semibold text-foreground">Help / About</p>
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-                ITMAP helps you find Imperial researchers. You can ask a quick question, run a deeper search,
-                open one researcher profile, see links in a graph, and save people for later. Simple English is fine.
-                You do not need to write perfect search text.
+                Start with the task you have. Use Search for a ranked expert shortlist, Researcher Profile for one person,
+                Departments for a whole unit, or Ask ITMAP for a quick answer. Simple English is fine.
               </p>
             </div>
           </div>
@@ -1000,7 +995,7 @@ function HelpAboutPanel() {
 
         <section className="grid gap-4 md:grid-cols-2">
           {sections.map(section => (
-            <article key={section.title} className="rounded-lg border border-border bg-card p-4">
+            <article key={section.title} className="flex flex-col rounded-lg border border-border bg-card p-4">
               <p className="text-sm font-semibold text-foreground">{section.title}</p>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{section.text}</p>
               <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1010,6 +1005,14 @@ function HelpAboutPanel() {
                   </span>
                 ))}
               </div>
+              <button
+                type="button"
+                onClick={() => onNavigate(section.tab)}
+                className="mt-4 inline-flex min-h-9 items-center gap-2 self-start rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+              >
+                Open {section.title}
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </article>
           ))}
         </section>
@@ -1021,6 +1024,27 @@ function HelpAboutPanel() {
             <p><span className="font-medium text-foreground">Best expert ranking:</span> use Search with Semantic mode.</p>
             <p><span className="font-medium text-foreground">Exact words:</span> use Search with Keyword mode.</p>
           </div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2">
+          <article className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">How to read a match</p>
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              Strong means the profile or several publications give direct evidence. Moderate means the connection is useful but less complete. Weak means the evidence is limited or adjacent. Always open the publications when the decision matters.
+            </p>
+          </article>
+          <article className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Coverage and limitations</p>
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              ITMAP uses Imperial profiles and the publication records currently available to it. Names can be split across author records, and recent papers can arrive later. Treat results as strong discovery support, not a complete personnel record.
+            </p>
+          </article>
         </section>
       </div>
     </main>
@@ -1052,10 +1076,76 @@ function ResearcherProfileView({
   const pageCount = Math.max(1, Math.ceil(profile.papers.length / pageSize));
   const safePage = Math.min(Math.max(0, paperPage), pageCount - 1);
   const papers = profile.papers.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  const latestPaperYear = Math.max(0, ...profile.papers.map(paper => Number(paper.year || 0)));
+  const papersWithDoi = profile.papers.filter(paper => Boolean(paper.doi || paper.doiUrl)).length;
+  const openAlexUrl = profile.openalexId
+    ? `https://openalex.org/authors/${profile.openalexId.replace(/^https?:\/\/openalex\.org\/(?:authors\/)?/i, "")}`
+    : "";
 
   return (
     <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 items-start gap-3 overflow-y-auto p-3 sm:gap-5 sm:p-6 xl:grid-cols-[minmax(280px,360px),1fr]">
-      <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4">
+      <section className="xl:col-span-2 overflow-hidden rounded-lg border border-border bg-card">
+        <div className="grid lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
+          <div className="border-b border-border p-4 sm:p-5 lg:border-b-0 lg:border-r">
+            <div className="flex items-start gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                {profile.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-xl font-semibold leading-tight text-foreground">{profile.name}</h2>
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{profile.title}</p>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{profile.department} · {profile.faculty}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-3 border-y border-border">
+              <div className="py-3 pr-2">
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">Publications</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">{profile.paperCount.toLocaleString()}</p>
+              </div>
+              <div className="border-l border-border px-3 py-3">
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">Latest year</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">{latestPaperYear || "N/A"}</p>
+              </div>
+              <div className="border-l border-border py-3 pl-3">
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">With DOI</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">{papersWithDoi.toLocaleString()}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {profile.profileUrl && (
+                <a href={profile.profileUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary">
+                  Imperial profile <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+              {openAlexUrl && (
+                <a href={openAlexUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary">
+                  Publication record <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+            </div>
+            {profile.email && <p className="mt-3 break-all text-xs text-muted-foreground">{profile.email}</p>}
+            <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+              These counts describe the records currently available to ITMAP and may not include every publication.
+            </p>
+          </div>
+
+          <div className="p-4 sm:p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Research overview</p>
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">AI generated</span>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              ITMAP creates this overview from the researcher&apos;s Imperial profile, position, research fields, and publications. The researcher did not write this text.
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-foreground/80">{profile.summary || "No overview is available yet."}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="xl:col-span-2 rounded-lg border border-primary/15 bg-card p-4">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
             <MessageSquareText className="h-4 w-4 text-primary" />
@@ -1063,7 +1153,7 @@ function ResearcherProfileView({
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-foreground">Ask about {profile.name}</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Ask ITMAP to answer from this researcher&apos;s profile, position, fields, stored paper titles/abstracts, and co-author patterns.
+              Ask a focused question about their role, research, publications, or recent co-authors.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
@@ -1102,7 +1192,7 @@ function ResearcherProfileView({
                 <p className="text-sm leading-relaxed text-foreground/85">{questionAnswer.answer}</p>
                 {questionAnswer.evidenceTitles.length > 0 && (
                   <div className="mt-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Evidence used</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Supporting evidence</p>
                     <ul className="mt-1 space-y-1 text-xs leading-relaxed text-muted-foreground">
                       {questionAnswer.evidenceTitles.map(title => (
                         <li key={title}>- {title}</li>
@@ -1119,44 +1209,17 @@ function ResearcherProfileView({
             )}
           </div>
         </div>
-      </div>
-      <PublicationThemeTimeline papers={profile.papers} />
-      <CollaborationTimeline timeline={profile.collaborationTimeline} />
+      </section>
+
       <aside className="space-y-4">
         <div className="rounded-lg border border-border bg-card p-4">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-              {profile.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold leading-tight text-foreground">{profile.name}</h2>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{profile.title}</p>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Original Imperial profile</p>
+            <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Source text</span>
           </div>
-          <div className="mt-4 space-y-2 text-xs text-muted-foreground">
-            <p><span className="font-medium text-foreground">Department:</span> {profile.department}</p>
-            <p><span className="font-medium text-foreground">Faculty:</span> {profile.faculty}</p>
-            {profile.email && <p><span className="font-medium text-foreground">Email:</span> {profile.email}</p>}
-            {profile.openalexId && <p><span className="font-medium text-foreground">OpenAlex:</span> {profile.openalexId}</p>}
-            <p><span className="font-medium text-foreground">Papers:</span> {profile.paperCount.toLocaleString()}</p>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-primary/15 bg-card p-4">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <p className="text-sm font-semibold text-foreground">AI-generated overview</p>
-            <span
-              title="Generated from the Imperial profile, position, research fields, research description, and up to 80 stored paper titles."
-              className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
-            >
-              AI generated
-            </span>
-          </div>
-          <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
-            Synthesised from the Imperial profile, position, research fields, research description, and stored paper titles.
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/80">
+            {profile.profile || profile.research || "No Imperial profile text is available."}
           </p>
-          <p className="text-sm leading-relaxed text-foreground/75">{profile.summary || "No profile summary available."}</p>
         </div>
 
         {profile.fieldsOfResearch && (
@@ -1202,21 +1265,6 @@ function ResearcherProfileView({
       </aside>
 
       <section className="min-w-0 space-y-4">
-        <div className="rounded-lg border border-border bg-card p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Original Imperial profile</p>
-            <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              Source text
-            </span>
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            Kept separate from the AI-generated overview above.
-          </p>
-          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/80">
-            {profile.profile || profile.research || "No profile text available."}
-          </p>
-        </div>
-
         <div className="rounded-lg border border-border bg-card">
           <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1225,7 +1273,7 @@ function ResearcherProfileView({
                 <p className="text-sm font-semibold text-foreground">Paper Titles</p>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Showing {papers.length === 0 ? 0 : safePage * pageSize + 1}-{Math.min(profile.papers.length, safePage * pageSize + papers.length)} of {profile.papers.length.toLocaleString()} papers
+                Showing {papers.length === 0 ? 0 : safePage * pageSize + 1}-{Math.min(profile.papers.length, safePage * pageSize + papers.length)} of {profile.papers.length.toLocaleString()} publications currently available to ITMAP
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1299,6 +1347,20 @@ function ResearcherProfileView({
           )}
         </div>
       </section>
+
+      <details className="group xl:col-span-2 overflow-hidden rounded-lg border border-border bg-card">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 marker:content-none sm:px-5">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Publication and collaboration trends</p>
+            <p className="mt-1 text-xs text-muted-foreground">Explore how themes, publication activity, and co-author reach change over time.</p>
+          </div>
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="grid gap-4 border-t border-border p-3 sm:p-5">
+          <PublicationThemeTimeline papers={profile.papers} />
+          <CollaborationTimeline timeline={profile.collaborationTimeline} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -1312,6 +1374,8 @@ export default function Index() {
   const [tabMode, setTabMode] = useState<TabMode>("search");
   const [searchWorkspaceView, setSearchWorkspaceView] = useState<SearchWorkspaceView>("results");
   const [searchSidebarCollapsed, setSearchSidebarCollapsed] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [visibleResultCount, setVisibleResultCount] = useState(RESULTS_PAGE_SIZE);
   const [searchResults, setSearchResults] = useState<Researcher[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -1355,24 +1419,46 @@ export default function Index() {
   const [keywordSearchSuggestions, setKeywordSearchSuggestions] = useState<string[]>(FALLBACK_KEYWORD_SUGGESTIONS);
   const [showIntro, setShowIntro] = useState(() => {
     try {
-      return window.sessionStorage.getItem(INTRO_SEEN_KEY) !== "true";
+      return window.localStorage.getItem(INTRO_SEEN_KEY) !== "true";
     } catch {
       return true;
     }
   });
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try {
+      return window.localStorage.getItem(ONBOARDING_SEEN_KEY) !== "true";
+    } catch {
+      return true;
+    }
+  });
+
+  const finishIntro = () => {
+    setShowIntro(false);
+    try {
+      window.localStorage.setItem(INTRO_SEEN_KEY, "true");
+    } catch {
+      // Local storage can be unavailable in restricted browser contexts.
+    }
+  };
+
+  const finishOnboarding = (nextTab?: TabMode) => {
+    setShowOnboarding(false);
+    setMobileMoreOpen(false);
+    if (nextTab) setTabMode(nextTab);
+    try {
+      window.localStorage.setItem(ONBOARDING_SEEN_KEY, "true");
+    } catch {
+      // Local storage can be unavailable in restricted browser contexts.
+    }
+  };
 
   useEffect(() => {
     if (!showIntro) return;
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const timer = window.setTimeout(() => {
-      setShowIntro(false);
-      try {
-        window.sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-      } catch {
-        // Session storage can be unavailable in restricted browser contexts.
-      }
-    }, reducedMotion ? 450 : 4300);
+      finishIntro();
+    }, reducedMotion ? 250 : 2300);
 
     return () => window.clearTimeout(timer);
   }, [showIntro]);
@@ -1473,7 +1559,7 @@ export default function Index() {
       } catch (error) {
         if (!cancelled) {
           setProfileSuggestions([]);
-          setProfileSuggestionError(error instanceof Error ? error.message : "Could not load researcher suggestions.");
+          setProfileSuggestionError(friendlyUserFacingError(error, "Could not load researcher suggestions."));
         }
       } finally {
         if (!cancelled) setIsLoadingProfileSuggestions(false);
@@ -1495,9 +1581,9 @@ export default function Index() {
   const departmentFilters = useMemo(() => new Set(availableDepartments), [availableDepartments]);
 
   const availableKeywords = useMemo(() => {
-    if (!hasSearched) return [];
+    if (!hasSearched || searchResults.length === 0) return [];
     const resultKeywords = buildResultKeywords(searchResults);
-    return resultKeywords.length > 0 ? resultKeywords : KEYWORD_OPTIONS.slice(0, 12);
+    return resultKeywords;
   }, [hasSearched, searchResults]);
 
   const availableSchoolMissionThemes = useMemo(() => {
@@ -1639,21 +1725,7 @@ export default function Index() {
   const loadSavedSearch = (id: string) => {
     const saved = savedSearches.find(search => search.id === id);
     if (!saved) return;
-    const nextDepartments = new Set(saved.results.map(researcher => researcher.department).filter(Boolean));
-    const nextSchoolMissionFilters = new Set(saved.results.flatMap(researcher => {
-      const match = researcher.schoolMissionMatch;
-      return match
-        ? [
-          `${SCHOOL_MISSION_THEME_PREFIX}${match.school}`,
-          `${SCHOOL_MISSION_PREFIX}${match.school} · ${match.mission}`,
-        ]
-        : [];
-    }));
-    setActiveFilters(prev => prev.filter(filter =>
-      isPersistentFilter(filter)
-      || (!departmentFilters.has(filter) && nextDepartments.has(filter))
-      || (!schoolMissionFilters.has(filter) && nextSchoolMissionFilters.has(filter))
-    ));
+    setActiveFilters(prev => prev.filter(isPersistentFilter));
     setSearchResults(saved.results);
     setCurrentMission(saved.query);
     setCurrentOriginalMission(saved.originalQuery || saved.query);
@@ -1669,6 +1741,9 @@ export default function Index() {
     setSearchError("");
     setEmptySearchMessage("");
     setTabMode("search");
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      setSearchSidebarCollapsed(true);
+    }
   };
 
   const loadResearcherProfile = async (
@@ -1695,7 +1770,7 @@ export default function Index() {
     } catch (error) {
       if (requestId !== profileRequestIdRef.current) return;
       setSelectedResearcherProfile(null);
-      setResearcherProfileError(error instanceof Error ? error.message : "Could not load researcher profile.");
+      setResearcherProfileError(friendlyUserFacingError(error, "Could not load this researcher profile."));
     } finally {
       if (requestId === profileRequestIdRef.current) setIsLoadingResearcherProfile(false);
     }
@@ -1712,7 +1787,7 @@ export default function Index() {
       setProfileQuestionAnswer(answer);
     } catch (error) {
       setProfileQuestionAnswer(null);
-      setProfileQuestionError(error instanceof Error ? error.message : "Could not answer that question.");
+      setProfileQuestionError(friendlyUserFacingError(error, "Could not answer that question."));
     } finally {
       setIsAnsweringProfileQuestion(false);
     }
@@ -1742,7 +1817,7 @@ export default function Index() {
       setQuickSearchResult(result);
     } catch (error) {
       setQuickSearchResult(null);
-      setQuickSearchError(error instanceof Error ? error.message : "Quick Search failed.");
+      setQuickSearchError(friendlyUserFacingError(error, "Ask ITMAP could not answer that question."));
     } finally {
       setIsQuickSearching(false);
     }
@@ -1784,6 +1859,7 @@ export default function Index() {
     searchRunIdRef.current = searchRunId;
     setCurrentSearchMode(mode);
     setIsSearching(true);
+    setActiveFilters(prev => prev.filter(isPersistentFilter));
     setSearchError("");
     setEmptySearchMessage("");
     setSchoolMissionError("");
@@ -1806,16 +1882,15 @@ export default function Index() {
       const results = response.researchers;
       const expandedQuery = response.expandedQuery.trim() || trimmedQuery;
       const responseOriginalQuery = response.originalQuery.trim() || trimmedOriginalQuery;
-      const nextDepartments = new Set(results.map(researcher => researcher.department).filter(Boolean));
-      setActiveFilters(prev => prev.filter(filter =>
-        isPersistentFilter(filter) || (!departmentFilters.has(filter) && nextDepartments.has(filter))
-      ));
       setSearchResults(results);
       setCurrentMission(expandedQuery);
       setCurrentOriginalMission(responseOriginalQuery);
       setCurrentSearchMode(mode);
       setHasSearched(true);
       setEmptySearchMessage(results.length === 0 ? DEFAULT_EMPTY_SEARCH_MESSAGE : "");
+      if (window.matchMedia("(max-width: 1023px)").matches) {
+        setSearchSidebarCollapsed(true);
+      }
       saveSearch(expandedQuery, mode, results, responseOriginalQuery);
     } catch (error) {
       if (searchRunIdRef.current !== searchRunId) return;
@@ -1827,6 +1902,9 @@ export default function Index() {
       setSearchError(/edge function|non-2xx|no result|not found/i.test(message) ? "" : "Search could not run. Please try again.");
       setEmptySearchMessage(DEFAULT_EMPTY_SEARCH_MESSAGE);
       setHasSearched(true);
+      if (window.matchMedia("(max-width: 1023px)").matches) {
+        setSearchSidebarCollapsed(true);
+      }
     } finally {
       if (searchRunIdRef.current === searchRunId) {
         setIsSearching(false);
@@ -1853,6 +1931,9 @@ export default function Index() {
       setEmptySearchMessage(INCOMPLETE_SEARCH_MESSAGE);
       setHasSearched(true);
       setSearchWorkspaceView("results");
+      if (window.matchMedia("(max-width: 1023px)").matches) {
+        setSearchSidebarCollapsed(true);
+      }
       return;
     }
 
@@ -1940,7 +2021,7 @@ export default function Index() {
         // The mission check still works if local cache storage is unavailable.
       }
     } catch (error) {
-      setSchoolMissionError(error instanceof Error ? error.message : "School Missions check failed");
+      setSchoolMissionError(friendlyUserFacingError(error, "Could not compare these researchers with the School Missions."));
     } finally {
       setIsCheckingMissions(false);
     }
@@ -1974,7 +2055,7 @@ export default function Index() {
         // The summary still works if local cache storage is unavailable.
       }
     } catch (error) {
-      setPoolSummaryError(error instanceof Error ? error.message : "Summary generation failed");
+      setPoolSummaryError(friendlyUserFacingError(error, "Could not create the summary."));
     } finally {
       setIsGeneratingPoolSummary(false);
     }
@@ -2043,15 +2124,21 @@ export default function Index() {
     return b.relevanceScore - a.relevanceScore || a.name.localeCompare(b.name);
   });
 
+  useEffect(() => {
+    setVisibleResultCount(RESULTS_PAGE_SIZE);
+  }, [activeFilters, searchResults, sortBy]);
+
+  const visibleResearchers = sortedResearchers.slice(0, visibleResultCount);
+
   const seniorityGroups = useMemo(() => {
     if (sortBy !== "seniority") return [];
     return ROLE_GROUPS
       .map(group => ({
         ...group,
-        researchers: sortedResearchers.filter(researcher => roleGroupForTitle(researcher.title).label === group.label),
+        researchers: visibleResearchers.filter(researcher => roleGroupForTitle(researcher.title).label === group.label),
       }))
       .filter(group => group.researchers.length > 0);
-  }, [sortBy, sortedResearchers]);
+  }, [sortBy, visibleResearchers]);
 
   const findVisibleResearcherByName = (name: string) => {
     const targetName = normaliseResearcherName(name);
@@ -2069,10 +2156,19 @@ export default function Index() {
     const researcher = findVisibleResearcherByName(name);
     if (!researcher) return;
 
+    const resultIndex = sortedResearchers.findIndex(item => item.id === researcher.id);
+    if (resultIndex >= visibleResultCount) {
+      setVisibleResultCount(Math.ceil((resultIndex + 1) / RESULTS_PAGE_SIZE) * RESULTS_PAGE_SIZE);
+    }
+
     setHighlightedResearcherId(researcher.id);
-    document
-      .getElementById(researcherResultDomId(researcher.id))
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(researcherResultDomId(researcher.id))
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
 
     if (highlightTimeoutRef.current) {
       window.clearTimeout(highlightTimeoutRef.current);
@@ -2221,8 +2317,63 @@ export default function Index() {
             alt="Imperial College London - School of Convergence Science"
             className="itmap-intro-imperial"
           />
+          <button
+            type="button"
+            onClick={finishIntro}
+            className="absolute bottom-5 right-5 z-10 min-h-10 rounded-md border border-border bg-card/90 px-3 py-2 text-xs font-medium text-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-secondary"
+          >
+            Skip introduction
+          </button>
         </div>
       )}
+      <Dialog
+        open={!showIntro && showOnboarding}
+        onOpenChange={open => {
+          if (!open) finishOnboarding();
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>What would you like to do?</DialogTitle>
+            <DialogDescription>
+              Choose a starting point. You can move between all areas at any time.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {([
+              { tab: "search", title: "Find researchers", text: "Build a ranked shortlist for a topic, challenge, or event.", Icon: SearchIcon },
+              { tab: "profile", title: "Explore one person", text: "Open a profile, publications, network, and collaboration ideas.", Icon: UserRound },
+              { tab: "departments", title: "Explore an Imperial unit", text: "See people, themes, activity, and connections across a department or institute.", Icon: Building2 },
+              { tab: "quick", title: "Ask a quick question", text: "Get a short factual answer or a first pointer without a full ranking.", Icon: MessageSquareText },
+            ] as const).map(item => {
+              const Icon = item.Icon;
+              return (
+                <button
+                  key={item.tab}
+                  type="button"
+                  onClick={() => finishOnboarding(item.tab)}
+                  className="group flex min-h-28 items-start gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span>
+                    <span className="block text-sm font-semibold text-foreground">{item.title}</span>
+                    <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{item.text}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => finishOnboarding()}
+            className="mx-auto mt-1 min-h-9 px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            I know where to start
+          </button>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={Boolean(pendingProfileLookup)}
         onOpenChange={open => {
@@ -2275,14 +2426,14 @@ export default function Index() {
         </DialogContent>
       </Dialog>
       {/* Header */}
-      <header className="relative flex min-h-[104px] shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 overflow-clip border-b border-border bg-card px-3 py-3 sm:px-4 lg:h-24 lg:min-h-24 lg:flex-nowrap lg:gap-4 lg:px-6 lg:py-0">
+      <header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 overflow-clip border-b border-border bg-card px-3 py-3 sm:px-4 lg:h-24 lg:min-h-24 lg:gap-4 lg:px-6 lg:py-0">
         {/* Swoosh background */}
         <img
           src={scsSwoosh}
           alt=""
           className="itmap-thematic-swoosh absolute inset-0 h-full w-full scale-[2] translate-y-[30%] object-cover opacity-[0.18] pointer-events-none dark:opacity-[0.12]"
         />
-        <div className="relative z-10 order-1 flex shrink-0 items-center gap-4 lg:order-none">
+        <div className="relative z-10 flex shrink-0 items-center gap-4">
           <img
             src={imperialLogo}
             alt="Imperial College London - School of Convergence Science"
@@ -2291,8 +2442,10 @@ export default function Index() {
         </div>
 
         {/* Tab Navigation */}
-        <nav aria-label="Main navigation" className="itmap-header-tabs relative z-10 order-3 flex w-full min-w-0 flex-none items-center justify-start gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5 lg:order-none lg:w-auto lg:flex-1 lg:justify-center">
+        <nav aria-label="Main navigation" className="itmap-header-tabs relative z-10 hidden min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto rounded-lg bg-secondary p-0.5 lg:flex">
           <button
+            type="button"
+            aria-current={tabMode === "search" ? "page" : undefined}
             onClick={() => setTabMode("search")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "search"
@@ -2305,17 +2458,7 @@ export default function Index() {
           </button>
           <button
             type="button"
-            disabled
-            title="Deep Search is coming soon"
-            className="hidden min-h-9 cursor-not-allowed items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium text-muted-foreground/70 opacity-75 lg:flex"
-          >
-            <Brain className="h-3.5 w-3.5" />
-            Deep Search
-            <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-muted-foreground">
-              Coming soon
-            </span>
-          </button>
-          <button
+            aria-current={tabMode === "profile" ? "page" : undefined}
             onClick={() => setTabMode("profile")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "profile"
@@ -2328,6 +2471,8 @@ export default function Index() {
             <span className="hidden lg:inline">Researcher Profile</span>
           </button>
           <button
+            type="button"
+            aria-current={tabMode === "departments" ? "page" : undefined}
             onClick={() => {
               setDepartmentInitialOrganization("");
               setTabMode("departments");
@@ -2342,6 +2487,8 @@ export default function Index() {
             Departments
           </button>
           <button
+            type="button"
+            aria-current={tabMode === "quick" ? "page" : undefined}
             onClick={() => setTabMode("quick")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "quick"
@@ -2353,6 +2500,8 @@ export default function Index() {
             Ask ITMAP
           </button>
           <button
+            type="button"
+            aria-current={tabMode === "saved" ? "page" : undefined}
             onClick={() => setTabMode("saved")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "saved"
@@ -2369,6 +2518,8 @@ export default function Index() {
             )}
           </button>
           <button
+            type="button"
+            aria-current={tabMode === "help" ? "page" : undefined}
             onClick={() => setTabMode("help")}
             className={`flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all lg:px-4 ${
               tabMode === "help"
@@ -2382,20 +2533,74 @@ export default function Index() {
           </button>
         </nav>
 
-        <div className={`relative z-10 order-2 ml-auto flex shrink-0 items-center gap-2 transition-opacity duration-200 lg:order-none lg:ml-0 ${showIntro ? "opacity-0" : "opacity-100"}`}>
+        <div className={`relative z-10 ml-auto flex shrink-0 items-center gap-2 transition-opacity duration-200 lg:ml-0 ${showIntro ? "opacity-0" : "opacity-100"}`}>
           <ThemeToggle />
           <h1 className="font-itmap text-xl font-bold text-foreground">ITMAP</h1>
         </div>
       </header>
 
+      <nav aria-label="Mobile navigation" className="relative z-40 grid shrink-0 grid-cols-5 border-b border-border bg-card lg:hidden">
+        {([
+          { tab: "search", label: "Search", Icon: SearchIcon },
+          { tab: "profile", label: "Profile", Icon: UserRound },
+          { tab: "departments", label: "Units", Icon: Building2 },
+          { tab: "quick", label: "Ask", Icon: MessageSquareText },
+        ] as const).map(item => {
+          const Icon = item.Icon;
+          const active = tabMode === item.tab;
+          return (
+            <button
+              key={item.tab}
+              type="button"
+              aria-current={active ? "page" : undefined}
+              onClick={() => {
+                if (item.tab === "departments") setDepartmentInitialOrganization("");
+                setTabMode(item.tab);
+                setMobileMoreOpen(false);
+              }}
+              className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 border-b-2 px-1 text-[10px] font-medium transition-colors ${
+                active ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              <span className="truncate">{item.label}</span>
+            </button>
+          );
+        })}
+        <div className="relative">
+          <button
+            type="button"
+            aria-expanded={mobileMoreOpen}
+            onClick={() => setMobileMoreOpen(open => !open)}
+            className={`flex min-h-14 w-full min-w-0 flex-col items-center justify-center gap-1 border-b-2 px-1 text-[10px] font-medium transition-colors ${
+              tabMode === "saved" || tabMode === "help" ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+            }`}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+            <span>More</span>
+          </button>
+          {mobileMoreOpen && (
+            <div className="absolute right-2 top-[calc(100%+6px)] z-50 w-44 rounded-lg border border-border bg-popover p-1 shadow-xl">
+              <button type="button" onClick={() => { setTabMode("saved"); setMobileMoreOpen(false); }} className="flex min-h-10 w-full items-center gap-2 rounded-md px-3 text-xs font-medium text-foreground hover:bg-secondary">
+                <BookmarkCheck className="h-4 w-4" /> Saved researchers
+                {savedResearchers.length > 0 && <span className="ml-auto text-[10px] text-muted-foreground">{savedResearchers.length}</span>}
+              </button>
+              <button type="button" onClick={() => { setTabMode("help"); setMobileMoreOpen(false); }} className="flex min-h-10 w-full items-center gap-2 rounded-md px-3 text-xs font-medium text-foreground hover:bg-secondary">
+                <CircleHelp className="h-4 w-4" /> Help / About
+              </button>
+            </div>
+          )}
+        </div>
+      </nav>
+
       {/* Body */}
-      {tabMode === "search" || tabMode === "deep-search" ? (
+      {tabMode === "search" ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Sidebar */}
           <div className={`shrink-0 overflow-hidden transition-[width,max-height] duration-300 ${
             searchSidebarCollapsed
               ? "max-h-0 w-full border-0 lg:max-h-none lg:w-0"
-              : `${hasSearched ? "max-h-[38dvh]" : "max-h-[52dvh]"} w-full border-b border-border lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r`
+              : "max-h-[calc(100dvh-7.5rem)] w-full border-b border-border lg:max-h-none lg:w-[420px] lg:border-b-0 lg:border-r"
           }`}>
             <div className={`h-full w-full lg:w-[420px] ${searchSidebarCollapsed ? "invisible" : "visible"}`}>
               <SearchSidebar
@@ -2431,8 +2636,12 @@ export default function Index() {
                   >
                     {searchSidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
                   </button>
-                  <p className="text-sm font-medium text-foreground">
-                    {hasSearched ? `${sortedResearchers.length} researchers found` : "Ready to search"}
+                  <p className="text-sm font-medium text-foreground" aria-live="polite">
+                    {isSearching
+                      ? currentSearchMode === "keyword" ? "Finding exact matches..." : "Finding relevant researchers..."
+                      : hasSearched
+                        ? sortedResearchers.length > 0 ? `${sortedResearchers.length} researchers found` : "No researchers found"
+                        : "Ready to search"}
                   </p>
                   {searchError && (
                     <span className="text-xs text-destructive">{searchError}</span>
@@ -2440,10 +2649,10 @@ export default function Index() {
                   {activeFilters.length > 0 && (
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-2">
                       {activeFilters.slice(0, 3).map(f => (
-                        <span key={f} className="filter-chip filter-chip-active text-[10px] py-1 px-2" onClick={() => toggleFilter(f)}>
+                        <button key={f} type="button" aria-pressed="true" className="filter-chip filter-chip-active px-2 py-1 text-[10px]" onClick={() => toggleFilter(f)}>
                           {f}
                           <X className="h-2.5 w-2.5" />
-                        </span>
+                        </button>
                       ))}
                       {activeFilters.length > 3 && (
                         <span className="text-[10px] text-muted-foreground">+{activeFilters.length - 3} more</span>
@@ -2452,7 +2661,7 @@ export default function Index() {
                   )}
                 </div>
                 <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                  {hasSearched && sortedResearchers.length > 0 && (
+                  {!isSearching && hasSearched && sortedResearchers.length > 0 && (
                     <button
                       onClick={exportCurrentSearchCsv}
                       className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
@@ -2462,7 +2671,7 @@ export default function Index() {
                       <span className="hidden sm:inline">Export Search</span>
                     </button>
                   )}
-                  {searchWorkspaceView === "results" && (
+                  {searchWorkspaceView === "results" && sortedResearchers.length > 0 && (
                     <div className="flex items-center gap-1.5">
                       <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
                       <select
@@ -2553,71 +2762,55 @@ export default function Index() {
                       onSelectTopic={setPoolTopicFilter}
                     />
                   )}
-                  <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-3">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-start gap-2">
-                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                        <div>
-                          <p className="text-sm font-medium text-foreground">Summarise this researcher pool?</p>
-                          <p className="text-xs leading-relaxed text-muted-foreground">
-                            Generate a short overview plus a compact view of the OpenAlex paper topics in the current results.
-                          </p>
-                          {poolSummaryError && (
-                            <p className="mt-1 text-xs text-destructive">{poolSummaryError}</p>
-                          )}
+                  <div className="xl:col-span-2 overflow-hidden rounded-lg border border-primary/15 bg-card">
+                    <div className="border-b border-border px-4 py-3">
+                      <p className="text-sm font-semibold text-foreground">Explore these results</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Optional tools can help you understand the whole group or compare it with the School&apos;s missions.</p>
+                    </div>
+                    <div className="grid md:grid-cols-2">
+                      <div className="flex flex-col gap-3 border-b border-border px-4 py-4 md:border-b-0 md:border-r">
+                        <div className="flex items-start gap-2">
+                          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                          <div>
+                            <p className="text-sm font-medium text-foreground">Summarise the group</p>
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Get a short overview and the main publication topics across these researchers.</p>
+                            {poolSummaryError && <p className="mt-1 text-xs text-destructive">{poolSummaryError}</p>}
+                          </div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={generatePoolSummary}
+                          disabled={isGeneratingPoolSummary}
+                          className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="Create and save a short overview of the current results in this browser."
+                        >
+                          {isGeneratingPoolSummary ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : poolSummaryDone ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
+                          {isGeneratingPoolSummary ? "Preparing summary..." : poolSummaryDone ? "Summary ready" : "Create summary"}
+                        </button>
                       </div>
-                      <button
-                        onClick={generatePoolSummary}
-                        disabled={isGeneratingPoolSummary}
-                        className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                        title="Runs an opt-in LLM pass over the current top results and caches the summary."
-                      >
-                        {isGeneratingPoolSummary ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : poolSummaryDone ? (
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                        ) : (
-                          <Sparkles className="h-3.5 w-3.5" />
-                        )}
-                        {isGeneratingPoolSummary ? "Summarising..." : poolSummaryDone ? "Summary ready" : "Generate Summary"}
-                      </button>
+                      <div className="flex flex-col gap-3 px-4 py-4">
+                        <div className="flex items-start gap-2">
+                          <Target className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                          <div>
+                            <p className="text-sm font-medium text-foreground">Compare with School Missions</p>
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">See which School of Convergence Science mission is most relevant to each leading researcher.</p>
+                            {schoolMissionError && <p className="mt-1 text-xs text-destructive">{schoolMissionError}</p>}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={checkSchoolMissions}
+                          disabled={isCheckingMissions}
+                          className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-primary/30 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="Compare the leading researchers with the School's current mission brief."
+                        >
+                          {isCheckingMissions ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : missionCheckDone ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Target className="h-3.5 w-3.5" />}
+                          {isCheckingMissions ? "Comparing..." : missionCheckDone ? "Comparison ready" : "Compare missions"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </>
-              )}
-              {!isSearching && hasSearched && sortedResearchers.length > 0 && searchWorkspaceView === "results" && (
-                <div className="xl:col-span-2 rounded-lg border border-primary/15 bg-card px-4 py-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-start gap-2">
-                      <Target className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                      <div>
-                        <p className="text-sm font-medium text-foreground">Check against School Missions?</p>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          Compare the top researchers with Health and Technology, Human and Artificial Intelligence, Space/Security/Telecoms, and Sustainability missions.
-                        </p>
-                        {schoolMissionError && (
-                          <p className="mt-1 text-xs text-destructive">{schoolMissionError}</p>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={checkSchoolMissions}
-                      disabled={isCheckingMissions}
-                      className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                      title="Runs an opt-in LLM pass over the current top results and cached School Missions brief."
-                    >
-                      {isCheckingMissions ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : missionCheckDone ? (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                      ) : (
-                        <Target className="h-3.5 w-3.5" />
-                      )}
-                      {isCheckingMissions ? "Checking..." : missionCheckDone ? "Checked" : "Check Missions"}
-                    </button>
-                  </div>
-                </div>
               )}
               {!isSearching && hasSearched && sortedResearchers.length === 0 && (
                 <div className="xl:col-span-2 flex min-h-[50vh] items-center justify-center rounded-lg border border-border bg-card p-6 text-center">
@@ -2625,14 +2818,35 @@ export default function Index() {
                     <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-secondary text-3xl font-semibold text-muted-foreground">
                       :(
                     </div>
-                    <p className="mt-4 text-base font-semibold text-foreground">We couldn't find any results</p>
-                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                      {emptySearchMessage || DEFAULT_EMPTY_SEARCH_MESSAGE}
+                    <p className="mt-4 text-base font-semibold text-foreground">
+                      {searchResults.length > 0 ? "No researchers match these filters" : "We couldn't find any results"}
                     </p>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {searchResults.length > 0
+                        ? "Remove one or more filters to see the researchers found by this search."
+                        : emptySearchMessage || DEFAULT_EMPTY_SEARCH_MESSAGE}
+                    </p>
+                    {searchResults.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setActiveFilters([])}
+                        className="mt-4 min-h-10 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      >
+                        Clear filters
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setSearchSidebarCollapsed(false)}
+                        className="mt-4 min-h-10 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      >
+                        Change search
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
-              {searchWorkspaceView === "results" && (sortBy === "seniority" ? (
+              {!isSearching && hasSearched && sortedResearchers.length > 0 && searchWorkspaceView === "results" && (sortBy === "seniority" ? (
                   seniorityGroups.map(group => (
                     <div key={group.label} className="contents">
                       <div className="xl:col-span-2 mt-1 flex items-center gap-3">
@@ -2646,8 +2860,22 @@ export default function Index() {
                     </div>
                   ))
                 ) : (
-                  sortedResearchers.map(renderResultCard)
+                  visibleResearchers.map(renderResultCard)
                 ))}
+              {!isSearching && hasSearched && searchWorkspaceView === "results" && visibleResearchers.length < sortedResearchers.length && (
+                <div className="xl:col-span-2 flex flex-col items-center gap-2 border-t border-border pt-5">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {visibleResearchers.length} of {sortedResearchers.length} researchers
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleResultCount(count => count + RESULTS_PAGE_SIZE)}
+                    className="inline-flex min-h-10 items-center justify-center rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+                  >
+                    Show {Math.min(RESULTS_PAGE_SIZE, sortedResearchers.length - visibleResearchers.length)} more
+                  </button>
+                </div>
+              )}
             </div>
           </main>
         </div>
@@ -2743,7 +2971,7 @@ export default function Index() {
                           <span className="mt-0.5 block break-words text-[11px] leading-snug text-muted-foreground">{suggestion.department}</span>
                         </span>
                         <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
-                          {Math.round(suggestion.score * 100)}%
+                          Name match
                         </span>
                       </button>
                     ))}
@@ -2886,14 +3114,14 @@ export default function Index() {
           </Suspense>
         </ViewErrorBoundary>
       ) : tabMode === "help" ? (
-        <HelpAboutPanel />
+        <HelpAboutPanel onNavigate={tab => setTabMode(tab)} />
       ) : (
         <main className="min-h-0 flex-1 overflow-y-auto bg-background">
           <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-3 py-3 backdrop-blur-sm sm:px-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-medium text-foreground">{savedResearchers.length} saved researchers</p>
-                <p className="text-xs text-muted-foreground">Each saved researcher keeps the search query that produced it.</p>
+                <p className="text-xs text-muted-foreground">Each saved researcher keeps the search query that produced it. This list is stored only in this browser.</p>
               </div>
               {savedResearchers.length > 0 ? (
                 <button

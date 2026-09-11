@@ -40,6 +40,7 @@ import {
   type OrganizationTheme,
   type ResearcherSuggestion,
 } from "@/lib/researcherSearch";
+import { friendlyUserFacingError } from "@/lib/userFacingText";
 
 const QUICK_ORGANIZATIONS = [
   "Grantham Institute for Climate Change",
@@ -145,7 +146,7 @@ function OrganizationSearch({
       } catch (error) {
         if (!cancelled) {
           setSuggestions([]);
-          setSuggestionError(error instanceof Error ? error.message : "Could not load suggestions.");
+          setSuggestionError(friendlyUserFacingError(error, "Could not load department suggestions."));
         }
       } finally {
         if (!cancelled) setIsSuggesting(false);
@@ -454,7 +455,7 @@ export default function DepartmentExplorer({
   const [directoryError, setDirectoryError] = useState("");
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [directoryGroup, setDirectoryGroup] = useState<OrganizationGroupKey | "all">("all");
-  const [themeChartView, setThemeChartView] = useState<"span" | "volume">("span");
+  const [themeChartView, setThemeChartView] = useState<"span" | "volume">("volume");
   const [chartTopicFilter, setChartTopicFilter] = useState("");
   const [activeView, setActiveView] = useState<"overview" | "connections">("overview");
   const [connectionView, setConnectionView] = useState<"researchers" | "departments">("researchers");
@@ -660,7 +661,7 @@ export default function DepartmentExplorer({
           <div className="text-center">
             <Loader2 className="mx-auto h-7 w-7 animate-spin text-primary" />
             <p className="mt-4 text-sm font-semibold text-foreground">Building the department view</p>
-            <p className="mt-1 text-xs text-muted-foreground">Combining researchers, OpenAlex topics, papers, and time periods...</p>
+            <p className="mt-1 text-xs text-muted-foreground">Bringing together researchers, publication themes, papers, and time periods...</p>
           </div>
         </div>
       ) : error ? (
@@ -840,7 +841,7 @@ export default function DepartmentExplorer({
               <div className="mt-6 grid grid-cols-3 border-y border-border">
               {[
                 { label: "Researchers", value: profile.organization.researcherCount, Icon: UsersRound },
-                { label: "Distinct themes", value: profile.organization.distinctTopicCount, Icon: CalendarRange },
+                { label: "Publication themes", value: profile.organization.distinctTopicCount, Icon: CalendarRange },
                 {
                   label: "Emerging signals",
                   value: profile.organization.emergingTopicCount,
@@ -942,12 +943,12 @@ export default function DepartmentExplorer({
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <h3 className="text-base font-semibold text-foreground">
-                  {themeChartView === "span" ? "Theme activity span" : "Paper volume by theme"}
+                  {themeChartView === "span" ? "Topic coverage range" : "Paper volume by theme"}
                 </h3>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   {themeChartView === "span"
-                    ? "The first and latest publication years associated with each leading OpenAlex topic. Click a theme to filter researchers."
-                    : "Stored author-topic paper counts, with the number of papers shown on the vertical axis."}
+                    ? "The first and latest publication years currently linked to each leading topic. A line shows coverage between two dates, not continuous activity. Click a topic to filter researchers."
+                    : "Yearly publication counts for the selected topics, with the number of papers on the vertical axis."}
                 </p>
               </div>
               <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
@@ -957,7 +958,7 @@ export default function DepartmentExplorer({
                     onClick={() => setThemeChartView("span")}
                     className={`h-8 rounded-md px-3 text-xs font-medium transition-colors ${themeChartView === "span" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                   >
-                    Activity span
+                    Coverage range
                   </button>
                   <button
                     type="button"

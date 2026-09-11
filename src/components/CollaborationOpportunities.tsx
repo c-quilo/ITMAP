@@ -100,7 +100,7 @@ function OpportunityCard({
             </span>
             <span className="inline-flex items-center gap-1 rounded-full bg-primary/8 px-2.5 py-1 text-[10px] font-medium text-primary">
               <Check className="h-3 w-3" />
-              No recorded co-authorship
+              No shared publication found in ITMAP
             </span>
           </div>
           <h3 className="mt-3 text-base font-semibold text-foreground">{opportunity.name}</h3>
@@ -324,7 +324,7 @@ export default function CollaborationOpportunities({
             </div>
             <div>
               <h2 className="text-base font-semibold text-foreground">Collaboration Opportunities</h2>
-              <p className="text-xs text-muted-foreground">Related research, without a recorded co-authorship</p>
+              <p className="text-xs text-muted-foreground">Researchers with related work and no shared publication found in ITMAP&apos;s current records</p>
             </div>
           </div>
 
@@ -388,7 +388,7 @@ export default function CollaborationOpportunities({
           </div>
           <h3 className="mt-5 text-lg font-semibold text-foreground">Start with one researcher</h3>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            ITMAP will look for Imperial colleagues with overlapping OpenAlex topics and no co-authorship in the stored record.
+            ITMAP will look for Imperial colleagues with related publication topics and no shared publication in its current records.
           </p>
         </div>
       ) : isLoading ? (
@@ -442,7 +442,7 @@ export default function CollaborationOpportunities({
               <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3">
                 <div className="rounded-md bg-secondary px-3 py-2.5">
                   <p className="text-lg font-semibold text-foreground">{filteredOpportunities.length}</p>
-                  <p className="text-[10px] text-muted-foreground">Candidates</p>
+                  <p className="text-[10px] text-muted-foreground">People</p>
                 </div>
                 <div className="rounded-md bg-secondary px-3 py-2.5">
                   <p className="text-lg font-semibold text-foreground">{crossDepartmentCount}</p>

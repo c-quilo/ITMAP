@@ -1125,6 +1125,10 @@ export default function ResearcherNetworkGraph({
   const connectionModel = useMemo(() => buildConnectionGraphModel(connection), [connection]);
   const model = selectedTarget ? connectionModel : neighbourhoodModel;
   const maxSharedPapers = Math.max(1, ...((network?.connections || []).map(connection => connection.sharedPapers)));
+  const visibleConnectionRows = useMemo(() => (network?.connections || []).filter(item => (
+    item.sharedPapers >= minimumSharedPapers
+    && ((item.isImperialProfile && showImperial) || (!item.isImperialProfile && showExternal))
+  )), [minimumSharedPapers, network, showExternal, showImperial]);
   const visiblePeople = neighbourhoodModel.nodes.filter(node => node.type === "imperial" || node.type === "external").length;
   const coauthorLinks = model.links.filter(link => link.type === "coauthor").length;
   const connectionNodeById = useMemo(
@@ -1402,6 +1406,46 @@ export default function ResearcherNetworkGraph({
                 <p className="flex items-center gap-2"><GraduationCap className="h-3.5 w-3.5 text-[hsl(var(--publication-health))]" />Faculty</p>
                 <p className="flex items-center gap-2"><Landmark className="h-3.5 w-3.5 text-[hsl(var(--publication-policy))]" />Other institution</p>
               </section>
+
+              <details className="group border-t border-border pt-3">
+                <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between text-xs font-medium text-foreground marker:content-none">
+                  Browse co-authors as a list
+                  <span className="text-[10px] text-muted-foreground">{visibleConnectionRows.length}</span>
+                </summary>
+                <div className="mt-2 max-h-64 divide-y divide-border overflow-y-auto border-y border-border">
+                  {visibleConnectionRows.map(coauthor => {
+                    const content = (
+                      <>
+                        <span className="block truncate text-xs font-medium text-foreground">{coauthor.name}</span>
+                        <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                          {coauthor.sharedPapers} shared publication{coauthor.sharedPapers === 1 ? "" : "s"}{coauthor.latestYear ? ` · latest ${coauthor.latestYear}` : ""}
+                        </span>
+                      </>
+                    );
+                    return coauthor.isImperialProfile && coauthor.imperialResearcherId && onOpenProfile ? (
+                      <button
+                        key={coauthor.openalexId}
+                        type="button"
+                        onClick={() => onOpenProfile({
+                          researcherId: coauthor.imperialResearcherId!,
+                          openalexId: coauthor.openalexId,
+                          profileUrl: coauthor.imperialProfileUrl || undefined,
+                          name: coauthor.name,
+                          title: coauthor.imperialTitle,
+                          department: coauthor.imperialDepartment,
+                          faculty: coauthor.imperialFaculty,
+                          score: coauthor.sharedPapers,
+                        })}
+                        className="w-full px-1 py-2.5 text-left transition-colors hover:bg-secondary"
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      <div key={coauthor.openalexId} className="px-1 py-2.5">{content}</div>
+                    );
+                  })}
+                </div>
+              </details>
                 </>
               ) : (
                 <section className="space-y-2 border-t border-border pt-4 text-[11px] text-muted-foreground">

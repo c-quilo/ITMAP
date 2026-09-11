@@ -12,6 +12,7 @@ import {
 import { Maximize2, Network, ZoomIn, ZoomOut } from "lucide-react";
 import { useTheme } from "next-themes";
 import type { Researcher } from "@/data/mockData";
+import { researcherMatchLabel } from "@/lib/matchStrength";
 
 type SearchNodeType = "researcher" | "topic" | "department";
 
@@ -84,12 +85,6 @@ function initials(value: string) {
     .map(part => part[0])
     .join("")
     .toUpperCase();
-}
-
-function matchLabel(score: number) {
-  if (score >= 80) return "Strong match";
-  if (score >= 60) return "Moderate match";
-  return "Weak match";
 }
 
 function researcherColor(faculty: string, palette: Palette) {
@@ -638,7 +633,7 @@ function SearchResultsCanvas({
           {hoveredNode.type === "researcher" ? (
             <>
               <p className="mt-0.5 text-[10px] text-muted-foreground">{hoveredNode.department}</p>
-              <p className="mt-1 text-[10px] font-medium text-primary">{matchLabel(hoveredNode.relevance || 0)}</p>
+              <p className="mt-1 text-[10px] font-medium text-primary">{hoveredNode.researcher ? researcherMatchLabel(hoveredNode.researcher) : "Researcher"}</p>
               {hoveredNode.topics && hoveredNode.topics.length > 0 && (
                 <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{hoveredNode.topics.join(" · ")}</p>
               )}
@@ -666,6 +661,10 @@ export default function SearchResultsGraph({
     window.matchMedia("(max-width: 767px)").matches ? 25 : 50
   ));
   const model = useMemo(() => buildSearchResultsGraphModel(researchers, limit), [limit, researchers]);
+  const visibleResearchers = useMemo(
+    () => model.nodes.flatMap(node => node.researcher ? [node.researcher] : []),
+    [model],
+  );
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -702,6 +701,26 @@ export default function SearchResultsGraph({
         </div>
       </div>
       <SearchResultsCanvas model={model} onSelectResearcher={onSelectResearcher} />
+      <details className="group border-t border-border">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-medium text-foreground marker:content-none">
+          Browse the researchers as a list
+          <span className="text-[10px] text-muted-foreground">{visibleResearchers.length} shown</span>
+        </summary>
+        <div className="grid max-h-72 overflow-y-auto border-t border-border sm:grid-cols-2 lg:grid-cols-3">
+          {visibleResearchers.map(researcher => (
+            <button
+              key={researcher.id}
+              type="button"
+              onClick={() => onSelectResearcher(researcher)}
+              className="border-b border-border px-4 py-3 text-left transition-colors hover:bg-secondary sm:border-r"
+            >
+              <span className="block truncate text-xs font-semibold text-foreground">{researcher.name}</span>
+              <span className="mt-1 block truncate text-[10px] text-muted-foreground">{researcher.department}</span>
+              <span className="mt-1 block text-[10px] font-medium text-primary">{researcherMatchLabel(researcher)}</span>
+            </button>
+          ))}
+        </div>
+      </details>
     </section>
   );
 }

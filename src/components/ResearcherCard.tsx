@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Bookmark, BookmarkCheck, Sparkles, FileText, Ex
 import { motion, AnimatePresence } from "framer-motion";
 import type { ExternalEvidence, Researcher, Publication } from "@/data/mockData";
 import { researcherMatchLabel, researcherMatchStrength } from "@/lib/matchStrength";
+import { naturaliseUserFacingText } from "@/lib/userFacingText";
 
 interface ResearcherCardProps {
   researcher: Researcher;
@@ -154,7 +155,7 @@ export default function ResearcherCard({
             <span className="text-xs font-semibold text-primary">{researcher.imageInitials}</span>
           </div>
           <div className="min-w-0">
-            <h3 className="font-brand text-base font-semibold leading-tight">
+            <h3 className="text-base font-semibold leading-tight">
               {onOpenProfile ? (
                 <button
                   type="button"
@@ -193,6 +194,9 @@ export default function ResearcherCard({
         <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
           <RelevanceBadge researcher={researcher} />
           <button
+            type="button"
+            aria-pressed={bookmarked}
+            aria-label={bookmarked ? `Remove ${researcher.name} from saved researchers` : `Save ${researcher.name}`}
             onClick={() => onToggleBookmark?.(researcher)}
             className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary"
             title={bookmarked ? "Remove from saved researchers" : "Save researcher"}
@@ -206,7 +210,21 @@ export default function ResearcherCard({
         </div>
       </div>
 
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-y border-border/70 py-2 text-[10px] text-muted-foreground">
+        <span>Evidence shown: profile + {researcher.publications.length} publication{researcher.publications.length === 1 ? "" : "s"}</span>
+        {(researcher.openAlexTopics || []).length > 0 && (
+          <span>{researcher.openAlexTopics!.length} publication topic{researcher.openAlexTopics!.length === 1 ? "" : "s"}</span>
+        )}
+        {researcher.profileUrl && (
+          <a href={researcher.profileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+            Imperial source <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+
       <button
+        type="button"
+        aria-expanded={profileExpanded}
         onClick={() => setProfileExpanded(!profileExpanded)}
         className="mt-2 flex min-h-10 items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:mt-3 sm:min-h-0"
       >
@@ -248,7 +266,7 @@ export default function ResearcherCard({
           <Sparkles className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
           <div>
             <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Why they matched</span>
-            <p className="text-xs text-foreground/70 mt-0.5 leading-relaxed">{researcher.semanticExplanation}</p>
+            <p className="text-xs text-foreground/70 mt-0.5 leading-relaxed">{naturaliseUserFacingText(researcher.semanticExplanation)}</p>
           </div>
         </div>
       )}
@@ -257,6 +275,8 @@ export default function ResearcherCard({
 
       {/* Expand Publications */}
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="mt-2 flex min-h-10 items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/80 sm:mt-3 sm:min-h-0"
       >

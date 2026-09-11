@@ -547,7 +547,7 @@ function profileChatRefusal(researcherName: string) {
 }
 
 function naturaliseProfileAnswer(value: string) {
-  return value
+  const natural = value
     .replace(/\bbased on (?:the )?(?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\s*,?\s*/gi, "")
     .replace(/\bthe (?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\b/gi, "the profile evidence")
     .replace(/\bthis (?:provided|supplied) (?:co-?author )?(?:summary|data|metadata|information|evidence|database)\b/gi, "this profile evidence")
@@ -555,9 +555,23 @@ function naturaliseProfileAnswer(value: string) {
     .replace(/\bsupplied explicitly\b/gi, "available here")
     .replace(/\bthe information provided\b/gi, "the available profile information")
     .replace(/\bshared_paper_count\b/gi, "shared publication count")
+    .replace(/\bprovided paper evidence in the prompt\b/gi, "relevant publication evidence")
+    .replace(/\b(?:the )?(?:provided|supplied) (?:candidate |researcher )?(?:set|list|pool|payload)\b/gi, "the researchers reviewed")
+    .replace(/\b(?:this|the) (?:database|dataset|stored record)\b/gi, "ITMAP's current evidence")
+    .replace(/\bOpenAlex metadata\b/gi, "publication evidence")
+    .replace(/\bOpenAlex paper topics\b/gi, "publication topics")
+    .replace(/\bOpenAlex topics\b/gi, "publication topics")
+    .replace(/\bOpenAlex topic\b/gi, "publication topic")
+    .replace(/\bthe prompt\b/gi, "the query")
+    .replace(/\bthis prompt\b/gi, "this query")
+    .replace(/\bLLM(?:-based)?\b/gi, "ITMAP")
+    .replace(/\brerank(?:ed|ing)?\b/gi, "review")
     .replace(/\b(?:provided|supplied)\s+(?=roles?|profiles?|fields?|publication|information|records?)/gi, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+
+  return natural ? `${natural.charAt(0).toUpperCase()}${natural.slice(1)}` : "";
 }
 
 function singularise(term: string) {
@@ -1550,6 +1564,45 @@ function matchTypeForScore(score: number): "strong" | "adjacent" | "weak" {
   return "weak";
 }
 
+function keywordEvidenceMatchType(
+  row: Record<string, unknown>,
+  query: string,
+): "strong" | "adjacent" | "weak" {
+  const terms = queryTerms(query).map(singularise).filter(term => term.length >= 2);
+  if (terms.length === 0) return "weak";
+
+  const coreText = researcherCoreText(row);
+  const authorityText = [
+    row.position_name,
+    row.position,
+    row.fields_of_research,
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const termCounts = terms.map(term => (
+    Math.max(...expandedTermVariants(term).map(variant => countOccurrences(coreText, variant)))
+  ));
+  const allTermsPresent = termCounts.every(count => count > 0);
+  const repeatedEvidence = termCounts.every(count => count >= 2);
+  const directAuthorityMatch = directQueryPhrases(query).some(phrase => authorityText.includes(phrase))
+    || terms.every(term => textHasAny(authorityText, expandedTermVariants(term)));
+  const exactProfile = Number(row.exact_profile_evidence_score || 0);
+  const profileConcept = Number(row.profile_concept_score || 0);
+  const profileAuthority = Number(row.profile_authority_score || 0);
+
+  if (
+    directAuthorityMatch
+    || (allTermsPresent && repeatedEvidence && exactProfile >= 0.68 && profileConcept >= 0.6)
+    || (profileAuthority >= 0.68 && profileConcept >= 0.65)
+  ) {
+    return "strong";
+  }
+
+  if (allTermsPresent && (exactProfile >= 0.4 || profileConcept >= 0.45)) {
+    return "adjacent";
+  }
+
+  return "weak";
+}
+
 function isStatementTimeoutError(error: unknown) {
   if (!error || typeof error !== "object") return false;
   const rpcError = error as { code?: unknown; message?: unknown };
@@ -2415,7 +2468,7 @@ async function matchSchoolMissionsWithLlm(
       school: truncateText(item.school, 90),
       mission: truncateText(item.mission, 90),
       confidence: Math.max(0, Math.min(100, Number(item.confidence || 0))),
-      reason: truncateText(item.reason, 500),
+      reason: truncateText(naturaliseProfileAnswer(item.reason), 500),
     }))
     .filter(item => item.researcher_id && allowed.has(`${item.school}|||${item.mission}`))
     .slice(0, researchers.length);
@@ -2446,7 +2499,8 @@ async function summarizePoolWithLlm(
         content: [
           "You summarise the pool of relevant Imperial College London researchers returned by an expert-finding search.",
           "Use only the supplied researcher evidence. Do not invent publications, grants, affiliations, or capabilities.",
-          "Use positions, profiles, match reasons, publication titles, and OpenAlex paper topics to explain the main expertise patterns in the full supplied pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
+          "Use positions, profiles, match reasons, publication titles, and publication topics to explain the main expertise patterns in the full supplied pool, why the group is relevant to the user's query, and any obvious gaps or caveats.",
+          "Write for a non-technical reader. Never mention prompts, payloads, supplied sets, candidate pools, databases, embeddings, vectors, models, or internal ranking steps.",
           "Write the summary field as a very concise 50-70 word overview. State only the strongest overall finding and the main spread of expertise, avoid repeating the notable-researcher list, and keep all detail for follow-up questions.",
           "Return JSON only: {\"headline\":\"...\",\"summary\":\"...\",\"themes\":[\"...\"],\"notable_researchers\":[{\"name\":\"...\",\"reason\":\"...\"}],\"gaps\":[\"...\"]}",
         ].join(" "),
@@ -2463,19 +2517,19 @@ async function summarizePoolWithLlm(
   ) as ResearchPoolSummary;
 
   return {
-    headline: truncateText(result.headline || "What ITMAP found", 140),
-    summary: truncateText(result.summary || "", 650),
+    headline: truncateText(naturaliseProfileAnswer(result.headline || "What ITMAP found"), 140),
+    summary: truncateText(naturaliseProfileAnswer(result.summary || ""), 650),
     themes: Array.isArray(result.themes) ? result.themes.map(item => truncateText(item, 120)).filter(Boolean).slice(0, 6) : [],
     notable_researchers: Array.isArray(result.notable_researchers)
       ? result.notable_researchers
         .map(item => ({
           name: truncateText(item.name, 120),
-          reason: truncateText(item.reason, 240),
+          reason: truncateText(naturaliseProfileAnswer(item.reason), 240),
         }))
         .filter(item => item.name && item.reason)
         .slice(0, 6)
       : [],
-    gaps: Array.isArray(result.gaps) ? result.gaps.map(item => truncateText(item, 160)).filter(Boolean).slice(0, 4) : [],
+    gaps: Array.isArray(result.gaps) ? result.gaps.map(item => truncateText(naturaliseProfileAnswer(item), 160)).filter(Boolean).slice(0, 4) : [],
   };
 }
 
@@ -2591,6 +2645,8 @@ async function rerankCandidateChunkWithLlm(
             "Score each candidate absolutely against the query, not relative to only the candidates in this request chunk.",
             "Do not penalize candidates because stronger candidates may exist outside this chunk.",
             "You must return one ranked item for every supplied candidate in this chunk. If evidence is weak, give a low score and match_type weak.",
+            "Write each reason for a non-technical reader. State the expertise, the publication pattern that supports it, and any important limitation.",
+            "Never mention prompts, payloads, supplied evidence, candidate lists, databases, datasets, embeddings, vectors, models, or internal ranking steps in a reason.",
             "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[\"...\"],\"best_paper_titles\":[\"...\"]}]}",
           ].join(" "),
         },
@@ -5165,7 +5221,7 @@ async function organizationProfile(
       latest_year: latestYear,
     },
     summary: [
-      `${name} has ${researcherRows.length.toLocaleString()} researcher profiles in ITMAP, with OpenAlex topic coverage for ${themesByResearcher.size.toLocaleString()}.`,
+      `${name} has ${researcherRows.length.toLocaleString()} researcher profiles in ITMAP, with publication-topic coverage for ${themesByResearcher.size.toLocaleString()}.`,
       topThemeNames.length > 0 ? `Leading themes include ${topThemeNames.join(", ")}.` : "",
       emergingNames.length > 0 ? `Current emerging signals include ${emergingNames.join(", ")}.` : "",
     ].filter(Boolean).join(" "),
@@ -5174,7 +5230,7 @@ async function organizationProfile(
     researchers: researcherRows,
     coverage_note: uniqueOrganizationPaperCount > 0
       ? "Paper-volume charts count a publication once when several researchers in the same unit co-authored it. Exact-title preprint, journal, and repository versions are also grouped where the evidence is strong."
-      : "Theme periods use the earliest and latest publication years in stored OpenAlex author-topic profiles.",
+      : "Theme coverage ranges use the earliest and latest publication years currently available to ITMAP.",
   };
 }
 
@@ -6458,6 +6514,7 @@ async function summarizeResearcherProfileWithLlm(
             "You write concise researcher profile summaries for an Imperial College London expert-finding tool.",
             "Use only the supplied profile, position, fields, and paper titles.",
             "Do not invent affiliations, grants, papers, or claims.",
+            "Write naturally for a non-technical reader. Do not mention prompts, supplied data, databases, datasets, models, or internal processing.",
             "Write the summary as 100-150 words.",
             "Return JSON only: {\"summary\":\"...\"}",
           ].join(" "),
@@ -6484,7 +6541,7 @@ async function summarizeResearcherProfileWithLlm(
       1800,
     ) as { summary?: string };
 
-    return truncateText(result.summary || fallback, 1400);
+    return truncateText(naturaliseProfileAnswer(result.summary || fallback), 1400);
   } catch (error) {
     console.error("Researcher profile summary failed", error);
     return fallback;
@@ -7138,18 +7195,25 @@ Deno.serve(async req => {
 
       const results = filteredKeywordMatches
         .sort((a: Record<string, unknown>, b: Record<string, unknown>) => Number(b.similarity || 0) - Number(a.similarity || 0))
-        .map((row: Record<string, unknown>, index: number) => ({
-          ...row,
-          profile_similarity: Number(row.keyword_profile_rank || 0),
-          paper_similarity: Number(row.keyword_paper_rank || 0),
-          profile_concept_score: profileConceptScore(searchQuery, terms, row),
-          profile_authority_score: profileAuthorityScore(searchQuery, terms, row),
-          exact_profile_evidence_score: exactProfileEvidenceScore(searchQuery, terms, row),
-          profile_evidence: matchedProfileEvidence(searchQuery, terms, row),
-          similarity: normalise(Number(row.similarity || 0), minKeywordScore, maxKeywordScore, 0.48, 0.98)
-            - Math.min(0.05, Math.log2(index + 1) * 0.006),
-          match_reason: "",
-        }))
+        .map((row: Record<string, unknown>, index: number) => {
+          const profileEvidence = matchedProfileEvidence(searchQuery, terms, row);
+          const scoredRow = {
+            ...row,
+            profile_similarity: Number(row.keyword_profile_rank || 0),
+            paper_similarity: Number(row.keyword_paper_rank || 0),
+            profile_concept_score: profileConceptScore(searchQuery, terms, row),
+            profile_authority_score: profileAuthorityScore(searchQuery, terms, row),
+            exact_profile_evidence_score: exactProfileEvidenceScore(searchQuery, terms, row),
+            profile_evidence: profileEvidence,
+            similarity: normalise(Number(row.similarity || 0), minKeywordScore, maxKeywordScore, 0.48, 0.98)
+              - Math.min(0.05, Math.log2(index + 1) * 0.006),
+          };
+          return {
+            ...scoredRow,
+            llm_match_type: keywordEvidenceMatchType(scoredRow, searchQuery),
+            match_reason: buildMatchReason(scoredRow, profileEvidence),
+          };
+        })
         .slice(0, limit);
 
       await insertSearchAuditLog(supabase, {
@@ -7801,7 +7865,7 @@ Deno.serve(async req => {
                   rerank.best_paper_ids || [],
                 ),
               }, ((row.profile_evidence as string[]) || []))
-              : rerank.reason || row.match_reason,
+              : naturaliseProfileAnswer(rerank.reason || String(row.match_reason || "")),
             similarity: finalRerankScore / 100,
           };
         })
@@ -7869,6 +7933,7 @@ Deno.serve(async req => {
         delete publicRow.all_paper_total_count;
         delete publicRow.document_text;
         delete publicRow.current_query;
+        publicRow.match_reason = naturaliseProfileAnswer(String(publicRow.match_reason || ""));
         if (enableRerank && llmReranks.size > 0) {
           const finalScore = Number(row.llm_rerank_score ?? row.retrieval_rank_score ?? 0);
           return {

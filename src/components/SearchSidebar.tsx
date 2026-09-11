@@ -169,7 +169,7 @@ export default function SearchSidebar({
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:space-y-6 sm:p-5">
         {/* Search Mode Tabs */}
         <div>
-          <p className="section-label mb-2.5" title="Semantic search understands a query in natural language. Keyword search is stricter and better for exact terms.">Search Mode</p>
+          <p className="section-label mb-2.5">Choose how to search</p>
           <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-secondary p-1">
             {[
               { mode: "semantic" as const, icon: Sparkles, label: "Semantic" },
@@ -177,6 +177,8 @@ export default function SearchSidebar({
             ].map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
+                type="button"
+                aria-pressed={searchMode === mode}
                 onClick={() => setSearchMode(mode)}
                 className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-all duration-150 ${
                   searchMode === mode
@@ -189,36 +191,17 @@ export default function SearchSidebar({
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
-          <p className="section-label">Search Options</p>
-          {searchMode === "semantic" && (
-            <label
-              className="flex cursor-not-allowed items-start justify-between gap-3 opacity-55"
-              title="Media, startup, video and UKRI grant evidence is temporarily disabled."
-            >
-              <span>
-                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  Media, grants and startups
-                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
-                </span>
-                <span className="block text-[11px] leading-relaxed text-muted-foreground">Temporarily unavailable.</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={false}
-                disabled
-                className="mt-0.5 h-4 w-4 accent-primary"
-              />
-            </label>
-          )}
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            {searchMode === "semantic"
+              ? "Best for questions and research ideas. ITMAP compares your description with researcher profiles and publications."
+              : "Best when exact words must appear. You can also use AND, OR, NOT, and quoted phrases."}
+          </p>
         </div>
 
         {/* Semantic Search Box */}
         {searchMode === "semantic" && (
           <div>
-            <p className="section-label mb-2" title="Describe the outcome, technology, sector, or problem you want expertise for. A sentence or paragraph is fine.">Natural Language Query</p>
+            <p className="section-label mb-2">Describe what you need</p>
             <textarea
               className="search-box-semantic"
               value={semanticQuery}
@@ -306,6 +289,7 @@ export default function SearchSidebar({
               {savedSearches.slice(0, 4).map(search => (
                 <button
                   key={search.id}
+                  type="button"
                   onClick={() => onLoadSavedSearch?.(search.id)}
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:bg-secondary"
                 >
@@ -346,10 +330,16 @@ export default function SearchSidebar({
             </div>
             <div className="flex flex-wrap gap-1.5">
               {activeFilters.map(f => (
-                <span key={f} className="filter-chip filter-chip-active" onClick={() => onToggleFilter(f)}>
+                <button
+                  key={f}
+                  type="button"
+                  aria-pressed="true"
+                  className="filter-chip filter-chip-active"
+                  onClick={() => onToggleFilter(f)}
+                >
                   {f}
                   <X className="h-3 w-3 ml-0.5" />
-                </span>
+                </button>
               ))}
             </div>
           </div>
@@ -364,13 +354,15 @@ export default function SearchSidebar({
         >
           <div className="flex flex-wrap gap-1.5">
             {MATCH_FILTERS.map(match => (
-              <span
+              <button
                 key={match}
+                type="button"
+                aria-pressed={activeFilters.includes(match)}
                 className={`filter-chip ${activeFilters.includes(match) ? "filter-chip-active" : ""}`}
                 onClick={() => onToggleFilter(match)}
               >
                 {match}
-              </span>
+              </button>
             ))}
           </div>
         </FilterSection>
@@ -384,13 +376,15 @@ export default function SearchSidebar({
         >
           <div className="flex flex-wrap gap-1.5">
             {GRADES.map(g => (
-              <span
+              <button
                 key={g}
+                type="button"
+                aria-pressed={activeFilters.includes(g)}
                 className={`filter-chip ${activeFilters.includes(g) ? "filter-chip-active" : ""}`}
                 onClick={() => onToggleFilter(g)}
               >
                 {g}
-              </span>
+              </button>
             ))}
           </div>
         </FilterSection>
@@ -398,7 +392,7 @@ export default function SearchSidebar({
         {/* Keywords Filter */}
         <FilterSection
           title="Keywords"
-          help="These keywords are extracted from the current results' profiles, fields, publication titles, and OpenAlex paper topics."
+          help="These keywords come from the current results' profiles, research fields, publication titles, and publication topics."
           expanded={expandedSections.keywords}
           onToggle={() => toggleSection("keywords")}
         >
@@ -435,13 +429,15 @@ export default function SearchSidebar({
           </div>
           <div className="flex flex-wrap gap-1.5">
             {keywordOptions.length > 0 ? keywordOptions.slice(0, 12).map(k => (
-              <span
+              <button
                 key={k}
+                type="button"
+                aria-pressed={activeFilters.includes(k)}
                 className={`filter-chip ${activeFilters.includes(k) ? "filter-chip-active" : ""}`}
                 onClick={() => onToggleFilter(k)}
               >
                 {k}
-              </span>
+              </button>
             )) : (
               <p className="text-xs text-muted-foreground">Run a search to generate result keywords</p>
             )}
@@ -463,13 +459,15 @@ export default function SearchSidebar({
                     <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Theme</p>
                     <div className="flex flex-wrap gap-1.5">
                       {schoolMissionThemeOptions.map(option => (
-                        <span
+                        <button
                           key={option}
+                          type="button"
+                          aria-pressed={activeFilters.includes(option)}
                           className={`filter-chip ${activeFilters.includes(option) ? "filter-chip-active" : ""}`}
                           onClick={() => onToggleFilter(option)}
                         >
                           {option}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -479,13 +477,15 @@ export default function SearchSidebar({
                     <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Mission</p>
                     <div className="flex flex-wrap gap-1.5">
                       {schoolMissionOptions.map(option => (
-                        <span
+                        <button
                           key={option}
+                          type="button"
+                          aria-pressed={activeFilters.includes(option)}
                           className={`filter-chip ${activeFilters.includes(option) ? "filter-chip-active" : ""}`}
                           onClick={() => onToggleFilter(option)}
                         >
                           {option}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -508,6 +508,8 @@ export default function SearchSidebar({
             {FACULTIES.map(f => (
               <button
                 key={f}
+                type="button"
+                aria-pressed={activeFilters.includes(f)}
                 className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors ${
                   activeFilters.includes(f)
                     ? "bg-primary text-primary-foreground"
@@ -533,6 +535,8 @@ export default function SearchSidebar({
               departmentOptions.map(d => (
                 <button
                   key={d}
+                  type="button"
+                  aria-pressed={activeFilters.includes(d)}
                   className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors ${
                     activeFilters.includes(d)
                       ? "bg-primary text-primary-foreground"
@@ -552,6 +556,7 @@ export default function SearchSidebar({
       {(searchMode === "semantic" || searchMode === "keyword") && (
         <div className="shrink-0 border-t border-border bg-card p-3 sm:p-4">
           <button
+            type="button"
             onClick={runSearch}
             className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-colors ${
               isSearching
@@ -564,7 +569,7 @@ export default function SearchSidebar({
             ) : (
               <Search className="h-4 w-4" />
             )}
-            {isSearching ? "Stop Search" : "Search Researchers"}
+            {isSearching ? "Stop search" : "Find researchers"}
           </button>
         </div>
       )}
@@ -588,6 +593,8 @@ function FilterSection({
   return (
     <div>
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={onToggle}
         className="w-full flex items-center justify-between py-1.5 group"
       >

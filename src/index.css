@@ -224,14 +224,14 @@
     z-index: 100;
     overflow: hidden;
     background: hsl(var(--background));
-    animation: itmap-intro-dismiss 4.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: itmap-intro-dismiss 2.2s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .itmap-intro-glow {
     position: absolute;
     inset: 0;
     background: hsl(var(--card));
-    animation: itmap-intro-glow 3.8s ease-out both;
+    animation: itmap-intro-glow 2s ease-out both;
   }
 
   .itmap-intro-swoosh {
@@ -244,7 +244,7 @@
     filter: brightness(0) saturate(100%) invert(45%) sepia(76%) saturate(2739%) hue-rotate(222deg) brightness(99%) contrast(89%);
     opacity: 0;
     pointer-events: none;
-    animation: itmap-intro-swoosh 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+    animation: itmap-intro-swoosh 2s cubic-bezier(0.76, 0, 0.24, 1) both;
   }
 
   .itmap-intro-wordmark {
@@ -264,13 +264,13 @@
     white-space: nowrap;
     transform: translate(50%, -50%);
     transform-origin: right center;
-    animation: itmap-intro-wordmark 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+    animation: itmap-intro-wordmark 2s cubic-bezier(0.76, 0, 0.24, 1) both;
   }
 
   .itmap-intro-letter {
     display: inline-block;
     transform: translateY(125%);
-    animation: itmap-intro-letter 2.1s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: itmap-intro-letter 1.15s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .itmap-intro-letter:nth-child(2) { animation-delay: 0.08s; }
@@ -299,7 +299,7 @@
     filter: brightness(0);
     transform: translate(-50%, -50%);
     transform-origin: left center;
-    animation: itmap-intro-imperial 3.8s cubic-bezier(0.76, 0, 0.24, 1) both;
+    animation: itmap-intro-imperial 2s cubic-bezier(0.76, 0, 0.24, 1) both;
   }
 
   .dark .itmap-intro-imperial {
@@ -442,7 +442,7 @@
   }
 
   .result-card {
-    @apply bg-card rounded-xl border border-border p-4 sm:p-5;
+    @apply bg-card rounded-lg border border-border p-4 sm:p-5;
     @apply hover:shadow-md hover:border-primary/20;
     @apply transition-all duration-200;
   }
