@@ -2605,10 +2605,14 @@ async function rerankCandidateChunkWithLlm(
             "Judge the original query as the source of truth. Retrieval terms and OpenAlex topic labels are discovery hints, not proof of the requested expertise.",
             "Assess query_coverage first: direct means the profile or publications explicitly demonstrate the full requested relationship; partial means relevant but incomplete expertise; none means no relevant expertise; uncertain means insufficient evidence.",
             "For a method applied to a domain, direct evidence must link that method to that domain. Separate mentions of the method and domain in unrelated work do not establish the combination.",
+            "Assess scientific meaning, not literal wording. Recognise established synonyms and specific techniques within a requested field. Artificial intelligence includes machine learning, deep learning, neural networks, and learning-based optimisation; a paper does not need to say AI or artificial intelligence explicitly.",
+            "A specific demonstrated application within the requested domain can establish direct coverage even when the publication uses a narrower technical term. Do not require every publication or the researcher's entire career to cover the query.",
+            "Do not automatically count all mathematical optimisation, simulation or general data analysis as AI. Identify the actual learning or AI technique and its demonstrated application.",
             "List missing central requirements in missing_requirements. Never treat possible future applicability, general computational skills, job seniority, or a related application as demonstrated expertise.",
             "Strong: score 72-100, direct coverage of all central requirements, no missing requirements, and at least one direct_evidence citation. Adjacent: score 48-71, useful but partial overlap. Weak: score 0-47, generic, incidental, unsupported or uncertain overlap.",
             "For each direct_evidence citation supply source (profile or paper), a short verbatim contiguous quote from the supplied text, and paper_id for a paper. The quote must support the requested relationship. Never paraphrase a quote or invent an identifier.",
             "The reason, query_coverage, missing_requirements, match_type and score must agree. If the reason says required expertise is absent or unsupported, the candidate cannot be strong. Reasons must distinguish demonstrated expertise from a possible connection.",
+            "Explain the evidence without stating a match category such as Strong match in the reason. The application displays the final category separately after validating your citations.",
             "Return only papers that support the query in best_paper_ids and best_paper_titles; return empty arrays when none qualify. Do not fill the list with unrelated papers.",
             "Score each candidate absolutely against the query, not relative to only the candidates in this request chunk.",
             "Do not penalize candidates because stronger candidates may exist outside this chunk.",
@@ -2658,20 +2662,27 @@ async function rerankCandidatesWithLlm(
 ) {
   if (candidates.length === 0) return new Map<string, RerankedCandidate>();
 
-  const workerCount = Math.min(RERANK_WORKER_COUNT, candidates.length);
-  const chunkSize = Math.ceil(candidates.length / workerCount);
-  const candidateChunks = chunkItems(candidates, chunkSize);
-  console.log(`LLM rerank: ${candidates.length} candidates across ${candidateChunks.length} parallel chunks`);
-
-  const chunkResults = await Promise.all(candidateChunks.map(chunk =>
-    rerankCandidateChunkWithLlm(openAiKey, model, originalQuery, mission, chunk, metrics)
-  ));
   const byId = new Map<string, RerankedCandidate>();
-  for (const chunkResult of chunkResults) {
-    for (const [researcherId, rerank] of chunkResult) {
-      byId.set(researcherId, rerank);
-    }
+  const runChunks = async (chunks: Record<string, unknown>[][]) => {
+    let nextChunk = 0;
+    const worker = async () => {
+      while (nextChunk < chunks.length) {
+        const chunk = chunks[nextChunk++];
+        const result = await rerankCandidateChunkWithLlm(openAiKey, model, originalQuery, mission, chunk, metrics);
+        for (const [researcherId, assessment] of result) byId.set(researcherId, assessment);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(RERANK_WORKER_COUNT, chunks.length) }, worker));
+  };
+
+  // Small batches prevent large publication histories from crowding out other candidates.
+  await runChunks(chunkItems(candidates, 5));
+  const missing = candidates.filter(candidate => !byId.has(String(candidate.researcher_id || "")));
+  if (missing.length > 0) {
+    console.warn(`LLM rerank: retrying ${missing.length} omitted or invalid assessments individually`);
+    await runChunks(missing.map(candidate => [candidate]));
   }
+  console.log(`LLM rerank: ${byId.size}/${candidates.length} candidates reviewed with ${RERANK_WORKER_COUNT} workers`);
   return byId;
 }
 
@@ -7771,7 +7782,7 @@ Deno.serve(async req => {
           row, index, minCombinedScore, maxCombinedScore, groups, searchStrategy,
         );
         const assessed = applySemanticAssessment(
-          row, assessment, retrievalScore, retrievalMatchType(row, retrievalScore, searchStrategy),
+          row, assessment, retrievalScore,
         );
         return {
           ...assessed,

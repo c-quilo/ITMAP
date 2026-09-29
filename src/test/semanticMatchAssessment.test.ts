@@ -58,7 +58,7 @@ describe("semantic evidence assessment", () => {
       combined_similarity: 1,
       profile_authority_score: 1,
       llm_match_type: "strong",
-    }, assessment, 100, "strong");
+    }, assessment, 100);
 
     expect(row.llm_rerank_score).toBe(20);
     expect(row.match_reason).toBe(reason);
@@ -76,7 +76,7 @@ describe("semantic evidence assessment", () => {
       direct_evidence: [],
       reason: "Their AI work focuses on diagnostics rather than manufacturing control or optimisation.",
     }, candidate)!;
-    expect(label(applySemanticAssessment({}, assessment, 100, "strong"))).toBe("Moderate");
+    expect(label(applySemanticAssessment({}, assessment, 100))).toBe("Moderate");
     expect(assessment.score).toBe(58);
   });
 
@@ -103,7 +103,7 @@ describe("semantic evidence assessment", () => {
     const assessment = parseRerankAssessment(directReview, candidate)!;
     expect(assessment.score).toBe(90);
     expect(assessment.direct_evidence).toHaveLength(1);
-    expect(label(applySemanticAssessment({}, assessment, 35, "weak"))).toBe("Strong Match");
+    expect(label(applySemanticAssessment({}, assessment, 35))).toBe("Strong Match");
   });
 
   it("allows direct profile evidence without requiring a publication", () => {
@@ -133,6 +133,17 @@ describe("semantic evidence assessment", () => {
     expect(assessment.best_paper_titles).toEqual([]);
   });
 
+  it("does not keep a strong-match claim when its supporting citation fails verification", () => {
+    const assessment = parseRerankAssessment({
+      ...directReview,
+      reason: "Strong match: their papers demonstrate the full combination.",
+      direct_evidence: [{ source: "paper", paper_id: "invented-paper", quote: directReview.direct_evidence[0].quote }],
+    }, candidate)!;
+    expect(assessment.match_type).toBe("adjacent");
+    expect(assessment.reason).not.toContain("Strong match");
+    expect(assessment.reason).toContain("could not be verified");
+  });
+
   it("does not invent a favourable assessment from missing fields", () => {
     const assessment = parseRerankAssessment({ researcher_id: "researcher-1", score: 95, reason: "Some overlap." }, candidate)!;
     expect(assessment.match_type).toBe("weak");
@@ -149,24 +160,26 @@ describe("semantic evidence assessment", () => {
   });
 
   it.each(["missing worker response", "entire review failed", "outside the review pool"])("cannot label a retrieval-only result strong: %s", () => {
-    const row = applySemanticAssessment({ llm_match_type: "strong", llm_rerank_score: 98 }, undefined, 100, "strong");
-    expect(label(row)).toBe("Moderate");
+    const row = applySemanticAssessment({ llm_match_type: "strong", llm_rerank_score: 98 }, undefined, 100);
+    expect(label(row)).toBe("Weak");
     expect(row.llm_rerank_score).toBeNull();
     expect(row.match_reason).toContain("has not been verified");
     expect(row.review_status).toBe("unreviewed");
   });
 
   it("keeps unsupported retrieval-only results weak", () => {
-    const row = applySemanticAssessment({}, undefined, 100, "weak");
+    const row = applySemanticAssessment({}, undefined, 100);
     expect(label(row)).toBe("Weak");
   });
 
   it("ranks verified direct evidence above partial matches with stronger retrieval hints", () => {
-    const direct = applySemanticAssessment({}, parseRerankAssessment(directReview, candidate)!, 40, "weak");
-    const partial = applySemanticAssessment({}, parseRerankAssessment({ ...directReview, match_type: "adjacent", query_coverage: "partial" }, candidate)!, 100, "strong");
-    const unreviewed = applySemanticAssessment({}, undefined, 100, "strong");
+    const direct = applySemanticAssessment({}, parseRerankAssessment(directReview, candidate)!, 40);
+    const partial = applySemanticAssessment({}, parseRerankAssessment({ ...directReview, score: 50, match_type: "adjacent", query_coverage: "partial" }, candidate)!, 100);
+    const unreviewed = applySemanticAssessment({}, undefined, 100);
     const results = [partial, unreviewed, direct].sort((a, b) => Number(b.similarity) - Number(a.similarity));
     expect(results[0]).toBe(direct);
+    expect(results[1]).toBe(partial);
+    expect(results[2]).toBe(unreviewed);
     expect(results.filter(row => label(row) === "Strong Match")).toHaveLength(1);
   });
 });

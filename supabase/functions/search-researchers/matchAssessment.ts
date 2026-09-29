@@ -1,4 +1,4 @@
-export const SEMANTIC_RANKING_VERSION = "2026-09-29-evidence-v1";
+export const SEMANTIC_RANKING_VERSION = "2026-09-29-evidence-v2";
 
 export type MatchType = "strong" | "adjacent" | "weak";
 export type QueryCoverage = "direct" | "partial" | "none" | "uncertain";
@@ -87,6 +87,9 @@ export function parseRerankAssessment(value: unknown, candidate: Record<string, 
     ? 47
     : coverage === "partial" || missingRequirements.length > 0 || directEvidence.length === 0 ? 71 : 100;
   const score = Math.max(0, Math.min(item.score, categoryCeiling[matchType], coverageCeiling));
+  const reason = item.score >= 72 && coverage === "direct" && directEvidence.length === 0
+    ? "Their profile and publications suggest relevant expertise, but the evidence needed to confirm the full requested combination could not be verified."
+    : item.reason.trim();
   const papers = [candidate.papers, candidate.all_paper_evidence]
     .flatMap(items => Array.isArray(items) ? items.map(record) : []);
 
@@ -94,7 +97,7 @@ export function parseRerankAssessment(value: unknown, candidate: Record<string, 
     researcher_id: String(item.researcher_id),
     score,
     match_type: matchTypeForScore(score),
-    reason: item.reason.trim(),
+    reason,
     query_coverage: coverage,
     missing_requirements: missingRequirements,
     direct_evidence: directEvidence,
@@ -109,7 +112,6 @@ export function applySemanticAssessment(
   row: Record<string, unknown>,
   assessment: RerankedCandidate | undefined,
   retrievalScore: number,
-  retrievalType: MatchType,
 ): Record<string, unknown> {
   if (assessment) {
     return {
@@ -125,8 +127,7 @@ export function applySemanticAssessment(
     };
   }
 
-  const score = Math.max(0, Math.min(Number.isFinite(retrievalScore) ? retrievalScore : 0,
-    retrievalType === "weak" ? 47 : 71));
+  const score = Math.max(0, Math.min(Number.isFinite(retrievalScore) ? retrievalScore : 0, 47));
   return {
     ...row,
     llm_rerank_score: null,
@@ -135,8 +136,6 @@ export function applySemanticAssessment(
     similarity: score / 100,
     review_status: "unreviewed",
     query_coverage: "uncertain",
-    match_reason: score >= 48
-      ? "Their profile or publications suggest a possible connection to this topic. A match to all the requested expertise has not been verified."
-      : "Their profile or publications have limited overlap with this topic. There is not enough verified evidence to confirm the requested expertise.",
+    match_reason: "Their profile or publications suggest a possible connection to this topic. A match to all the requested expertise has not been verified.",
   };
 }

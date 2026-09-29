@@ -76,11 +76,15 @@ function fakeDatabase(rows: Row[], publicationRows: Row[]) {
   };
 }
 
-async function search(options: { failReview?: boolean; omitPartial?: boolean; tailCount?: number; query?: string; mode?: string } = {}) {
+async function search(options: { failReview?: boolean; omitPartial?: boolean; omitPartialOnce?: boolean; tailCount?: number; query?: string; mode?: string } = {}) {
   const additionalProfiles = Array.from({ length: options.tailCount || 0 }, (_, index) => ({
     ...profiles[0], researcher_id: `tail-${index}`, similarity: 0.8,
   }));
   const database = fakeDatabase([...profiles, ...additionalProfiles], papers);
+  const reviewBatches: string[][] = [];
+  let activeReviews = 0;
+  let maxConcurrentReviews = 0;
+  let partialOmitted = false;
   const outbound = vi.fn(async (url: string, init: RequestInit) => {
     if (url.endsWith("/embeddings")) return Response.json({ data: [{ embedding: [1, 0, 0] }] });
     if (url !== "https://api.openai.com/v1/chat/completions") throw new Error(`Unexpected outbound request: ${url}`);
@@ -89,9 +93,22 @@ async function search(options: { failReview?: boolean; omitPartial?: boolean; ta
     if (!payload.candidates) {
       return Response.json({ choices: [{ message: { content: JSON.stringify({ expanded_query: "artificial intelligence for biological manufacturing", search_strategy: "topic" }) } }] });
     }
+    reviewBatches.push(payload.candidates.map((candidate: Row) => String(candidate.researcher_id)));
+    activeReviews += 1;
+    maxConcurrentReviews = Math.max(maxConcurrentReviews, activeReviews);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    activeReviews -= 1;
     if (options.failReview) return new Response("Simulated model failure", { status: 503 });
     const ranked = (payload.candidates as Row[])
-      .filter(candidate => !options.omitPartial || candidate.researcher_id !== "partial")
+      .filter(candidate => {
+        if (candidate.researcher_id !== "partial") return true;
+        if (options.omitPartial) return false;
+        if (options.omitPartialOnce && !partialOmitted) {
+          partialOmitted = true;
+          return false;
+        }
+        return true;
+      })
       .map(candidate => candidate.researcher_id === "direct" ? {
         researcher_id: candidate.researcher_id,
         score: 90,
@@ -139,7 +156,7 @@ async function search(options: { failReview?: boolean; omitPartial?: boolean; ta
   }));
   const body = await response.json() as { results: Row[]; ranking_version?: string; search_strategy?: string };
   expect(response.status).toBe(200);
-  return { ...body, outbound };
+  return { ...body, outbound, reviewBatches, maxConcurrentReviews };
 }
 
 describe("complete semantic search response with local service fixtures", () => {
@@ -171,6 +188,15 @@ describe("complete semantic search response with local service fixtures", () => 
     const partial = data.results.find(row => row.researcher_id === "partial")!;
     expect(partial.llm_match_type).not.toBe("strong");
     expect(partial.review_status).toBe("unreviewed");
+    expect(partial.llm_match_type).toBe("weak");
+    expect(data.reviewBatches.flat().filter(id => id === "partial")).toHaveLength(2);
+  });
+
+  it("recovers an omitted candidate with one individual retry without reprocessing completed reviews", async () => {
+    const data = await search({ omitPartialOnce: true });
+    expect(data.results.find(row => row.researcher_id === "partial")!.review_status).toBe("reviewed");
+    expect(data.reviewBatches.at(-1)).toEqual(["partial"]);
+    expect(data.reviewBatches.flat().filter(id => id === "direct")).toHaveLength(1);
   });
 
   it("retains the wide candidate pool without calling unreviewed results strong", async () => {
@@ -178,7 +204,11 @@ describe("complete semantic search response with local service fixtures", () => 
     expect(data.results).toHaveLength(82);
     const tail = data.results.filter(row => row.review_status === "unreviewed");
     expect(tail).toHaveLength(7);
-    expect(tail.every(row => row.llm_match_type !== "strong")).toBe(true);
+    expect(tail.every(row => row.llm_match_type === "weak")).toBe(true);
+    expect(data.reviewBatches).toHaveLength(15);
+    expect(data.reviewBatches.every(batch => batch.length <= 5)).toBe(true);
+    expect(data.maxConcurrentReviews).toBeGreaterThan(1);
+    expect(data.maxConcurrentReviews).toBeLessThanOrEqual(5);
   });
 
   it("leaves the keyword search path independent of semantic review", async () => {
