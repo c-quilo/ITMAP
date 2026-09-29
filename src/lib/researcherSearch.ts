@@ -34,6 +34,7 @@ export interface ResearcherSearchResponse {
   researchers: Researcher[];
   originalQuery: string;
   expandedQuery: string;
+  rankingVersion?: string;
 }
 
 export interface SchoolMissionMatch {
@@ -902,6 +903,7 @@ export async function searchResearchers(payload: SearchPayload): Promise<Researc
     }),
     originalQuery: String(data?.original_query || payload.originalQuery || payload.query),
     expandedQuery: String(data?.expanded_query || payload.query),
+    rankingVersion: typeof data?.ranking_version === "string" ? data.ranking_version : undefined,
   };
 }
 

@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { applySemanticAssessment, matchTypeForScore, parseRerankAssessment, SEMANTIC_RANKING_VERSION, type RerankedCandidate } from "./matchAssessment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,15 +37,6 @@ type MissionExpansion = {
   method_terms?: string[];
   domain_terms?: string[];
   search_strategy?: SearchStrategy;
-};
-
-type RerankedCandidate = {
-  researcher_id: string;
-  score: number;
-  reason: string;
-  match_type?: "strong" | "adjacent" | "weak";
-  best_paper_titles?: string[];
-  best_paper_ids?: string[];
 };
 
 type ExternalEvidence = {
@@ -1443,21 +1435,6 @@ function buildMatchReason(row: Record<string, unknown>, profileEvidence: string[
   return `${profileSentence}${topicSentence} No highly ranked paper evidence was needed for this match, so the score is driven mainly by profile, title, and field alignment.`;
 }
 
-function reorderPapersByTitles(papers: Record<string, unknown>[], titles: string[]) {
-  if (titles.length === 0 || papers.length === 0) return papers;
-  const normalizedTitles = titles.map(title => title.toLowerCase().replace(/\s+/g, " ").trim());
-  return [...papers].sort((a, b) => {
-    const aTitle = String(a.title || "").toLowerCase().replace(/\s+/g, " ").trim();
-    const bTitle = String(b.title || "").toLowerCase().replace(/\s+/g, " ").trim();
-    const aIndex = normalizedTitles.findIndex(title => title && (aTitle.includes(title) || title.includes(aTitle)));
-    const bIndex = normalizedTitles.findIndex(title => title && (bTitle.includes(title) || title.includes(bTitle)));
-    if (aIndex === -1 && bIndex === -1) return 0;
-    if (aIndex === -1) return 1;
-    if (bIndex === -1) return -1;
-    return aIndex - bIndex;
-  });
-}
-
 function normalizedTitle(value: unknown) {
   return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -1498,14 +1475,6 @@ function rerankedPaperSummaries(
     if (key && seen.has(key)) continue;
     if (key) seen.add(key);
     selected.push(paperSummary(paper, Math.max(0.62, 0.98 - selected.length * 0.04)));
-  }
-
-  for (const paper of reorderPapersByTitles(existingPapers, selectedTitles)) {
-    const key = paperKey(paper);
-    if (key && seen.has(key)) continue;
-    if (key) seen.add(key);
-    selected.push(paper);
-    if (selected.length >= 10) break;
   }
 
   return selected.slice(0, 10);
@@ -1556,12 +1525,6 @@ function isBogusDuplicateSuppression(rerank: RerankedCandidate) {
 
 function hasDuplicateRerankLanguage(reason: string) {
   return /\b(duplicate|already ranked|already represented|represented above|same candidate|same researcher)\b/i.test(reason);
-}
-
-function matchTypeForScore(score: number): "strong" | "adjacent" | "weak" {
-  if (score >= 72) return "strong";
-  if (score >= 48) return "adjacent";
-  return "weak";
 }
 
 function keywordEvidenceMatchType(
@@ -2345,14 +2308,8 @@ function candidateEvidence(row: Record<string, unknown>) {
     faculty: row.faculty,
     fields_of_research: truncateText(row.fields_of_research, 500),
     profile: truncateText(row.bio_about || row.document_text, 1400),
+    research: truncateText(row.research, 1200),
     profile_evidence: row.profile_evidence || [],
-    current_score: row.similarity,
-    profile_authority_score: row.profile_authority_score || 0,
-    profile_concept_score: row.profile_concept_score || 0,
-    paper_similarity: row.paper_similarity || 0,
-    paper_depth_score: row.paper_depth_score || 0,
-    topical_retrieval_score: row.topical_retrieval_score || 0,
-    topic_similarity: row.topic_similarity || 0,
     topic_evidence: row.topic_evidence || "",
     openalex_topics: ((row.openalex_topics as OpenAlexTopicEvidence[]) || []).slice(0, 8).map(topic => ({
       openalex_topic_id: topic.openalex_topic_id,
@@ -2367,7 +2324,6 @@ function candidateEvidence(row: Record<string, unknown>) {
       recent_paper_count: topic.recent_paper_count,
       trend: topic.trend,
     })),
-    exact_profile_evidence_score: row.exact_profile_evidence_score || 0,
     papers,
     all_paper_evidence: allPaperEvidence,
     all_paper_evidence_count: allPaperEvidence.length,
@@ -2623,6 +2579,10 @@ async function rerankCandidateChunkWithLlm(
 ) {
   if (candidates.length === 0) return new Map<string, RerankedCandidate>();
 
+  const evidenceById = new Map(candidates.map(candidate => [
+    String(candidate.researcher_id || ""), candidateEvidence(candidate),
+  ]));
+
   try {
     const result = await openAiJson(
       openAiKey,
@@ -2642,12 +2602,20 @@ async function rerankCandidateChunkWithLlm(
             "UKRI grants and query-relevant startups/spinouts are stronger external signals than generic media mentions.",
             "Reward candidates who satisfy all central query requirements, especially method+domain combinations such as AI applied to weather.",
             "Demote adjacent candidates who match only the domain or only the method.",
+            "Judge the original query as the source of truth. Retrieval terms and OpenAlex topic labels are discovery hints, not proof of the requested expertise.",
+            "Assess query_coverage first: direct means the profile or publications explicitly demonstrate the full requested relationship; partial means relevant but incomplete expertise; none means no relevant expertise; uncertain means insufficient evidence.",
+            "For a method applied to a domain, direct evidence must link that method to that domain. Separate mentions of the method and domain in unrelated work do not establish the combination.",
+            "List missing central requirements in missing_requirements. Never treat possible future applicability, general computational skills, job seniority, or a related application as demonstrated expertise.",
+            "Strong: score 72-100, direct coverage of all central requirements, no missing requirements, and at least one direct_evidence citation. Adjacent: score 48-71, useful but partial overlap. Weak: score 0-47, generic, incidental, unsupported or uncertain overlap.",
+            "For each direct_evidence citation supply source (profile or paper), a short verbatim contiguous quote from the supplied text, and paper_id for a paper. The quote must support the requested relationship. Never paraphrase a quote or invent an identifier.",
+            "The reason, query_coverage, missing_requirements, match_type and score must agree. If the reason says required expertise is absent or unsupported, the candidate cannot be strong. Reasons must distinguish demonstrated expertise from a possible connection.",
+            "Return only papers that support the query in best_paper_ids and best_paper_titles; return empty arrays when none qualify. Do not fill the list with unrelated papers.",
             "Score each candidate absolutely against the query, not relative to only the candidates in this request chunk.",
             "Do not penalize candidates because stronger candidates may exist outside this chunk.",
             "You must return one ranked item for every supplied candidate in this chunk. If evidence is weak, give a low score and match_type weak.",
             "Write each reason for a non-technical reader. State the expertise, the publication pattern that supports it, and any important limitation.",
             "Never mention prompts, payloads, supplied evidence, candidate lists, databases, datasets, embeddings, vectors, models, or internal ranking steps in a reason.",
-            "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[\"...\"],\"best_paper_titles\":[\"...\"]}]}",
+            "Return JSON only: {\"ranked\":[{\"researcher_id\":\"...\",\"query_coverage\":\"direct|partial|none|uncertain\",\"missing_requirements\":[],\"direct_evidence\":[{\"source\":\"profile|paper\",\"paper_id\":\"...\",\"quote\":\"...\"}],\"score\":0-100,\"match_type\":\"strong|adjacent|weak\",\"reason\":\"...\",\"best_paper_ids\":[],\"best_paper_titles\":[]}]}",
           ].join(" "),
         },
         {
@@ -2655,29 +2623,23 @@ async function rerankCandidateChunkWithLlm(
           content: JSON.stringify({
             original_mission: originalQuery,
             expanded_mission: mission,
-            candidates: candidates.map(candidateEvidence),
+            candidates: [...evidenceById.values()],
           }),
         },
       ],
-      8000,
+      12000,
       metrics,
-    ) as { ranked?: RerankedCandidate[] };
+    ) as { ranked?: unknown[] };
 
     const ranked = Array.isArray(result.ranked) ? result.ranked : [];
     const byId = new Map<string, RerankedCandidate>();
     for (const item of ranked) {
-      const researcherId = String(item.researcher_id || "");
-      const score = Number(item.score);
-      if (!researcherId || !Number.isFinite(score)) continue;
-      const clampedScore = Math.max(0, Math.min(100, score));
-      byId.set(researcherId, {
-        researcher_id: researcherId,
-        score: clampedScore,
-        reason: truncateText(item.reason, 650),
-        match_type: matchTypeForScore(clampedScore),
-        best_paper_titles: Array.isArray(item.best_paper_titles) ? item.best_paper_titles.slice(0, 10).map(String) : [],
-        best_paper_ids: Array.isArray(item.best_paper_ids) ? item.best_paper_ids.slice(0, 10).map(String) : [],
-      });
+      if (!item || typeof item !== "object") continue;
+      const researcherId = String((item as Record<string, unknown>).researcher_id || "");
+      const evidence = evidenceById.get(researcherId);
+      if (!evidence) continue;
+      const assessment = parseRerankAssessment(item, evidence);
+      if (assessment) byId.set(researcherId, assessment);
     }
     return byId;
   } catch (error) {
@@ -7798,134 +7760,40 @@ Deno.serve(async req => {
     const llmReranks = enableRerank
       ? await rerankCandidatesWithLlm(openAiKey, rankingModel, originalQuery || query, mission, llmPool, searchUsage)
       : new Map<string, RerankedCandidate>();
-    const rerankedPool = enableRerank && llmReranks.size > 0
-      ? llmPool
-        .map((row, index) => {
-          const returnedRerank = llmReranks.get(String(row.researcher_id || ""));
-          const rerank = returnedRerank && !isBogusDuplicateSuppression(returnedRerank)
-            ? returnedRerank
-            : undefined;
-          if (!rerank) {
-            const isSuppressedDuplicate = returnedRerank ? isBogusDuplicateSuppression(returnedRerank) : false;
-            const evidenceScore = normalise(
-              Number(row.combined_similarity || 0),
-              minCombinedScore,
-              maxCombinedScore,
-              isSuppressedDuplicate ? 0.45 : 0.38,
-              isSuppressedDuplicate ? 0.88 : 0.56,
-            );
-            const rankPenalty = isSuppressedDuplicate ? 0 : Math.min(0.08, Math.log2(index + 1) * 0.012);
-            const externalBoost = Math.min(0.025, (((row.external_evidence as ExternalEvidence[]) || []).length) * 0.005);
-            const fallbackScore = Math.max(
-              Math.round(Math.max(0.35, Math.min(isSuppressedDuplicate ? 0.88 : 0.52, evidenceScore - rankPenalty + externalBoost)) * 100),
-              exactEvidenceRerankFloor(row),
-            );
-            const cappedFallbackScore = Math.min(fallbackScore, methodDomainRerankCap(row, groups));
-            const selectedPapers = rerankedPaperSummaries(
-              ((row.papers as Record<string, unknown>[]) || []),
-              ((row.all_paper_records as Record<string, unknown>[]) || []),
-              [],
-              ((row.all_paper_evidence as Record<string, unknown>[]) || []).slice(0, 10).map(paper => String(paper.paper_id || "")),
-            );
-            return {
-              ...row,
-              papers: selectedPapers,
-              llm_rerank_score: cappedFallbackScore,
-              llm_match_type: retrievalMatchType(row, cappedFallbackScore, searchStrategy),
-              llm_rank_index: index + 1000,
-              match_reason: isSuppressedDuplicate
-                ? buildMatchReason({ ...row, papers: selectedPapers }, ((row.profile_evidence as string[]) || []))
-                : row.match_reason,
-              similarity: cappedFallbackScore / 100,
-            };
-          }
-          const exactFloor = exactEvidenceRerankFloor(row);
-          const finalRerankScore = Math.min(
-            Math.max(rerank.score, exactFloor),
-            methodDomainRerankCap(row, groups),
-          );
-          return {
-            ...row,
-            papers: rerankedPaperSummaries(
-              ((row.papers as Record<string, unknown>[]) || []),
-              ((row.all_paper_records as Record<string, unknown>[]) || []),
-              rerank.best_paper_titles || [],
-              rerank.best_paper_ids || [],
-            ),
-            llm_rerank_score: finalRerankScore,
-            llm_match_type: retrievalMatchType(row, finalRerankScore, searchStrategy),
-            llm_rank_index: index,
-            match_reason: hasDuplicateRerankLanguage(rerank.reason || "")
-              ? buildMatchReason({
-                ...row,
-                papers: rerankedPaperSummaries(
-                  ((row.papers as Record<string, unknown>[]) || []),
-                  ((row.all_paper_records as Record<string, unknown>[]) || []),
-                  rerank.best_paper_titles || [],
-                  rerank.best_paper_ids || [],
-                ),
-              }, ((row.profile_evidence as string[]) || []))
-              : naturaliseProfileAnswer(rerank.reason || String(row.match_reason || "")),
-            similarity: finalRerankScore / 100,
-          };
-        })
-        .sort((a, b) => {
-          const scoreDiff = Number(b.llm_rerank_score || 0) - Number(a.llm_rerank_score || 0);
-          if (scoreDiff !== 0) return scoreDiff;
-          return Number(a.llm_rank_index || 0) - Number(b.llm_rank_index || 0);
-        })
-      : [];
     const llmPoolIdSet = new Set(llmPoolIds);
-    const retrievalTail = enableRerank && llmReranks.size > 0
-      ? sortedCandidates
-        .filter(row => !llmPoolIdSet.has(String(row.researcher_id || "")))
-        .map((row, index) => {
-          const retrievalScore = retrievalCandidateScore(
-            row,
-            llmPoolSize + index,
-            minCombinedScore,
-            maxCombinedScore,
-            groups,
-            searchStrategy,
-          );
-          return {
-            ...row,
-            retrieval_rank_score: retrievalScore,
-            llm_match_type: retrievalMatchType(row, retrievalScore, searchStrategy),
-            llm_rank_index: llmPoolSize + index,
-            similarity: retrievalScore / 100,
-          };
-        })
-      : [];
-    const rankedCandidates = enableRerank && llmReranks.size > 0
-      ? [...rerankedPool, ...retrievalTail].sort((a, b) => {
-        const scoreA = Number(a.llm_rerank_score ?? a.retrieval_rank_score ?? 0);
-        const scoreB = Number(b.llm_rerank_score ?? b.retrieval_rank_score ?? 0);
-        const scoreDiff = scoreB - scoreA;
-        if (scoreDiff !== 0) return scoreDiff;
-        return Number(a.llm_rank_index || 0) - Number(b.llm_rank_index || 0);
-      })
-      : sortedCandidates;
-
-    const categorisedCandidates = isTopicalSearch
-      ? rankedCandidates.map(row => {
-        const finalScore = Number(row.llm_rerank_score ?? row.retrieval_rank_score ?? 0);
+    const retrievalTailCount = sortedCandidates.filter(row => !llmPoolIdSet.has(String(row.researcher_id || ""))).length;
+    const resultCandidates = sortedCandidates
+      .map((row, index): Record<string, unknown> => {
+        const returnedRerank = llmReranks.get(String(row.researcher_id || ""));
+        const assessment = returnedRerank && !isBogusDuplicateSuppression(returnedRerank)
+          ? returnedRerank : undefined;
+        const retrievalScore = retrievalCandidateScore(
+          row, index, minCombinedScore, maxCombinedScore, groups, searchStrategy,
+        );
+        const assessed = applySemanticAssessment(
+          row, assessment, retrievalScore, retrievalMatchType(row, retrievalScore, searchStrategy),
+        );
         return {
-          ...row,
-          llm_match_type: retrievalMatchType(row, finalScore, searchStrategy),
+          ...assessed,
+          papers: assessment
+            ? rerankedPaperSummaries(
+              ((row.papers as Record<string, unknown>[]) || []),
+              ((row.all_paper_records as Record<string, unknown>[]) || []),
+              assessment.best_paper_titles,
+              assessment.best_paper_ids,
+            )
+            : row.papers,
+          llm_rank_index: index,
         };
       })
-      : rankedCandidates;
-    const resultCandidates = isTopicalSearch
-      ? [...categorisedCandidates].sort((a, b) => {
-        const aVisible = a.llm_match_type !== "weak" ? 1 : 0;
-        const bVisible = b.llm_match_type !== "weak" ? 1 : 0;
-        return bVisible - aVisible;
-      })
-      : categorisedCandidates;
+      .sort((a, b) => {
+        const scoreDiff = Number(b.similarity || 0) - Number(a.similarity || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        return Number(a.llm_rank_index) - Number(b.llm_rank_index);
+      });
 
     const results = resultCandidates
-      .map((row, index) => {
+      .map(row => {
         const publicRow: Record<string, unknown> = { ...row };
         delete publicRow.all_paper_records;
         delete publicRow.all_paper_evidence;
@@ -7934,19 +7802,7 @@ Deno.serve(async req => {
         delete publicRow.document_text;
         delete publicRow.current_query;
         publicRow.match_reason = naturaliseProfileAnswer(String(publicRow.match_reason || ""));
-        if (enableRerank && llmReranks.size > 0) {
-          const finalScore = Number(row.llm_rerank_score ?? row.retrieval_rank_score ?? 0);
-          return {
-            ...publicRow,
-            similarity: Math.max(0.01, Math.min(0.99, finalScore / 100)),
-          };
-        }
-        const evidenceScore = normalise(Number(row.combined_similarity || 0), minCombinedScore, maxCombinedScore, 0.45, 0.98);
-        const rankScore = Math.max(0.45, 0.98 - Math.log2(index + 1) * 0.08);
-        return {
-          ...publicRow,
-          similarity: evidenceScore * 0.45 + rankScore * 0.55,
-        };
+        return publicRow;
       })
       .slice(0, limit);
 
@@ -7977,7 +7833,9 @@ Deno.serve(async req => {
         search_strategy: searchStrategy,
         topical_candidate_count: topicalMatches.length,
         openalex_topic_candidate_count: openAlexTopicMatches.length,
-        retrieval_tail_count: retrievalTail.length,
+        retrieval_tail_count: retrievalTailCount,
+        ranking_version: SEMANTIC_RANKING_VERSION,
+        reviewed_result_count: results.filter(row => row.review_status === "reviewed").length,
         retrieval_warnings: retrievalWarnings,
         default_visible_result_count: results.filter(row => row.llm_match_type !== "weak").length,
       },
@@ -7988,6 +7846,7 @@ Deno.serve(async req => {
       original_query: originalQuery || query,
       expanded_query: searchQuery,
       search_strategy: searchStrategy,
+      ranking_version: SEMANTIC_RANKING_VERSION,
     }, { headers: corsHeaders });
   } catch (error) {
     const message = error instanceof Error

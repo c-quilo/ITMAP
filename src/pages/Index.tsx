@@ -9,6 +9,7 @@ import ViewErrorBoundary from "@/components/ViewErrorBoundary";
 import { type Researcher } from "@/data/mockData";
 import { FALLBACK_KEYWORD_SUGGESTIONS, askResearchPoolQuestion, askResearcherProfileQuestion, cleanResearcherTitle, getKeywordSuggestions, getResearcherProfile, matchSchoolMissions, normaliseDepartment, quickSearch, searchResearchers, suggestResearchers, summarizeResearchPool, type OrganizationSuggestion, type QuickSearchPaper, type QuickSearchResult, type QuickSearchSuggestion, type ResearcherProfile, type ResearcherProfileQuestionAnswer, type ResearcherSuggestion, type ResearchPoolChatMessage, type ResearchPoolSummary } from "@/lib/researcherSearch";
 import { researcherMatchLabel } from "@/lib/matchStrength";
+import { SEMANTIC_RANKING_VERSION } from "../../supabase/functions/search-researchers/matchAssessment";
 import { friendlyUserFacingError, naturaliseUserFacingText } from "@/lib/userFacingText";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import imperialLogo from "@/assets/imperial-logo.png";
@@ -28,6 +29,7 @@ type SearchMode = "semantic" | "keyword";
 type SavedSearch = SavedSearchSummary & {
   results: Researcher[];
   originalQuery?: string;
+  rankingVersion?: string;
 };
 
 type PendingProfileLookup = {
@@ -1702,7 +1704,7 @@ export default function Index() {
 
   const exportSavedResearchersCsv = () => exportCsv("itmap-saved-researchers.csv", savedResearchersCsv);
 
-  const saveSearch = (query: string, mode: SearchMode, results: Researcher[], originalQuery = query) => {
+  const saveSearch = (query: string, mode: SearchMode, results: Researcher[], originalQuery = query, rankingVersion?: string) => {
     const trimmedQuery = query.trim();
     if (!trimmedQuery || results.length === 0) return;
 
@@ -1710,6 +1712,7 @@ export default function Index() {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       query: trimmedQuery,
       originalQuery: originalQuery.trim() || trimmedQuery,
+      rankingVersion,
       mode,
       createdAt: new Date().toISOString(),
       resultCount: defaultFinalResultCount(results),
@@ -1725,6 +1728,17 @@ export default function Index() {
   const loadSavedSearch = (id: string) => {
     const saved = savedSearches.find(search => search.id === id);
     if (!saved) return;
+    if (saved.mode === "semantic" && saved.rankingVersion !== SEMANTIC_RANKING_VERSION) {
+      setTabMode("search");
+      setSearchResults([]);
+      setCurrentMission(saved.query);
+      setCurrentOriginalMission(saved.originalQuery || saved.query);
+      void executeSearch(saved.originalQuery || saved.query, "semantic", {
+        enableRerank: true,
+        includeExternalEvidence: false,
+      });
+      return;
+    }
     setActiveFilters(prev => prev.filter(isPersistentFilter));
     setSearchResults(saved.results);
     setCurrentMission(saved.query);
@@ -1891,7 +1905,7 @@ export default function Index() {
       if (window.matchMedia("(max-width: 1023px)").matches) {
         setSearchSidebarCollapsed(true);
       }
-      saveSearch(expandedQuery, mode, results, responseOriginalQuery);
+      saveSearch(expandedQuery, mode, results, responseOriginalQuery, response.rankingVersion);
     } catch (error) {
       if (searchRunIdRef.current !== searchRunId) return;
       const message = error instanceof Error ? error.message : "";
